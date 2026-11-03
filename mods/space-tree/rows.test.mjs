@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dropTab } from "./drag.js";
 import { rowDisplay, machineConnected, tabIconColor } from "./model.js";
+import { load, host, element as retainedElement, walk } from "./host.test.mjs";
 
 const rows = readFileSync(new URL("./rows.js", import.meta.url), "utf8");
 
@@ -33,7 +34,7 @@ function element() {
 
 const treeRow = new Function("div", "svg", "image", "h_flex", "run", "shared", "nameElement",
   "tabIconColor", "machineConnected", "rowDisplay",
-  `${rows.replace(/^import .*;$/gm, "").replace("export function treeRow", "function treeRow")}\nreturn treeRow;`)(
+  `${rows.replace(/^import .*;$/gm, "").replace(/^export /gm, "")}\nreturn treeRow;`)(
   element, element, element, element, () => {}, () => ({}), () => "Name",
   tabIconColor, machineConnected, rowDisplay);
 
@@ -72,7 +73,7 @@ test("repository section rails span every descendant without letter avatars", ()
   assert.match(rows, /shared\("space.colors"\)/);
   assert.doesNotMatch(rows, /toUpperCase|accent_foreground/);
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
-  assert.match(main, /this\.visible\[i - 1\]\?\.sectionColorKey != null, el => el\.mt\(4\)/);
+  assert.match(main, /this\.visible\[i - 1\]\?\.sectionColorKey != null && !this\.visible\[i - 1\]\?\.hub, el => el\.mt\(4\)/);
 });
 
 test('hub section and head rows select without registering drop/reorder handlers', () => {
@@ -91,4 +92,44 @@ test('hub cannot be a drop target even when drag helpers are called directly', (
   dropTab(view, row, { notify() {} }, { spaces: () => [], panes: () => [],
     run: (...args) => calls.push(args), warn: reason => calls.push(reason) });
   assert.deepEqual(calls, ['Hub is a locked section.']);
+});
+
+
+test("hubRow renders a count header and a compact head row", () => {
+  const h = host();
+  const render = load(new URL("./rows.js", import.meta.url), "hubRow", {
+    ...h.deps, svg: retainedElement, image: retainedElement, nameElement: () => {},
+    tabIconColor, machineConnected, rowDisplay,
+  });
+  const selected = [], view = { select: row => selected.push(row) };
+  const t = h.deps.theme();
+  const header = { kind: "space", key: "hub", name: "hub · 2", hub: true };
+  const head = { kind: "pane", key: "head", name: "Review", sub: "Project", status: "working", data: {} };
+  const a = render(view, header, t), b = render(view, head, t);
+  assert.equal(a.style.h, 26); assert.equal(b.style.h, 24);
+  assert.ok(walk(a).includes("hub")); assert.ok(walk(a).includes("2"));
+  assert.ok(walk(b).includes("Review")); assert.ok(walk(b).includes("Project"));
+  assert.equal(a.style.tooltip, "Head hub · Ctrl-Shift-H");
+  assert.equal(b.style.tooltip, "Show in hub");
+  assert.ok(!walk(b).some(n => n?.style?.border_l || n?.style?.absolute));
+  a.handlers.click({}, {}); b.handlers.click({}, {});
+  assert.deepEqual(selected, [header, head]);
+});
+
+test("treeChildren groups consecutive hub rows into a card", () => {
+  const h = host();
+  const Tree = load(new URL("./main.js", import.meta.url), "SpaceTree", {
+    ...h.deps, v_flex: retainedElement, Plumbing: class {},
+    hubRow: (_view, row) => retainedElement().id(row.key),
+    treeRow: (_view, row) => retainedElement().id(row.key),
+  });
+  const tree = new Tree();
+  tree.visible = [
+    { key: "before", kind: "space", data: {} },
+    { key: "hub", hub: true }, { key: "head-1", hub: true }, { key: "head-2", hub: true },
+    { key: "after", kind: "space", data: {} },
+  ];
+  const children = tree.treeChildren(h.deps.theme());
+  assert.deepEqual(children.map(n => n.style.id), ["before", "hub-card", "after"]);
+  assert.deepEqual(children[1].nodes.map(n => n.style.id), ["hub", "head-1", "head-2"]);
 });

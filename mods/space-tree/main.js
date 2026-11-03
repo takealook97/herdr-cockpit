@@ -6,7 +6,7 @@ import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
 import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
-import { treeRow } from "./rows.js";
+import { treeRow, hubRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
 import { menuView } from "./tree-menu.js";
 
@@ -227,7 +227,23 @@ export default class SpaceTree extends Plumbing {
         .child(button("collapse-all", "chevron-up", "Collapse all", (_e, cx) => this.foldAll(true, cx)))
         .child(button("new-space", "plus", "New space", () => run("space.new"))))
       .child(v_flex().id("tree-list").flex_1().min_h(0).px(4).pb(10).overflow_y_scroll()
-        .children(this.visible.map((row, i) => treeRow(this, row, t)
-          .when(row.kind === "space" && !row.data.parentId && this.visible[i - 1]?.sectionColorKey != null, el => el.mt(4)))));
+        .children(this.treeChildren(t)));
+  }
+
+  // The hub rows are one card so the section reads as a group apart from the spaces.
+  treeChildren(t) {
+    const out = [];
+    let card = null;
+    this.visible.forEach((row, i) => {
+      if (row.hub) {
+        card ??= v_flex().id("hub-card").mx(2).my(6).py(4).gap(1).rounded(8).border(1).border_color(t.border).bg(t.raised);
+        card.child(hubRow(this, row, t));
+        if (!this.visible[i + 1]?.hub) { out.push(card); card = null; }
+        return;
+      }
+      out.push(treeRow(this, row, t)
+        .when(row.kind === "space" && !row.data.parentId && this.visible[i - 1]?.sectionColorKey != null && !this.visible[i - 1]?.hub, el => el.mt(4)));
+    });
+    return out;
   }
 }

@@ -88,3 +88,22 @@ export function treeRow(view, row, t) {
   }
   return el;
 }
+
+// Hub rows: a header ('hub' and a count chip) and one compact row per Head, without rails or guides.
+export function hubRow(view, row, t) {
+  const header = row.kind === "space";
+  const el = h_flex().id(row.key).h(header ? 26 : 24).flex_none().items_center().gap(6)
+    .pl(header ? 10 : 12).pr(8).mx(4).rounded(6).text_size(12)
+    .bg(row.active ? t.selected : t.raised).hover(s => s.bg(t.hover))
+    .tooltip(header ? "Head hub · Ctrl-Shift-H" : "Show in hub")
+    .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); });
+  if (header) {
+    const count = row.name.split(" · ")[1] ?? "";
+    return el.child(div().flex_1().font_semibold().text_color(t.foreground).child("hub"))
+      .child(div().px(6).rounded(8).bg(t.hover).text_size(10.5).text_color(t.muted).child(count));
+  }
+  return el.child(icon(row, t))
+    .child(div().flex_none().min_w(0).max_w_3_5().truncate().text_color(t.foreground).child(row.name))
+    .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(row.sub))
+    .child(dot(row, t));
+}
