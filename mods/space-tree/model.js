@@ -2,6 +2,9 @@ export const tabIconColor = (status, active) => active ? "foreground" : status =
 
 export const aggregateStatus = statuses => ["blocked", "working", "done", "idle"]
   .find(status => statuses.includes(status)) ?? "idle";
+
+export const hubRowStatus = (head, panes) => aggregateStatus(
+  panes.filter(pane => pane.tab === head.tab).map(pane => pane.status));
 export const machineConnected = (row, machine) => row.id == null || machine?.state === "connected" || row.data.layout === "ready";
 export const rowDisplay = (row, connected = true, hovered = false) => ({
   dot: row.kind === "pane" || (row.kind === "machine" ? !connected : !row.open),
@@ -168,7 +171,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
           key: `hub-head:${head.address}`, name: `${head.spaceName || "Space"} · ${head.tabName || "Terminal"}`,
           spaceName: head.spaceName || "Space", tabName: head.tabName || "Terminal",
           sub: "", terminal: head.address,
-          data: panes.find(p => p.terminal === head.address) ?? {}, status: head.status,
+          data: panes.find(p => p.terminal === head.address) ?? {}, status: hubRowStatus(head, panes),
           foldable: false, active: !!hub.active && hub.terminal === head.address, sectionColorKey: "hub", sectionDepth: 1 });
       }
       entries.filter(s => (s.machine ?? null) === name && !s.parentId).forEach(s => addSpace(s, 1));
