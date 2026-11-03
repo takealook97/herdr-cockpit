@@ -20,7 +20,7 @@ make setup
 make install
 ```
 
-The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json` and `mods/{usage-bar,space-tree,agent-list}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it never changes app state, keys, settings, or the selected layout.
+The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json` and `mods/{usage-bar,space-tree,agent-list}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it never changes app state, keys, settings, or the selected layout.
 
 Select **cockpit** in Herdr's layout chooser (**Ctrl-Shift-L**), or invoke `layout.switch cockpit`. Keep the shipped layouts available as a fallback.
 
@@ -34,6 +34,10 @@ To install only the helper on connected Herdr machines:
 ```
 
 Omit machine names to target all connected machines. This explicitly writes to those machines. The script cross-builds for each detected Darwin/Linux arm64/amd64 platform, uploads in 7 MB parts with `hc file write`, verifies the joined SHA-256 before installation, and checks `sys`. It does not install remote mods or change layouts.
+
+## Themes
+
+`themes/` ships three Herdr themes: `styx` (very dark blue-black), `asphodel` (muted grey-green dark) and `elysium` (warm paper light with a soft gold accent). `scripts/install.sh` copies them into the app's `themes/` folder, refusing to overwrite a different file of the same name unless `--force` is given. Pick one from the theme menu, with `app.theme {name}`, or set a layout's root `theme`. Contrast ratios and details are in [themes/README.md](themes/README.md).
 
 ## Data collection
 
@@ -75,6 +79,6 @@ herdr-app check "$PWD/mods/agent-list"
 
 ## Uninstall
 
-Switch to a shipped layout first. Remove only the installed `layouts/cockpit.json`, `mods/usage-bar`, `mods/space-tree`, and `mods/agent-list` from your Herdr app home, plus `$HOME/.local/bin/herdr-hud`. Optionally remove `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`. On remote machines remove the helper there as well. Your provider logins, cr/orch data, and other Herdr settings stay in place.
+Switch to a shipped layout first. Remove only the installed `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, `mods/usage-bar`, `mods/space-tree`, and `mods/agent-list` from your Herdr app home, plus `$HOME/.local/bin/herdr-hud`. Optionally remove `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`. On remote machines remove the helper there as well. Your provider logins, cr/orch data, and other Herdr settings stay in place.
 
 MIT licensed; see [LICENSE](LICENSE).
