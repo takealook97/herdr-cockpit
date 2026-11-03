@@ -15,6 +15,9 @@ import (
 
 var hudClaudeProjectChar = regexp.MustCompile(`[^A-Za-z0-9]`)
 var hudClaudeVersion = regexp.MustCompile(`^(.*)-([0-9]+)-([0-9]+)$`)
+var hudClaudeCommandOutput = regexp.MustCompile(`(?s)<local-command-stdout>(.*?)</local-command-stdout>`)
+var hudClaudeCommandModel = regexp.MustCompile(`(?i)\bSet model to\s+` + "`" + `?([a-z][a-z0-9_-]*)(?:\s+([0-9]+(?:\.[0-9]+)*))?` + "`" + `?`)
+var hudClaudeCommandEffort = regexp.MustCompile(`(?i)\bSet effort (?:level )?to\s+` + "`" + `?(low|medium|high|xhigh|max)\b`)
 var hudClaudeDate = regexp.MustCompile(`-[0-9]{8}$`)
 
 func hudModelDisplay(id string) string {
@@ -130,15 +133,44 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 	}
 	for i := len(lines) - 1; i >= 0 && (model == "" || effort == ""); i-- {
 		var record struct {
+			Type          string `json:"type"`
 			Model         string `json:"model"`
 			Effort        string `json:"effort"`
 			PerTurnEffort string `json:"perTurnEffort"`
 			Message       struct {
-				Model string `json:"model"`
+				Model   string          `json:"model"`
+				Content json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
 		if json.Unmarshal(lines[i], &record) != nil {
 			continue
+		}
+		if record.Type == "user" {
+			var content string
+			if json.Unmarshal(record.Message.Content, &content) != nil {
+				var blocks []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}
+				if json.Unmarshal(record.Message.Content, &blocks) == nil {
+					for _, block := range blocks {
+						if block.Type == "text" {
+							content += block.Text + "\n"
+						}
+					}
+				}
+			}
+			for _, output := range hudClaudeCommandOutput.FindAllStringSubmatch(content, -1) {
+				if match := hudClaudeCommandModel.FindStringSubmatch(output[1]); model == "" && match != nil {
+					model = strings.ToLower(match[1])
+					if match[2] != "" {
+						model += "-" + match[2]
+					}
+				}
+				if match := hudClaudeCommandEffort.FindStringSubmatch(output[1]); effort == "" && match != nil {
+					effort = strings.ToLower(match[1])
+				}
+			}
 		}
 		for _, id := range []string{record.Message.Model, record.Model} {
 			if model == "" && strings.HasPrefix(id, "claude-") {

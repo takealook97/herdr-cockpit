@@ -224,3 +224,37 @@ func TestHUDClaudeTranscriptPersistentCache(t *testing.T) {
 		t.Fatalf("persistent cache: %s %v", raw, err)
 	}
 }
+
+func TestHUDClaudeTranscriptCommands(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	home := t.TempDir()
+	writeHUDClaudeSession(t, home, 401, "commands", "/fixture")
+	dir := filepath.Join(home, "projects", "-fixture")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "commands.jsonl")
+	assistant := `{"type":"assistant","message":{"model":"claude-opus-5"},"perTurnEffort":"medium"}` + "\n"
+	cases := []struct{ name, lines, model, effort string }{
+		{"new model", assistant + `{"type":"user","message":{"content":"<local-command-stdout>Set model to ` + "`Opus 5.5`" + ` and saved as your default for new sessions</local-command-stdout>"}}` + "\n", "opus-5.5", "medium"},
+		{"older command", `{"type":"user","message":{"content":"<local-command-stdout>Set model to Sonnet 5.5</local-command-stdout>"}}` + "\n" + assistant, "claude-opus-5", "medium"},
+		{"array and effort", assistant + `{"type":"user","message":{"content":[{"type":"text","text":"<local-command-stdout>Set model to Fable 5.1</local-command-stdout>"},{"type":"text","text":"<local-command-stdout>SET EFFORT LEVEL TO ` + "`XHIGH`" + `</local-command-stdout>"}]}}` + "\n", "fable-5.1", "xhigh"},
+		{"default and effort", assistant + `{"type":"user","message":{"content":"<local-command-stdout>Set model to Default</local-command-stdout>"}}` + "\n" + `{"type":"user","message":{"content":"<local-command-stdout>Set effort to max</local-command-stdout>"}}` + "\n", "default", "max"},
+		{"newer effort", `{"type":"user","message":{"content":"<local-command-stdout>Set effort to low</local-command-stdout>"}}` + "\n" + assistant, "claude-opus-5", "medium"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(tc.lines), 0600); err != nil {
+				t.Fatal(err)
+			}
+			model, effort := hudClaudeTranscript(home, 401)
+			if model != tc.model || effort != tc.effort {
+				t.Fatalf("got %q %q, want %q %q", model, effort, tc.model, tc.effort)
+			}
+			model, effort = hudClaudeTranscript(home, 401)
+			if model != tc.model || effort != tc.effort {
+				t.Fatalf("cached got %q %q, want %q %q", model, effort, tc.model, tc.effort)
+			}
+		})
+	}
+}
