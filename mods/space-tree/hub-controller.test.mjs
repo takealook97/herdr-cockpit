@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { load, host } from '../hub-bar/host.test.mjs';
-import * as model from './model.js';
+import { load, host, element, byId } from '../hub-bar/host.test.mjs';
+import * as model from './hub-model.js';
 const cockpit = () => JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url), 'utf8'));
 function setup(tree = cockpit()) {
   const h = host(); h.layout = tree;
@@ -10,17 +10,26 @@ function setup(tree = cockpit()) {
   h.panes = [{ tab: 'tb', terminal: 't1', status: 'working' }];
   h.hud = { runs: [], terminals: [{ address: 't1' }] };
   h.responses = () => ({ code: 0, stdout: JSON.stringify(h.hud) });
-  const Controller = load(new URL('./main.js', import.meta.url), 'Hub', {
+  const deps = {
     ...h.deps, ...model, layout: () => h.layout, spaces: () => h.spaces,
-    machines: () => [], panes: () => h.panes, nextCommand: () => new Promise(() => {}),
+    machines: () => [], panes: () => h.panes, nextCommand: () => new Promise(resolve => { h.command = resolve; }),
     exec: async (...args) => { h.calls.push({ exec: args }); return h.responses(args); },
     run: (command, args) => {
       h.calls.push({ run: [command, args] });
       if (command === 'layout.set') h.layout = args.layout;
       if (command === 'layout.select') model.findNode(h.layout, args.stack).active = args.child;
     },
+  };
+  const Hub = load(new URL('./hub.js', import.meta.url), 'Hub', deps);
+  const SpaceTree = load(new URL('./main.js', import.meta.url), 'SpaceTree', {
+    ...deps, Hub, Plumbing: class { init() {} }, initRename() {}, props: () => ({}),
+    localStorage: { getItem() { return null; } }, v_flex: element, svg: element,
+    buildTree: () => [], assignSectionColors: () => ({}), aggregateStatus: () => 'idle',
   });
-  h.view = new Controller(); h.view.init({}, h.cx); return h;
+  h.tree = new SpaceTree(); h.tree.init({}, h.cx);
+  h.view = h.tree.hub;
+  h.view.refresh = cx => h.tree.refreshOrch(cx);
+  return h;
 }
 const writes = h => h.calls.filter(c => c.run?.[0] === 'layout.set');
 const active = h => model.findNode(h.layout, 'work-stack').active;
@@ -90,14 +99,15 @@ test('remote helpers qualify full worker addresses before exclusion', async () =
   h.view.refresh(h.cx); await h.flush();
   assert.deepEqual(h.shared.get('hub.heads').map(h => h.address), ['t1', 'remote/host/t1']);
 });
-test('cockpit mounts controller, stable stack slots and hub key without floating APIs', () => {
+test('cockpit mounts always-shown space tree, stable stack slots and hub key', () => {
   const tree = cockpit();
-  assert.equal(model.findNode(tree, 'hub-controller').size.px, 0);
+  assert.equal(model.findNode(tree, 'hub-controller'), null);
+  assert.equal(model.findNode(tree, 'space-tree').content.mod, 'space-tree');
   assert.equal(model.findNode(tree, 'work-stack').active, 'work-normal');
   assert.equal(model.findNode(tree, 'hub-bar').size.px, 44);
   assert.equal(model.findNode(tree, 'panel').hidden, true);
-  assert.equal(JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global['ctrl-shift-h'], 'hub.toggle');
-  for (const mod of ['hub', 'hub-bar', 'hub-cell'])
+  assert.equal(JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global['ctrl-shift-h'], 'space-tree.hub');
+  for (const mod of ['hub-bar', 'hub-cell'])
     assert.doesNotMatch(readFileSync(new URL(`../${mod}/main.js`, import.meta.url), 'utf8'), /openOverlay|closeOverlay/);
 });
 test('replaceNode is immutable and returns same root for equal children or missing ids', () => {
@@ -110,4 +120,48 @@ test('replaceNode is immutable and returns same root for equal children or missi
   assert.notDeepEqual(model.findNode(next, 'hub-grid').children, children);
   assert.equal(model.replaceNode(next, 'hub-grid', model.findNode(next, 'hub-grid').children), next);
   assert.equal(model.replaceNode(next, 'absent', []), next);
+});
+
+test('space-tree command receiver and pinned entry use the same hub toggle', async () => {
+  const h = setup(); await h.flush();
+  h.command('hub'); await Promise.resolve();
+  assert.equal(active(h), 'hub-view');
+  assert.equal(writes(h).length, 1);
+  h.tree.inputs = () => ({});
+  byId(h.tree.render(), 'hub-entry').handlers.click({}, h.cx);
+  assert.equal(active(h), 'work-normal');
+  h.command('hub'); await Promise.resolve();
+  assert.equal(active(h), 'hub-view');
+  h.command('hub-close'); await Promise.resolve();
+  assert.equal(active(h), 'work-normal');
+});
+test('an externally selected hub builds its grid on the live sync timer', async () => {
+  const h = setup(); await h.flush();
+  model.findNode(h.layout, 'work-stack').active = 'hub-view';
+  h.intervals.find(t => t.ms === 250).fn(h.cx);
+  h.tick(1000);
+  assert.equal(writes(h).length, 1);
+  assert.equal(model.findNode(h.layout, 'hub-cell-0-terminal').content.terminal, 't1');
+  h.intervals.find(t => t.ms === 250).fn(h.cx); h.tick(1000);
+  assert.equal(writes(h).length, 1);
+});
+
+test('shared polling retains orch availability, models and remote run tab guards', async () => {
+  const h = setup(); await h.flush();
+  h.hud.orch = true;
+  h.hud.terminals[0].model = 'sol';
+  h.tree.refreshOrch(h.cx); await h.flush();
+  assert.equal(h.tree.orch.orch, true);
+  assert.equal(h.tree.orch.lastModel.t1.model, 'sol');
+  h.spaces.push({ machine: 'remote/host' });
+  h.responses = args => ({ code: 0, stdout: JSON.stringify(args[2].on ? {
+    orch: true, terminals: [], runs: [{ tab: 't3', workspace: 's3', workers: [] }],
+  } : h.hud) });
+  h.tree.refreshOrch(h.cx); await h.flush();
+  assert.equal(h.tree.orch.runs[0].tab, 'remote/host/t3');
+  h.responses = () => ({ code: 1 });
+  h.tree.refreshOrch(h.cx); await h.flush();
+  assert.equal(h.tree.orchStale, true);
+  assert.equal(h.tree.orch.orch, true);
+  assert.equal(h.tree.orch.lastModel.t1.model, 'sol');
 });

@@ -18,7 +18,7 @@ export default class HubCell extends View {
       .child(h_flex().id('select-head').flex_1().min_w(0).gap(6).items_center().cursor_pointer()
         .tooltip('Go to this Head’s tab').on_mouse_down('left', stop)
         .on_click(() => {
-          run('hub.close');
+          run('space-tree.hub-close');
           if (head.space) run('space.select', { id: head.space });
           if (head.tab) run('tab.select', { id: head.tab });
         })

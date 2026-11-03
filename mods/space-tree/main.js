@@ -2,6 +2,8 @@ import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, machines, panes, terminals, layout, run, exec, shared, setShared, theme, openOverlay, nextCommand, props, notify } from "herdr";
 import Plumbing from "./plumbing.js";
+import Hub from "./hub.js";
+import { mergeHuds } from "./hub-model.js";
 import { buildTree, aliasKey, machineId, rowId, pruneFolded, aggregateStatus, assignSectionColors } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow } from "./rows.js";
@@ -20,12 +22,17 @@ export default class SpaceTree extends Plumbing {
     this.orchStale = false;
     this.orchLoaded = false;
     this.highlight = null;
+    this.hub = new Hub();
+    this.hub.init(p, cx);
     this.refreshOrch(cx);
     cx.timer.every(3000, cx => this.refreshOrch(cx));
     cx.timer.every(60000, cx => this.prune(cx));
     cx.spawn(async cx => {
       for (;;) {
-        if (await nextCommand() === "focus") this.handle.focus();
+        const command = await nextCommand();
+        if (command === "focus") this.handle.focus();
+        else if (command === "hub") this.hub.toggle(cx);
+        else if (command === "hub-close") this.hub.hide();
         cx.notify();
       }
     });
@@ -35,18 +42,29 @@ export default class SpaceTree extends Plumbing {
     if (this.polling) return;
     this.polling = true;
     cx.spawn(async cx => {
-      try {
-        const r = await exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "panes"], { on: undefined });
-        if (r.code !== 0) throw new Error("hud unavailable");
-        const data = JSON.parse(r.stdout);
-        if (!Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
-        for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
-          const terminal = info.address ?? info.terminal;
-          if (terminal && info.model) this.lastModel[terminal] = { model: info.model, effort: info.effort };
-        }
-        data.lastModel = this.lastModel;
-        this.orch = data; this.orchStale = false; this.orchLoaded = true;
-      } catch { this.orchStale = true; }
+      const names = [...new Set([null, ...machines().map(m => m.name), ...spaces().map(s => s.machine ?? null)])];
+      const results = await Promise.all(names.map(async machine => {
+        try {
+          const r = await exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "panes"], { on: machine || undefined });
+          if (r.code !== 0) throw new Error("hud unavailable");
+          const data = JSON.parse(r.stdout);
+          if (data.error || !Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
+          this.hub.snapshots.set(machine, { machine, data });
+          return true;
+        } catch { return false; }
+      }));
+      for (const machine of this.hub.snapshots.keys()) if (!names.includes(machine)) this.hub.snapshots.delete(machine);
+      const data = mergeHuds([...this.hub.snapshots.values()]);
+      for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
+        const terminal = info.address ?? info.terminal;
+        if (terminal && info.model) this.lastModel[terminal] = { model: info.model, effort: info.effort };
+      }
+      data.lastModel = this.lastModel;
+      this.orch = data;
+      this.orchStale = results.some(ok => !ok);
+      this.orchLoaded = this.orchLoaded || results.some(Boolean);
+      setShared("hub.stale", this.orchStale);
+      this.hub.sync(cx);
       this.polling = false;
       cx.notify();
     });
@@ -116,6 +134,8 @@ export default class SpaceTree extends Plumbing {
     });
     if (JSON.stringify(keptMachines) !== JSON.stringify(storedMachines)) setShared("space-tree.alias.machine.keys", keptMachines);
   }
+
+  close() { this.hub?.close(); this.input?.release(); }
 
   hubActive() {
     const visit = node => node?.id === "work-stack" ? node.active === "hub-view"
@@ -197,7 +217,7 @@ export default class SpaceTree extends Plumbing {
       .child(h_flex().id("hub-entry").bg(this.hubActive() ? t.selected : t.chrome).h(30).flex_none().px(12).gap(6).items_center()
         .text_color(t.foreground).cursor_pointer().hover(el => el.bg(t.hover))
         .tooltip("Head hub · Ctrl-Shift-H")
-        .on_click(() => run("hub.toggle"))
+        .on_click((_e, cx) => this.hub.toggle(cx))
         .child(div().size(6).rounded(3).bg(t[aggregateStatus((shared("hub.heads") ?? []).map(h => h.status))]))
         .child(div().flex_1().font_semibold().child("hub"))
         .child(div().text_color(t.dim).child(String((shared("hub.heads") ?? []).length))))

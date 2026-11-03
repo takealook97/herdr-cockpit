@@ -1,9 +1,8 @@
-import { View, div } from 'gpui-kit';
-import { exec, spaces, machines, panes, shared, setShared, layout, nextCommand, run } from 'herdr';
-import { headsFrom, mergeHuds, gridFor, findNode, replaceNode } from './model.js';
+import { spaces, panes, shared, setShared, layout, run } from 'herdr';
+import { headsFrom, mergeHuds, gridFor, findNode, replaceNode } from './hub-model.js';
 
-// A zero-height layout block keeps the command receiver resident.
-export default class Hub extends View {
+// Owned by the always-shown space tree; this is not a separate mod copy.
+export default class Hub {
   init(_p, cx) {
     this.snapshots = new Map();
     this.heads = [];
@@ -11,40 +10,7 @@ export default class Hub extends View {
     setShared('hub.open', false);
     setShared('hub.sending', false);
     setShared('hub.stale', true);
-    this.refresh(cx);
-    cx.timer.every(3000, cx => this.refresh(cx));
     cx.timer.every(250, cx => this.sync(cx));
-    cx.spawn(async cx => {
-      for (;;) {
-        const command = await nextCommand();
-        if (command === 'toggle') this.toggle(cx);
-        else if (command === 'close') this.hide();
-        cx.notify();
-      }
-    });
-  }
-
-  refresh(cx) {
-    if (this.polling) return;
-    this.polling = true;
-    cx.spawn(async cx => {
-      const names = [...new Set([null, ...machines().map(m => m.name), ...spaces().map(s => s.machine ?? null)])];
-      const results = await Promise.all(names.map(async machine => {
-        try {
-          const result = await exec('sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'panes'], { on: machine || undefined });
-          if (result.code !== 0) throw new Error('helper unavailable');
-          const data = JSON.parse(result.stdout);
-          if (data.error || !Array.isArray(data.terminals) || !Array.isArray(data.runs)) throw new Error('incomplete metadata');
-          this.snapshots.set(machine, { machine, data });
-          return true;
-        } catch { return false; }
-      }));
-      for (const machine of this.snapshots.keys()) if (!names.includes(machine)) this.snapshots.delete(machine);
-      this.polling = false;
-      setShared('hub.stale', results.some(ok => !ok));
-      this.sync(cx);
-      cx.notify();
-    });
   }
 
   sync(cx) {
@@ -111,5 +77,4 @@ export default class Hub extends View {
     else { this.sync(cx); this.show(); }
   }
   close() { this.rebuildTimer?.cancel(); }
-  render() { return div().id('hub-controller').size_full(); }
 }

@@ -63,6 +63,6 @@ test('partial failures retain the draft and warn against resending to successful
 test('close control requests return to normal while preserving unsent text', () => {
   const h = setup();
   byId(h.view.render(), 'close').handlers.click();
-  assert.deepEqual(h.calls, [{ run: ['hub.close'] }]);
+  assert.deepEqual(h.calls, [{ run: ['space-tree.hub-close'] }]);
   assert.equal(h.view.input.value(), 'literal $(message)');
 });

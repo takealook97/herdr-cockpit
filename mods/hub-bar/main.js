@@ -82,6 +82,6 @@ export default class HubBar extends View {
         .child(Input.new(this.input).size_full().text_size(12).bg(t.input).text_color(t.foreground)))
       .child(button('send', this.busy ? 'Sending…' : armed ? `Confirm ${targets.length}` : `Send (${targets.length})`,
         armed ? 'Send this message to all selected Heads; Esc cancels' : 'Send text and Enter; multiple Heads require confirmation', (_e, cx) => this.send(cx)))
-      .child(button('close', '×', 'Close hub', () => run('hub.close')));
+      .child(button('close', '×', 'Close hub', () => run('space-tree.hub-close')));
   }
 }

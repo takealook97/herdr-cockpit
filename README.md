@@ -20,7 +20,7 @@ make setup
 make install
 ```
 
-The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, and `mods/{usage-bar,space-tree,agent-list,hub,hub-bar,hub-cell}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing bindings win, including a conflicting Ctrl-Shift-H; the previous `cerberus.toggle` binding alone migrates to `hub.toggle`. Old `cerberus`, `cerberus-bar`, and `cerberus-cell` directories are removed only when their complete file set and contents match the previous install; modified directories and extra files are preserved. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation. Different existing theme files are preserved unless `--force` is given.
+The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, and `mods/{usage-bar,space-tree,agent-list,hub-bar,hub-cell}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing bindings win, including a conflicting Ctrl-Shift-H; the previous `cerberus.toggle` and `hub.toggle` bindings migrate to `space-tree.hub`. Old `hub`, `cerberus`, `cerberus-bar`, and `cerberus-cell` directories are removed only when their complete file set and contents match the previous install; app-generated `gpui-kit.d.ts` and `jsconfig.json` are ignored during comparison, while modified directories and other extra files are preserved. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation. Different existing theme files are preserved unless `--force` is given.
 
 Select **cockpit** in Herdr's layout chooser (**Ctrl-Shift-L**), or invoke `layout.switch cockpit`. Keep the shipped layouts available as a fallback.
 
@@ -43,9 +43,9 @@ One to three Heads share a row, four use 2×2, five to six use three columns and
 
 The header chips toggle broadcast recipients; all Heads start included. Type in the composer and press Enter or Send. For multiple recipients, the first submit arms **Confirm N**, and a second submit sends to that exact selection. Editing text, toggling a chip, or pressing Esc cancels confirmation. Sending uses `hc send <address> <text>`, which pastes the text and presses Enter; it does not force past a blocked prompt. A partial failure identifies failed tabs and leaves the draft; retry individually to avoid duplicate messages to successful recipients.
 
-The controller polls the local helper and each connected machine's helper every three seconds. Install `herdr-hud` on remote machines for their Heads to appear. Missing or incomplete helper data retains known cells and pauses broadcast until metadata recovers. The pinned count and cell headers keep updating while the hub is closed or open. Selection exclusions persist through Herdr's shared mod state; new Heads are included by default.
+Space-tree polls the local helper and each connected machine's helper every three seconds. Install `herdr-hud` on remote machines for their Heads to appear. Missing or incomplete helper data retains known cells and pauses broadcast until metadata recovers. The pinned count and cell headers keep updating while the hub is closed or open. Selection exclusions persist through Herdr's shared mod state; new Heads are included by default.
 
-`layouts/cockpit.json` includes a zero-height `hub` controller block because Herdr delivers mod commands only to shown mod copies. The `work-stack` switches between `work-normal` (tabs, terminals, files/changes panel) and `hub-view` (bar and grid). For another custom layout, copy that stack and controller structure. A layout without `work-stack` is left untouched and reports that hub is unavailable.
+The always-shown `space-tree` mod handles `space-tree.hub` and owns the hub controller, because Herdr delivers mod commands only to shown mod copies. The `work-stack` switches between `work-normal` (tabs, terminals, files/changes panel) and `hub-view` (bar and grid). For another custom layout, copy that stack and include a shown space-tree block. A layout without `work-stack` is left untouched and reports that hub is unavailable.
 
 ## Themes
 
@@ -85,7 +85,7 @@ make test
 herdr-app check "$PWD/mods/usage-bar"
 herdr-app check "$PWD/mods/space-tree"
 herdr-app check "$PWD/mods/agent-list"
-for mod in hub hub-bar hub-cell; do
+for mod in space-tree hub-bar hub-cell; do
   herdr-app check "$PWD/mods/$mod"
 done
 ```
@@ -94,6 +94,6 @@ done
 
 ## Uninstall
 
-Switch to a shipped layout first. Remove only the installed `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, `mods/usage-bar`, `mods/space-tree`, `mods/agent-list`, and `mods/hub*` from your Herdr app home, plus `$HOME/.local/bin/herdr-hud`. Optionally remove `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`. Remove `global.ctrl-shift-h` from `keys.json` only if it still points to `hub.toggle`; keep any replacement shortcut. On remote machines remove the helper there as well. Your provider logins, cr/orch data, and other Herdr settings stay in place.
+Switch to a shipped layout first. Remove only the installed `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, `mods/usage-bar`, `mods/space-tree`, `mods/agent-list`, and `mods/hub*` from your Herdr app home, plus `$HOME/.local/bin/herdr-hud`. Optionally remove `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`. Remove `global.ctrl-shift-h` from `keys.json` only if it still points to `space-tree.hub`; keep any replacement shortcut. On remote machines remove the helper there as well. Your provider logins, cr/orch data, and other Herdr settings stay in place.
 
 MIT licensed; see [LICENSE](LICENSE).

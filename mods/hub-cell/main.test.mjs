@@ -12,7 +12,7 @@ test('cell navigates to source space then tab, updates blocked border and toggle
   assert.equal(tree.style.h, 26);
   assert.equal(tree.style.border_color, 'blocked');
   byId(tree, 'select-head').handlers.click();
-  assert.deepEqual(h.calls.map(c => c.run), [['hub.close'], ['space.select', { id: 'remote/s1' }], ['tab.select', { id: 'remote/tb' }]]);
+  assert.deepEqual(h.calls.map(c => c.run), [['space-tree.hub-close'], ['space.select', { id: 'remote/s1' }], ['tab.select', { id: 'remote/tb' }]]);
   byId(tree, 'focus-head').handlers.click();
   assert.equal(h.shared.get('hub.focus'), 'remote/t1');
   p.focus = true; byId(cell.render(), 'focus-head').handlers.click();

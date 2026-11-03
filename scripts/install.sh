@@ -49,9 +49,10 @@ for path in sorted(glob.glob(os.path.join(snippets, "*.json"))):
             raise ValueError("Key section must be an object: " + section)
         target = data.setdefault(section, {})
         for key, action in bindings.items():
-            if section == "global" and key == "ctrl-shift-h" and target.get(key) == "cerberus.toggle":
+            if section == "global" and key == "ctrl-shift-h" and target.get(key) in ("cerberus.toggle", "hub.toggle"):
+                previous = target[key]
                 target[key] = action
-                changes.append(section + ":" + key + " (migrate cerberus.toggle)")
+                changes.append(section + ":" + key + " (migrate " + previous + ")")
             elif key not in target:
                 target[key] = action
                 changes.append(section + ":" + key)
@@ -95,8 +96,8 @@ for name, expected in json.loads(pathlib.Path(manifest).read_text()).items():
         print("Preserve legacy mod (not an unmodified install): " + str(folder))
         continue
     files = {str(p.relative_to(folder)): hashlib.sha256(p.read_bytes()).hexdigest()
-             for p in entries if p.is_file()}
-    # Extra files, including editor files, belong to the user: keep the directory.
+             for p in entries if p.is_file() and str(p.relative_to(folder)) not in {"gpui-kit.d.ts", "jsconfig.json"}}
+    # Ignore only the app-generated root editor files; other extras belong to the user.
     dirs = {str(p.relative_to(folder)) for p in entries if p.is_dir()}
     expected_dirs = {str(parent) for file in expected for parent in pathlib.Path(file).parents if str(parent) != "."}
     if files != expected or dirs != expected_dirs:

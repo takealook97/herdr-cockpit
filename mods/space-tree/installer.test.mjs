@@ -27,7 +27,7 @@ test('installer backs up keys and adds only missing bindings, idempotently', () 
   writeFileSync(keys, original, { mode: 0o640 });
   let result = run(); assert.equal(result.status, 0, result.stderr);
   const data = JSON.parse(readFileSync(keys, 'utf8'));
-  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', 'ctrl-shift-h': 'hub.toggle' }, terminal: { 'ctrl-a': 'home' } });
+  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', 'ctrl-shift-h': 'space-tree.hub' }, terminal: { 'ctrl-a': 'home' } });
   const backups = readdirSync(join(folder, 'app')).filter(n => n.startsWith('keys.json.bak-'));
   assert.equal(backups.length, 1);
   assert.equal(readFileSync(join(folder, 'app', backups[0]), 'utf8'), original);
@@ -59,14 +59,14 @@ test('installer rejects a symlink key file before writing', () => sandbox(({ fol
   assert.equal(readFileSync(other, 'utf8'), '{}');
 }));
 
-test('installer migrates only the exact previous hub shortcut and backs it up', () => sandbox(({ folder, keys, run }) => {
-  const original = '{"global":{"ctrl-shift-h":"cerberus.toggle","ctrl-a":"app.help"}}';
+for (const previous of ['cerberus.toggle', 'hub.toggle']) test(`installer migrates ${previous}: only the exact previous hub shortcut and backs it up`, () => sandbox(({ folder, keys, run }) => {
+  const original = JSON.stringify({global: {'ctrl-shift-h': previous, 'ctrl-a': 'app.help'}});
   writeFileSync(keys, original);
   let result = run(['--dry-run']); assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /migrate cerberus.toggle/);
+  assert.ok(result.stdout.includes('migrate ' + previous));
   assert.equal(readFileSync(keys, 'utf8'), original);
   result = run(); assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(readFileSync(keys)).global['ctrl-shift-h'], 'hub.toggle');
+  assert.equal(JSON.parse(readFileSync(keys)).global['ctrl-shift-h'], 'space-tree.hub');
   const backup = readdirSync(join(folder, 'app')).find(n => n.startsWith('keys.json.bak-'));
   assert.equal(readFileSync(join(folder, 'app', backup), 'utf8'), original);
 }));
@@ -98,4 +98,24 @@ test('legacy mod directory symlinks and contained symlinks are preserved', () =>
   const result = run(); assert.equal(result.status, 0, result.stderr);
   assert.ok(statSync(join(folder, 'app', 'mods', 'cerberus')).isDirectory());
   assert.ok(statSync(join(other, 'personal')).isDirectory());
+}));
+
+test('app-generated editor files do not prevent safe legacy removal', () => sandbox(({ folder, run }) => {
+  for (const name of Object.keys(legacyAssets)) {
+    const dir = oldInstall(folder, name);
+    writeFileSync(join(dir, 'gpui-kit.d.ts'), '// app generated');
+    writeFileSync(join(dir, 'jsconfig.json'), '{}');
+  }
+  const result = run(); assert.equal(result.status, 0, result.stderr);
+  for (const name of Object.keys(legacyAssets)) assert.ok(!readdirSync(join(folder, 'app', 'mods')).includes(name));
+}));
+
+for (const change of ['modified', 'extra', 'symlink']) test(`installer preserves previous hub controller with ${change} files`, () => sandbox(({ folder, run }) => {
+  const dir = oldInstall(folder, 'hub');
+  if (change === 'modified') writeFileSync(join(dir, 'main.js'), '// custom controller');
+  if (change === 'extra') writeFileSync(join(dir, 'notes.txt'), 'user notes');
+  if (change === 'symlink') symlinkSync(join(dir, 'main.js'), join(dir, 'gpui-kit.d.ts'));
+  const result = run(); assert.equal(result.status, 0, result.stderr);
+  assert.ok(statSync(dir).isDirectory());
+  assert.match(result.stdout, /Preserve legacy mod/);
 }));

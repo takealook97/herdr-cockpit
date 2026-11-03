@@ -87,17 +87,6 @@
       "resizable": false,
       "children": [
         {
-          "id": "hub-controller",
-          "type": "block",
-          "size": {
-            "px": 0
-          },
-          "min": 0,
-          "content": {
-            "mod": "hub"
-          }
-        },
-        {
           "id": "usage",
           "type": "block",
           "size": {

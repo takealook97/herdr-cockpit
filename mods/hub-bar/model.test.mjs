@@ -31,11 +31,14 @@ test('heads exclude workers and non-agent panes and follow space then tab index 
 test('per-machine snapshots qualify remote workers and preserve complete addresses', () => {
   const merged = mergeHuds([{ machine: null, data: hud }, { machine: 'remote/host', data: {
     terminals: [{ address: 't9' }, { address: 'remote/host/t10' }],
-    runs: [{ head_terminal: 't9', workers: [{ terminal: 't8' }] }],
+    orch: true, runs: [{ head_terminal: 't9', workspace: 's1', tab: 'tb', workers: [{ terminal: 't8' }] }],
   } }]);
   assert.deepEqual(merged.terminals.slice(-2).map(t => t.address), ['remote/host/t9', 'remote/host/t10']);
   assert.equal(merged.runs[1].workers[0].terminal, 'remote/host/t8');
   assert.equal(merged.runs[1].head_terminal, 'remote/host/t9');
+  assert.equal(merged.orch, true);
+  assert.equal(merged.runs[1].workspace, 'remote/host/s1');
+  assert.equal(merged.runs[1].tab, 'remote/host/tb');
 });
 
 const terminalAddresses = node => node.content?.terminal ? [node.content.terminal] : (node.children ?? []).flatMap(terminalAddresses);
@@ -83,5 +86,5 @@ test('broadcast selection defaults to all, respects exclusions and enrolls new h
 
 test('sandboxed mods carry identical model helpers', () => {
   assert.equal(readFileSync(new URL('./model.js', import.meta.url), 'utf8'),
-    readFileSync(new URL('../hub/model.js', import.meta.url), 'utf8'));
+    readFileSync(new URL('../space-tree/hub-model.js', import.meta.url), 'utf8'));
 });

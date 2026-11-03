@@ -30,10 +30,12 @@ export const sendArgs = (address, text) => ['send', address, text];
 export function mergeHuds(snapshots) {
   const qualify = (machine, address) => !address || !machine || address.includes('/') ? address : `${machine}/${address}`;
   return {
+    orch: snapshots.some(({ data }) => data.orch === true),
     terminals: snapshots.flatMap(({ machine, data }) => (data.terminals ?? [])
       .map(t => ({ ...t, address: qualify(machine, t.address) }))),
     runs: snapshots.flatMap(({ machine, data }) => (data.runs ?? []).map(r => ({ ...r,
       head_terminal: qualify(machine, r.head_terminal),
+      workspace: qualify(machine, r.workspace), tab: qualify(machine, r.tab),
       workers: (r.workers ?? []).map(w => ({ ...w, terminal: qualify(machine, w.terminal) })) }))),
   };
 }
