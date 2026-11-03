@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 var hudClaudeProjectChar = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -58,15 +60,57 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 		return "", ""
 	}
 	dir := filepath.Join(home, "projects", hudClaudeProjectChar.ReplaceAllString(session.Cwd, "-"))
-	f, err := os.Open(filepath.Join(dir, session.SessionID+".jsonl"))
+	path := filepath.Join(dir, session.SessionID+".jsonl")
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", ""
+	}
+	hudClaudeCacheMu.Lock()
+	defer hudClaudeCacheMu.Unlock()
+	cachePath := hudClaudeCachePath()
+	cache := map[string]hudClaudeCacheEntry{}
+	if raw, err := os.ReadFile(cachePath); err == nil {
+		_ = json.Unmarshal(raw, &cache)
+	}
+	if cache == nil {
+		cache = map[string]hudClaudeCacheEntry{}
+	}
+	key := fmt.Sprintf("%d:%s", pid, path)
+	if entry, ok := cache[key]; ok && entry.Mtime == info.ModTime().UnixNano() && entry.Size == info.Size() {
+		return entry.Model, entry.Effort
+	}
+	readOK := false
+	defer func() {
+		if !readOK {
+			return
+		}
+		cache[key] = hudClaudeCacheEntry{info.ModTime().UnixNano(), info.Size(), model, effort}
+		if len(cache) > 256 {
+			cache = map[string]hudClaudeCacheEntry{key: cache[key]}
+		}
+		raw, err := json.Marshal(cache)
+		if err != nil || os.MkdirAll(filepath.Dir(cachePath), 0700) != nil {
+			return
+		}
+		f, err := os.CreateTemp(filepath.Dir(cachePath), ".claude-models-*")
+		if err != nil {
+			return
+		}
+		name := f.Name()
+		defer os.Remove(name)
+		if _, err := f.Write(raw); err != nil {
+			f.Close()
+			return
+		}
+		if f.Close() == nil {
+			_ = os.Rename(name, cachePath)
+		}
+	}()
+	f, err := os.Open(path)
 	if err != nil {
 		return "", ""
 	}
 	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return "", ""
-	}
 	offset := info.Size() - 256*1024
 	if offset < 0 {
 		offset = 0
@@ -78,6 +122,7 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 	if err != nil {
 		return "", ""
 	}
+	readOK = true
 	lines := bytes.Split(raw, []byte{'\n'})
 	// A tail starting mid-record cannot be trusted as a complete JSONL record.
 	if offset > 0 && len(lines) > 0 {
@@ -107,4 +152,17 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 		}
 	}
 	return model, effort
+}
+
+var hudClaudeCacheMu sync.Mutex
+
+type hudClaudeCacheEntry struct {
+	Mtime  int64  `json:"mtime"`
+	Size   int64  `json:"size"`
+	Model  string `json:"model"`
+	Effort string `json:"effort"`
+}
+
+func hudClaudeCachePath() string {
+	return filepath.Join(hudCacheDir(), "claude-models.json")
 }

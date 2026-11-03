@@ -192,3 +192,35 @@ func TestHUDClaudeTranscriptEffort(t *testing.T) {
 		t.Fatalf("terminal effort %q", out.Terminals[0].Effort)
 	}
 }
+
+func TestHUDClaudeTranscriptPersistentCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	writeHUDClaudeSession(t, home, 301, "cached", "/fixture")
+	dir := filepath.Join(home, "projects", "-fixture")
+	os.MkdirAll(dir, 0700)
+	path := filepath.Join(dir, "cached.jsonl")
+	original := []byte("{\"model\":\"claude-opus-5-5\",\"effort\":\"high\"}\n")
+	os.WriteFile(path, original, 0600)
+	info, _ := os.Stat(path)
+	model, effort := hudClaudeTranscript(home, 301)
+	if model != "claude-opus-5-5" || effort != "high" {
+		t.Fatalf("cold: %s %s", model, effort)
+	}
+	// Same identity, timestamp and size must use the persisted result, not reread.
+	os.WriteFile(path, []byte(strings.Repeat("x", len(original))), 0600)
+	os.Chtimes(path, info.ModTime(), info.ModTime())
+	model, effort = hudClaudeTranscript(home, 301)
+	if model != "claude-opus-5-5" || effort != "high" {
+		t.Fatalf("warm: %s %s", model, effort)
+	}
+	os.WriteFile(path, []byte("{\"model\":\"claude-sonnet-5-5\",\"effort\":\"low\"}\n"), 0600)
+	model, effort = hudClaudeTranscript(home, 301)
+	if model != "claude-sonnet-5-5" || effort != "low" {
+		t.Fatalf("invalidation: %s %s", model, effort)
+	}
+	raw, err := os.ReadFile(hudClaudeCachePath())
+	if err != nil || !json.Valid(raw) {
+		t.Fatalf("persistent cache: %s %v", raw, err)
+	}
+}

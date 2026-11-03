@@ -95,7 +95,7 @@ test('provider cards show compact weekly usage, coupon text and stale opacity', 
   assert.equal(byID(tree, 'account-claude').nodes[0].style.opacity, 0.6);
   assert.equal(byID(tree, 'account-gemini').nodes[0].nodes[0].nodes.length, 1);
   assert.ok(walk(tree).some(node => node?.style?.w === 28 && node?.style?.h === 2));
-  const fullWidth = 170 + 40 + 3 * (format.labelWidth(true) + format.cellWidth('weekly') + 16 + 2 + 8 + 8) + format.cellWidth('coupon') + 8;
+  const fullWidth = 170 + 44 + 3 * (format.labelWidth(true) + format.cellWidth('weekly') + 16 + 2 + 8 + 10) + format.cellWidth('coupon') + 8;
   h.view.width = fullWidth - 1;
   assert.ok(!walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
   h.view.width = fullWidth - 45;
@@ -176,4 +176,16 @@ test('machine switches show cached readings immediately and debounce remote read
   h.tick(0);
   h.state.spaces[0].machine = 'workstation';
   assert.ok(text(h.view.render(h.cx)).includes('work'));
+});
+
+test('provider and system cards have visible borders and wider separation', async () => {
+  const h = harness(); await h.flush();
+  const tree = h.view.render(h.cx);
+  for (const id of ['account-codex', 'account-claude', 'account-gemini', 'system']) {
+    const card = byID(tree, id);
+    assert.equal(card.style.border, 1);
+    assert.equal(card.style.border_color, 'muted66');
+  }
+  assert.equal(tree.style.gap, 10);
+  assert.equal(byID(tree, 'groups').style.gap, 10);
 });

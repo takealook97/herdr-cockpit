@@ -35,12 +35,16 @@ type HUDRun struct {
 	Workers      []HUDWorker `json:"workers"`
 }
 type HUDTerminal struct {
-	Address string `json:"address"`
-	Program string `json:"program"`
-	Model   string `json:"model"`
-	Effort  string `json:"effort"`
+	Address      string            `json:"address"`
+	Program      string            `json:"program"`
+	Model        string            `json:"model"`
+	Effort       string            `json:"effort"`
+	Labels       map[string]string `json:"labels"`
+	pid          int
+	detailLoaded bool
 }
 type HUDPanes struct {
+	HC        bool          `json:"hc"`
 	Orch      bool          `json:"orch"`
 	At        time.Time     `json:"at"`
 	Runs      []HUDRun      `json:"runs"`
@@ -230,7 +234,7 @@ func hudParseTerminals(raw []byte) ([]HUDTerminal, error) {
 			continue
 		}
 		model, effort := hudArgvModel(t.Argv)
-		out = append(out, HUDTerminal{t.Address, program, model, effort})
+		out = append(out, HUDTerminal{Address: t.Address, Program: program, Model: model, Effort: effort})
 	}
 	return out, nil
 }
@@ -247,6 +251,8 @@ func hudOrchAvailable() bool {
 }
 
 func hudPanes(ctx context.Context) HUDPanes {
+	ctx, cancel := context.WithTimeout(ctx, 2500*time.Millisecond)
+	defer cancel()
 	out := HUDPanes{Orch: hudOrchAvailable(), At: time.Now(), Runs: []HUDRun{}, Terminals: []HUDTerminal{}}
 	runs, err := allRuns()
 	if err != nil {
@@ -273,8 +279,13 @@ func hudPanes(ctx context.Context) HUDPanes {
 		}
 		out.Runs = append(out.Runs, run)
 	}
+	hc := hudHCPath()
+	if hc == "" {
+		return out
+	}
+	out.HC = true
 	// ls supplies agent identity; get supplies launch argv.
-	raw, err := exec.CommandContext(ctx, "hc", "ls", "--json").Output()
+	raw, err := exec.CommandContext(ctx, hc, "ls", "--json").Output()
 	if err != nil {
 		out.Error = strings.TrimSpace(out.Error + "; cannot list terminals")
 		out.Error = strings.TrimPrefix(out.Error, "; ")
@@ -286,7 +297,7 @@ func hudPanes(ctx context.Context) HUDPanes {
 	} else {
 		out.Terminals = terminals
 		var wg sync.WaitGroup
-		sem := make(chan struct{}, 8)
+		sem := make(chan struct{}, 6)
 		for i := range terminals {
 			wg.Add(1)
 			go func(i int) {
@@ -299,20 +310,32 @@ func hudPanes(ctx context.Context) HUDPanes {
 				defer func() { <-sem }()
 				child, cancel := context.WithTimeout(ctx, 3*time.Second)
 				defer cancel()
-				raw, err := exec.CommandContext(child, "hc", "get", terminals[i].Address, "--json").Output()
+				raw, err := exec.CommandContext(child, hc, "get", terminals[i].Address, "--json").Output()
 				if err != nil {
 					return
 				}
 				var detail struct {
-					Argv []string `json:"argv"`
+					Argv   []string          `json:"argv"`
+					Labels map[string]string `json:"labels"`
+					PID    int               `json:"pid"`
 				}
 				if json.Unmarshal(raw, &detail) == nil {
 					out.Terminals[i].Model, out.Terminals[i].Effort = hudArgvModel(detail.Argv)
+					out.Terminals[i].Labels = detail.Labels
+					out.Terminals[i].pid = detail.PID
+					out.Terminals[i].detailLoaded = true
 				}
 			}(i)
 		}
 		wg.Wait()
 	}
+	filtered := out.Terminals[:0]
+	for _, t := range out.Terminals {
+		if filepath.Base(t.Program) != "hc" || t.Labels["hub.observer"] != "" {
+			filtered = append(filtered, t)
+		}
+	}
+	out.Terminals = filtered
 	hudResolveClaudeModels(ctx, &out)
 	return out
 }
@@ -325,7 +348,7 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 	for i := range out.Terminals {
 		t := &out.Terminals[i]
 		t.Model = hudModelDisplay(t.Model)
-		if (filepath.Base(t.Program) == "claude" || filepath.Base(t.Program) == "claude-code") && len(indices) < 12 {
+		if (filepath.Base(t.Program) == "claude" || filepath.Base(t.Program) == "claude-code") && t.Labels["hub.observer"] == "" && len(indices) < 12 {
 			indices = append(indices, i)
 		}
 	}
@@ -343,26 +366,36 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 		model, effort string
 	}
 	results := make(chan result, len(indices))
+	sem := make(chan struct{}, 6)
 	for _, i := range indices {
 		go func(i int, address string) {
 			model, effort := "", ""
 			defer func() { results <- result{i, model, effort} }()
-			raw, err := exec.CommandContext(ctx, "hc", "get", address, "--json").Output()
-			if err != nil {
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
 				return
 			}
-			var detail struct {
-				PID int    `json:"pid"`
-				Cwd string `json:"cwd"`
+			defer func() { <-sem }()
+			detailPID := out.Terminals[i].pid
+			if detailPID == 0 && !out.Terminals[i].detailLoaded {
+				raw, err := exec.CommandContext(ctx, hudHCPath(), "get", address, "--json").Output()
+				if err != nil {
+					return
+				}
+				var detail struct {
+					PID int `json:"pid"`
+				}
+				if json.Unmarshal(raw, &detail) != nil {
+					return
+				}
+				detailPID = detail.PID
 			}
-			if json.Unmarshal(raw, &detail) != nil || detail.PID == 0 {
-				return
-			}
-			pid, provider := hudFindAgent(detail.PID, procs, func(pid int) string { return nodeArgs[pid] })
+			pid, provider := hudFindAgent(detailPID, procs, func(pid int) string { return nodeArgs[pid] })
 			if provider != "claude" {
 				return
 			}
-			raw, err = exec.CommandContext(ctx, "ps", "eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+			raw, err := exec.CommandContext(ctx, "ps", "eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
 			if err != nil || ctx.Err() != nil {
 				return
 			}

@@ -5,7 +5,7 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, props } from "herdr";
 
-import { workerIndex, isHidden, headSuffix } from "./orch.js";
+import { workerIndex, isHidden, headSuffix, freshPanes, indexSignature } from "./orch.js";
 
 import { narrow, toggleSidebar, lead, title, RANK, kidStatus, sortOf, SECTION, SECTION_STATUS, duration, icon, sortMenu } from "./presentation.js";
 
@@ -14,7 +14,7 @@ export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
     this.orch = workerIndex(null);
-    cx.timer.every(3000, cx => this.loadOrch(cx));
+    cx.timer.every(5000, cx => this.loadOrch(cx));
     this.loadOrch(cx);
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
@@ -22,18 +22,30 @@ export default class Agents extends View {
     this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
-    cx.timer.every(30000, (cx) => cx.notify());
+    cx.timer.every(50000, (cx) => cx.notify());
+  }
+
+  applyOrch(data, cx) {
+    const index = workerIndex(data);
+    const signature = indexSignature(index);
+    if (signature === this.orchSignature) return;
+    this.orch = index;
+    this.orchSignature = signature;
+    cx.notify();
   }
 
   loadOrch(cx) {
+    const cached = freshPanes(shared('hud.panes.local'));
+    if (cached) { this.applyOrch(cached, cx); return; }
+    if (this.orchLoading) return;
+    this.orchLoading = true;
     cx.spawn(async cx => {
       try {
         const r = await exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "panes"], { on: undefined });
         if (r.code === 0) {
-          this.orch = workerIndex(JSON.parse(r.stdout));
-          cx.notify();
+          this.applyOrch(JSON.parse(r.stdout), cx);
         }
-      } catch {}
+      } catch {} finally { this.orchLoading = false; }
     });
   }
 

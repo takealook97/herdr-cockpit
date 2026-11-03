@@ -79,7 +79,7 @@ test('missing providers yield placeholders', () => {
 
 test('layout hides bars before account lines at compact widths', () => {
   const accounts = ['codex', 'claude', 'gemini'].map(provider => ({ provider }));
-  const fullWidth = 170 + 40 + accounts.length * (labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8 + 8) + cellWidth('coupon') + 8;
+  const fullWidth = 170 + 44 + accounts.length * (labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8 + 10) + cellWidth('coupon') + 8;
   assert.deepEqual(layoutMode(fullWidth, accounts), { bars: true, accountLine: true });
   assert.deepEqual(layoutMode(fullWidth - 1, accounts), { bars: false, accountLine: true });
   assert.deepEqual(layoutMode(fullWidth - 45, accounts), { bars: false, accountLine: false });
