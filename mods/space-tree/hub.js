@@ -1,5 +1,5 @@
-import { spaces, panes, terminals, shared, setShared, hc, run } from 'herdr';
-import { headsFrom, mergeHuds, hubSpace, planHub, observerArgs } from './hub-model.js';
+import { spaces, panes, terminals, shared, setShared, hc, run, exec } from 'herdr';
+import { headsFrom, mergeHuds, hubSpace, planHub, observerArgs, observerFor } from './hub-model.js';
 
 // The always-shown space tree owns one manager; creation is strictly user driven.
 export default class Hub {
@@ -8,6 +8,7 @@ export default class Hub {
     this.heads = [];
     this.pending = new Map();
     this.killing = new Map();
+    this.renamed = new Set();
     this.seedRemoved = new Set(shared('hub.seedRemoved') ?? []);
     setShared('hub.stale', true);
     cx.timer.every(250, cx => this.sync(cx));
@@ -48,6 +49,10 @@ export default class Hub {
     if (this.busy) return;
     const tab = [...(space.tabs ?? [])].sort((a, b) => a.index - b.index)[0];
     if (!tab) return;
+    if (!tab.name && !this.renamed.has(tab.id)) {
+      this.renamed.add(tab.id);
+      run('tab.rename', { id: tab.id, name: 'hub' });
+    }
     const hubPanes = panes().filter(p => p.tab === tab.id);
     // Core terminal metadata includes shells, which the agent-only HUD omits.
     const metadata = new Map(mergeHuds([...this.snapshots.values()]).terminals.map(t => [t.address, t]));
@@ -66,6 +71,7 @@ export default class Hub {
       this.killing.set(terminal, now + 10000);
       run('terminal.kill', { terminal });
     }
+    this.layout(space, tab, hubPanes, metadata, !plan.add.length && !remove.length && !this.killing.size, cx);
     const add = plan.add.filter(address => !this.pending.has(address));
     if (!add.length) return;
     this.busy = true;
@@ -80,6 +86,35 @@ export default class Hub {
           } catch { this.pending.delete(address); }
         }
       } finally { this.busy = false; cx.notify(); }
+    });
+  }
+
+  layout(space, tab, hubPanes, metadata, ready, cx) {
+    const order = this.heads.flatMap(head => hubPanes.filter(p =>
+      observerFor(metadata.get(p.terminal) ?? p) === head.address).map(p => p.terminal));
+    // Pane traversal order changes when the grid is written; only the set matters.
+    const signature = JSON.stringify([space.id, tab.id, this.heads.map(h => h.address),
+      hubPanes.map(p => p.terminal ?? p.pane).sort(), order]);
+    if (signature !== this.layoutSignature) {
+      this.layoutSignature = signature;
+      this.layoutApplied = null;
+      this.layoutPending = null;
+    }
+    if (!ready) { this.layoutPending = null; return; }
+    if (this.layoutPending || this.layoutApplied === signature) return;
+    const request = { signature };
+    this.layoutPending = request;
+    cx.timer.after(500, cx => {
+      if (this.layoutPending !== request) return;
+      this.layoutPending = null;
+      if (this.closed || this.busy || shared('hub.stale') || this.space()?.id !== space.id) return;
+      this.layoutApplied = signature;
+      cx.spawn(async () => {
+        try {
+          await exec('sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud',
+            'hub-layout', '--space', space.id, '--tab', tab.id, '--order', order.join(',')]);
+        } catch { /* Try again only when the observer set or head order changes. */ }
+      });
     });
   }
 

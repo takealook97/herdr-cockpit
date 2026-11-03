@@ -19,7 +19,7 @@ import (
 // Operational errors remain in JSON so mods can retain their last good values.
 func cmdHud(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: herdr-hud sys|usage|panes [--terminals t1,t2 | --selected] [--max-age 120s] [--refresh]")
+		fmt.Fprintln(stderr, "usage: herdr-hud sys|usage|panes [--terminals t1,t2 | --selected] [--max-age 120s] [--refresh]\n       herdr-hud hub-layout --space ID --tab ID --order t1,t2,...")
 		return 2
 	}
 	if len(args) == 0 {
@@ -29,6 +29,23 @@ func cmdHud(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	var out any
 	switch args[0] {
+	case "hub-layout":
+		fs := flag.NewFlagSet("herdr-hud hub-layout", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		space := fs.String("space", "", "local hub space id")
+		tab := fs.String("tab", "", "local hub tab id")
+		order := fs.String("order", "", "observer terminal addresses in head order")
+		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 || *space == "" || *tab == "" || strings.Contains(*space, "/") || strings.Contains(*tab, "/") {
+			return usage()
+		}
+		changed, err := hubLayout(ctx, *space, *tab, strings.Split(*order, ","), hubHCRPC)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		out = struct {
+			Changed bool `json:"changed"`
+		}{changed}
 	case "sys":
 		if len(args) != 1 {
 			return usage()

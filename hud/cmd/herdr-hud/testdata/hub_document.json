@@ -1,0 +1,22 @@
+{
+  "version": 17,
+  "value": {
+    "activeSpace": "work",
+    "spaces": [
+      {"id":"work", "tabs":[{"id":"other", "name":"Work", "root":{"type":"block","id":"work-pane","content":{"terminal":"head"}}}]},
+      {"id":"hub", "name":"hub", "activeTab":"mirrors", "tabs":[
+        {"id":"mirrors", "name":"Mirrors", "selected":"p2", "root":{
+          "type":"row", "id":"old-split", "children":[
+            {"type":"block","id":"p2","size":{"weight":9},"content":{"terminal":"o2"},"custom":{"preserve":true}},
+            {"type":"column","id":"nested","size":{"weight":2},"children":[
+              {"type":"block","id":"p1","content":{"terminal":"o1"}},
+              {"type":"block","id":"mod","content":{"mod":"notes","props":{"text":"keep"}}}
+            ]}
+          ]
+        }},
+        {"id":"hub-other", "root":{"type":"block","id":"shell","content":{"terminal":"shell"}}}
+      ]}
+    ],
+    "custom": {"keep":"all other document fields"}
+  }
+}

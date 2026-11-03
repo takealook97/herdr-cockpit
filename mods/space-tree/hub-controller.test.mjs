@@ -19,7 +19,10 @@ function setup({ existing = false } = {}) {
   const deps = {
     ...h.deps, ...model, spaces: () => h.spaces, panes: () => h.panes, terminals: () => h.terminals,
     machines: () => [], nextCommand: () => new Promise(resolve => { h.command = resolve; }),
-    exec: async () => ({ code: h.fail ? 1 : 0, stdout: JSON.stringify(h.hud) }),
+    exec: async (command, args) => {
+      if (args.includes('hub-layout')) h.calls.push({ layout: [command, args] });
+      return { code: h.fail ? 1 : 0, stdout: JSON.stringify(h.hud) };
+    },
     run: (command, args) => {
       h.calls.push({ run: [command, args] });
       if (command === 'space.select') for (const s of h.spaces) s.active = s.id === args.id;
@@ -160,4 +163,74 @@ test('seed removal survives a controller restart and preserves later hub shells'
   restarted.snapshots.set(null, { data: h.hud });
   h.shared.set('hub.stale', false); restarted.sync(h.cx); await h.flush();
   assert.deepEqual(runs(h), []);
+});
+
+const layouts = h => h.calls.filter(c => c.layout).map(c => c.layout);
+async function settledHub() {
+  const h = setup({ existing: true }); h.observer(); await h.flush();
+  h.panes = h.panes.filter(p => p.terminal !== 'seed');
+  h.view.sync(h.cx);
+  return h;
+}
+
+test('hub grid waits for reconciliation and debounces once, preserving head order and local ids', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  h.tick(500); await h.flush(); assert.equal(layouts(h).length, 0);
+  h.observer(); h.view.sync(h.cx); await h.flush();
+  h.tick(500); await h.flush(); assert.equal(layouts(h).length, 0); // seed is still being removed
+  h.panes = h.panes.filter(p => p.terminal !== 'seed');
+  h.view.sync(h.cx); h.view.sync(h.cx);
+  assert.equal(layouts(h).length, 0);
+  h.tick(500); await h.flush();
+  assert.deepEqual(layouts(h), [['sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud',
+    'hub-layout', '--space', 'h', '--tab', 'ht', '--order', 'o1']]]);
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 1);
+});
+
+test('head reorder replaces pending layout; grid traversal order and status changes do not rerun it', async () => {
+  const h = await settledHub();
+  h.panes.push({ tab: 'tb', terminal: 'remote/t2' });
+  h.terminals.push({ address: 'remote/t2', model: 'sol' });
+  h.hud.terminals.push({ address: 'remote/t2', model: 'sol' });
+  h.observer('o2', 'remote/t2');
+  h.tree.refreshOrch(h.cx); await h.flush();
+  // Reverse the source head order before the 500 ms callback fires.
+  h.panes = [h.panes.find(p => p.terminal === 'remote/t2'), ...h.panes.filter(p => p.terminal !== 'remote/t2')];
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 1);
+  assert.equal(layouts(h)[0][1].at(-1), 'o2,o1');
+  h.panes.reverse(); // Restore source order: this is a new layout change.
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 2);
+  assert.equal(layouts(h)[1][1].at(-1), 'o1,o2');
+  const heads = h.panes.filter(p => p.tab === 'tb');
+  h.panes = [...heads, ...h.panes.filter(p => p.tab === 'ht').reverse()];
+  heads[0].status = 'idle';
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 2);
+});
+
+test('observer set changes schedule another grid and closing or stale metadata cancels pending work', async () => {
+  const h = await settledHub();
+  h.shared.set('hub.stale', true); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 0);
+  h.shared.set('hub.stale', false); h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 1);
+  h.panes = h.panes.filter(p => p.terminal !== 'o1');
+  h.observer('replacement'); h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 2);
+  assert.equal(layouts(h)[1][1].at(-1), 'replacement');
+  h.panes.push({ tab: 'ht', terminal: 'user-shell' }); h.view.sync(h.cx);
+  h.view.close(); h.tick(500); await h.flush();
+  assert.equal(layouts(h).length, 2);
+});
+
+test('hub tab gets a default name once while named tabs retain their name', async () => {
+  const h = setup({ existing: true });
+  h.spaces[1].tabs[0].name = '';
+  await h.flush(); h.view.sync(h.cx); h.view.sync(h.cx);
+  assert.deepEqual(runs(h).filter(([command]) => command === 'tab.rename'), [['tab.rename', { id: 'ht', name: 'hub' }]]);
+  const named = await settledHub();
+  assert.deepEqual(runs(named).filter(([command]) => command === 'tab.rename'), []);
 });
