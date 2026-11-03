@@ -19,7 +19,7 @@ function icon(row, t) {
 }
 export function treeRow(view, row, t) {
   const stop = (_e, cx) => cx.stop_propagation();
-  const name = row.hub ? "hub" : nameElement(view, row, t);
+  const name = row.hub ? row.name : nameElement(view, row, t);
   const main = h_flex().w_full().min_w(0).items_center().gap(row.kind === "pane" ? 6 : 5)
     .child(div().w(row.kind === "space" && !row.data.parentId ? 3 : 9).h(17).self_start().mt(-4).flex_none()
       .when(Boolean(row.guide), el => el.border_l(1).border_b(1).rounded_bl(6).border_color(t.border)))
@@ -30,7 +30,6 @@ export function treeRow(view, row, t) {
     .when(row.kind !== "space" || !!row.data.parentId, el => el.child(icon(row, t)))
     .child(row.kind === "pane" ? div().flex_none().min_w(0).max_w_3_5().truncate().text_size(12).text_color(t.foreground).child(name) : row.kind === "space" ? div().flex_1().min_w(0).text_size(12.5).font_semibold().text_color(t.foreground).child(name) : name)
     .when(row.kind === "pane", el => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(row.sub)));
-  if (row.hub) main.child(div().text_size(11).text_color(t.dim).child(String(view.hub.heads.length)));
   const display = rowDisplay(row);
   if (display.count) main.child(div().text_size(11).text_color(t.dim).child(display.count));
   if (row.kind === "machine") {
@@ -50,7 +49,7 @@ export function treeRow(view, row, t) {
   const el = h_flex().id(row.key).relative().h(row.kind === "space" && !row.data.parentId ? 26 : 24)
     .flex_none().pl(2 + row.depth * 12).pr(6).items_center().rounded(5).text_size(12)
     .text_color(row.kind === "machine" ? t.muted : row.orch && view.orchStale ? t.dim : t.foreground)
-    .bg(row.active ? row.kind === "pane" ? t.raised : t.selected : row.key === view.highlight ? t.raised : t.chrome)
+    .bg(row.hub && !row.active ? t.background : row.active ? row.kind === "pane" ? t.raised : t.selected : row.key === view.highlight ? t.raised : t.chrome)
     .hover(s => s.bg(t.hover))
     .when(row.hub, e => e.tooltip("Head hub · Ctrl-Shift-H"))
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })
@@ -67,7 +66,7 @@ export function treeRow(view, row, t) {
     const next = hovered ? row.key : view.hoveredMachine === row.key ? null : view.hoveredMachine;
     if (next !== view.hoveredMachine) { view.hoveredMachine = next; cx.notify(); }
   });
-  if (row.kind === "tab") {
+  if (row.kind === "tab" && !row.hub) {
     el.when(view.tabDrag?.id === row.id && view.tabOver && view.tabOver !== row.key, e => e.opacity(0.5))
       .on_mouse_down("left", (_e, cx) => view.beginTabDrag(row, cx))
       .on_mouse_move((_e, cx) => view.hoverTabTarget(row, cx))

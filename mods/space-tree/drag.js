@@ -8,6 +8,7 @@ export function clearDrag(view, cx) {
 const orchPending = view => view.orchStale || !view.orchLoaded;
 const orchWarning = "orch status not loaded yet; try again in a moment";
 function validate(view, source, row, api) {
+  if (row?.hub || source?.hub) return { ok: false, reason: "Hub is a locked section." };
   if (orchPending(view)) return { ok: false, reason: orchWarning };
   const spaces = api.spaces(), from = spaces.find(s => s.id === source.space);
   if (row?.kind === "tab" && row.space === source.space && row.id !== source.id &&

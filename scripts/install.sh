@@ -43,6 +43,8 @@ def object_json(path):
 existing = os.path.exists(destination)
 data = object_json(destination) if existing else {}
 changes = []
+builtins = {"cmd-alt-" + direction: "pane.go:" + direction for direction in ("left", "right", "up", "down")}
+builtins["cmd-shift-enter"] = "pane.zoom"
 for path in sorted(glob.glob(os.path.join(snippets, "*.json"))):
     for section, bindings in object_json(path).items():
         if not isinstance(bindings, dict) or not isinstance(data.get(section, {}), dict):
@@ -50,6 +52,10 @@ for path in sorted(glob.glob(os.path.join(snippets, "*.json"))):
         target = data.setdefault(section, {})
         for key, action in bindings.items():
             if section == "global" and key == "ctrl-shift-h" and target.get(key) in ("cerberus.toggle", "hub.toggle"):
+                previous = target[key]
+                target[key] = action
+                changes.append(section + ":" + key + " (migrate " + previous + ")")
+            elif section == "global" and key in builtins and target.get(key) == builtins[key]:
                 previous = target[key]
                 target[key] = action
                 changes.append(section + ":" + key + " (migrate " + previous + ")")

@@ -1,1 +1,10 @@
-{"global":{"ctrl-shift-h":"space-tree.hub"}}
+{
+  "global": {
+    "ctrl-shift-h": "space-tree.hub",
+    "cmd-alt-left": "space-tree.go-left",
+    "cmd-alt-right": "space-tree.go-right",
+    "cmd-alt-up": "space-tree.go-up",
+    "cmd-alt-down": "space-tree.go-down",
+    "cmd-shift-enter": "space-tree.zoom"
+  }
+}

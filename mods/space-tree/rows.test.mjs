@@ -74,3 +74,21 @@ test("repository section rails span every descendant without letter avatars", ()
   const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
   assert.match(main, /this\.visible\[i - 1\]\?\.sectionColorKey != null, el => el\.mt\(4\)/);
 });
+
+test('hub section and head rows select without registering drop/reorder handlers', () => {
+  for (const kind of ['space', 'pane']) {
+    const selected = [];
+    const row = { kind, hub: true, key: `hub-${kind}`, name: 'Hub', data: {}, depth: 1 };
+    const el = treeRow({ select: row => selected.push(row) }, row, {});
+    assert.equal(el.handlers.mouseUp, undefined);
+    el.handlers.click({}, {}); assert.deepEqual(selected, [row]);
+  }
+});
+
+test('hub cannot be a drop target even when drag helpers are called directly', () => {
+  const calls = [], view = { orchLoaded: true, tabDrag: { id: 'tb', space: 's' } };
+  const row = { kind: 'space', hub: true, id: 'hub-entry' };
+  dropTab(view, row, { notify() {} }, { spaces: () => [], panes: () => [],
+    run: (...args) => calls.push(args), warn: reason => calls.push(reason) });
+  assert.deepEqual(calls, ['Hub is a locked section.']);
+});

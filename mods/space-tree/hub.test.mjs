@@ -1,72 +1,82 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { observerFor, planHub, headsFrom, hubSpace, mergeHuds, observerArgs } from './hub-model.js';
-import { buildTree, paneName, paneSub, orchIndexes } from './model.js';
+import { observerFor, headsFrom, mergeHuds, gridFor, gridShape, neighbor, zoomToggle, findNode } from './hub-model.js';
+import { buildTree } from './model.js';
 
-test('labels and observe argv detect observers without matching ordinary attach', () => {
-  assert.equal(observerFor({ labels: { 'hub.observer': 'remote/host/t1' } }), 'remote/host/t1');
-  assert.equal(observerFor({ argv: ['hc', 'attach', '--observe', '--history', '2000', 'remote/host/t1'] }), 'remote/host/t1');
-  assert.equal(observerFor({ argv: ['hc', 'attach', 't1'] }), null);
-  assert.equal(observerFor({ argv: 'hc attach --observe t1' }), null);
+const heads = n => Array.from({ length: n }, (_, i) => ({ address: `t${i + 1}`, tabName: `Tab ${i}`, spaceName: 'Work', space: 's', tab: `tb${i}` }));
+const terminals = node => node.content?.terminal ? [node.content.terminal] : (node.children ?? []).flatMap(terminals);
+test('grid rule covers n=1..9 exactly once, with native cards and interactive terminal blocks', () => {
+  for (let n = 1; n <= 9; n++) {
+    const grid = gridFor(heads(n));
+    const shape = gridShape(n);
+    assert.equal(shape.rows, n <= 2 ? 1 : 2);
+    assert.equal(shape.cols, Math.ceil(n / shape.rows));
+    assert.equal(grid.children.length, shape.rows);
+    assert.deepEqual(terminals(grid), heads(n).map(h => h.address));
+    assert.equal(grid.gap, 8); assert.equal(grid.padding, 8);
+    const cell = grid.children[0].children[0];
+    assert.deepEqual(cell.focus, { border: { width: 1, color: 'accent' } });
+    assert.equal(cell.radius, 10); assert.equal(cell.children[0].size.px, 30);
+    assert.equal(cell.children[0].content.mod, 'hub-head');
+  }
 });
-test('plan adds missing heads, removes gone and duplicate observers, and kills a seed only after a surviving observer exists', () => {
-  const observers = [{ address: 'o1', labels: { 'hub.observer': 't1' } },
-    { address: 'o2', labels: { 'hub.observer': 'gone' } }, { address: 'o3', labels: { 'hub.observer': 't1' } },
-    { address: 'outside', labels: { 'hub.observer': 'gone' } }];
-  const hubPanes = ['seed', 'o1', 'o2', 'o3'].map(terminal => ({ terminal }));
-  assert.deepEqual(planHub({ heads: ['t1', 'remote/t2'], hubPanes, observers }),
-    { add: ['remote/t2'], remove: ['o2', 'o3'], killSeed: 'seed' });
-  assert.deepEqual(planHub({ heads: ['t1'], hubPanes: [{ terminal: 'seed' }], observers }), { add: ['t1'], remove: [] });
-  assert.deepEqual(planHub({ heads: [], hubPanes, observers }), { add: [], remove: ['o1', 'o2', 'o3'] });
+test('neighbor navigation respects rows, columns, boundaries and odd final rows', () => {
+  for (const [n, cols] of [[4, 2], [5, 3], [6, 3]]) {
+    const hs = heads(n);
+    for (let i = 0; i < n; i++) {
+      const address = hs[i].address;
+      const expected = {
+        left: i % cols > 0 ? i - 1 : i,
+        right: i % cols < cols - 1 && i + 1 < n ? i + 1 : i,
+        up: i >= cols ? i - cols : i,
+        down: i + cols < n ? i + cols : i,
+      };
+      for (const [direction, at] of Object.entries(expected)) assert.equal(neighbor(hs, address, direction), hs[at].address, `${n} ${address} ${direction}`);
+    }
+  }
+  assert.equal(neighbor([], null, 'left'), undefined);
+  assert.equal(neighbor(heads(2), null, 'right'), 't1');
 });
-test('heads exclude workers, observers and hub space and retain models and complete remote addresses', () => {
-  const spaces = [{ id: 's', tabs: [{ id: 'tab', name: 'Head' }] }, { id: 'h', tabs: [{ id: 'hubtab' }] },
-    { id: 'remote/host/s', machine: 'remote/host', tabs: [{ id: 'remote/host/tab', name: 'Remote' }] }];
-  const panes = ['head', 'worker', 'observer', 'argv'].map(terminal => ({ terminal, tab: 'tab' }));
-  panes.push({ terminal: 'inside', tab: 'hubtab' }, { terminal: 'remote/host/t1', tab: 'remote/host/tab' });
-  const data = { runs: [{ workers: [{ terminal: 'worker' }] }], terminals: [
-    { address: 'head', model: 'sol' }, { address: 'worker' }, { address: 'inside' },
-    { address: 'observer', labels: { 'hub.observer': 'head' } },
+test('zoom toggles a focused cell to full hub and back; empty hub uses a placeholder', () => {
+  let zoom = zoomToggle(null, 't2');
+  assert.deepEqual(terminals(gridFor(heads(5), zoom)), ['t2']);
+  zoom = zoomToggle(zoom, 't2'); assert.equal(zoom, null);
+  assert.equal(terminals(gridFor(heads(5), zoom)).length, 5);
+  assert.equal(gridFor([]).children[0].content.props.empty, true);
+});
+test('heads exclude orch workers and legacy observers, preserving remote addresses', () => {
+  const hud = { runs: [{ workers: [{ terminal: 'worker' }] }], terminals: [
+    { address: 'head' }, { address: 'worker' }, { address: 'observer', labels: { 'hub.observer': 'head' } },
     { address: 'argv', argv: ['hc', 'attach', '--observe', 'head'] }, { address: 'remote/host/t1' }] };
-  const heads = headsFrom(data, panes, spaces, 'h');
-  assert.deepEqual(heads.map(h => h.address), ['head', 'remote/host/t1']);
-  assert.equal(heads[0].model, 'sol');
+  const spaces = [{ id: 's', tabs: [{ id: 'tab' }] }, { id: 'remote/host/s', machine: 'remote/host', tabs: [{ id: 'remote/host/tab' }] }];
+  const ps = ['head', 'worker', 'observer', 'argv'].map(terminal => ({ terminal, tab: 'tab' }));
+  ps.push({ terminal: 'remote/host/t1', tab: 'remote/host/tab' });
+  assert.deepEqual(headsFrom(hud, ps, spaces).map(h => h.address), ['head', 'remote/host/t1']);
+  assert.equal(observerFor({ argv: ['hc', 'attach', 't1'] }), null);
 });
-test('hub resolves a remembered local space, falls back to exact local name, never a remote hub', () => {
-  const spaces = [{ id: 'remote/h', name: 'hub', machine: 'remote' }, { id: 'h', name: 'hub' }, { id: 'renamed', name: 'renamed' }];
-  assert.equal(hubSpace(spaces, 'renamed').id, 'renamed');
-  assert.equal(hubSpace(spaces, 'deleted').id, 'h');
-  assert.equal(hubSpace(spaces.slice(0, 1)), undefined);
-});
-test('hub row is first under This computer and real hub is not duplicated; observer tree names and models follow source', () => {
-  const head = { address: 'remote/t1', tabName: 'Review', spaceName: 'Project', model: 'sol', effort: 'high' };
-  const orch = { terminals: [{ address: 'o1', labels: { 'hub.observer': head.address }, model: 'incorrect' }] };
-  const rows = buildTree({ spaces: [{ id: 's', name: 'Work' }, { id: 'h', name: 'hub', tabs: [{ id: 'ht' }] }],
-    panes: [{ pane: 'p', terminal: 'o1', tab: 'ht' }], orch, hub: { id: 'h', heads: [head] } });
+test('hub section is locked, directly lists heads, and retains ordinary spaces named hub', () => {
+  const hs = heads(2), rows = buildTree({ spaces: [{ id: 's', name: 'Work' }, { id: 'user-hub', name: 'hub' }], hub: { heads: hs, active: true, terminal: 't2' } });
   assert.equal(rows[0].name, 'This computer');
-  assert.equal(rows[1].key, 'hub-entry');
-  assert.equal(rows.filter(r => r.id === 'h').length, 1);
-  const observer = rows.find(r => r.kind === 'pane');
-  assert.equal(observer.name, 'Review · Project'); assert.equal(observer.sub, 'sol-high');
-  assert.equal(buildTree({ hub: {} })[1].key, 'hub-entry');
+  assert.equal(rows[1].name, 'hub · 2'); assert.equal(rows[1].key, 'hub-entry');
+  assert.equal(rows[1].active, true); assert.equal(rows[1].foldable, false);
+  assert.deepEqual(rows.slice(2, 4).map(r => [r.kind, r.terminal, r.hub]), [['pane', 't1', true], ['pane', 't2', true]]);
+  assert.equal(rows[3].active, true);
+  assert.equal(new Set(rows.map(r => r.key)).size, rows.length);
+  assert.ok(rows.find(r => r.id === 'user-hub' && !r.hub));
+  assert.equal(buildTree({ hub: {}, folded: { 'hub-entry': true } })[1].foldable, false);
 });
-test('remote snapshots qualify worker, space and tab ids and retain observer labels', () => {
-  const data = mergeHuds([{ machine: 'remote/host', data: { orch: true, terminals: [{ address: 't1', labels: { 'hub.observer': 't9' } }],
-    runs: [{ head_terminal: 't2', workspace: 's', tab: 'tb', workers: [{ terminal: 't3' }] }] } }]);
-  assert.equal(data.terminals[0].address, 'remote/host/t1');
-  assert.equal(data.terminals[0].labels['hub.observer'], 't9');
-  assert.equal(data.runs[0].workers[0].terminal, 'remote/host/t3');
-  assert.equal(data.runs[0].tab, 'remote/host/tb'); assert.equal(data.orch, true);
+test('remote helper snapshots qualify worker and terminal addresses once', () => {
+  const result = mergeHuds([{ machine: 'remote/host', data: { terminals: [{ address: 't1' }], runs: [{ workers: [{ terminal: 't2' }] }] } }]);
+  assert.equal(result.terminals[0].address, 'remote/host/t1');
+  assert.equal(result.runs[0].workers[0].terminal, 'remote/host/t2');
 });
-test('observer command uses native panes with literal labels and read-only attach', () => {
-  assert.deepEqual(observerArgs('s', 'tb', 'remote/host/t1'), ['run', '--keep', '--bg', '--json', '--no-parent',
-    '--label', 'herdr.space=s', '--label', 'herdr.tab=tb', '--label', 'hub.observer=remote/host/t1',
-    '--', 'hc', 'attach', '--observe', '--history', '2000', 'remote/host/t1']);
-});
-test('cockpit is a plain work column with native tab panes and the hub shortcut', () => {
+test('cockpit stacks hub and normal work; tab bar belongs only to normal work', () => {
   const layout = JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url)));
-  assert.deepEqual(layout.children[1].children.map(n => n.id), ['usage', 'tabs', 'work-body', 'status']);
-  assert.doesNotMatch(JSON.stringify(layout), /hub-grid|hub-view|work-stack|hub-bar|hub-cell/);
-  assert.equal(JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global['ctrl-shift-h'], 'space-tree.hub');
+  const stack = findNode(layout, 'work-stack');
+  assert.equal(stack.active, 'work-normal');
+  assert.deepEqual(stack.children.map(n => n.id), ['work-normal', 'hub-view']);
+  assert.ok(findNode(stack.children[0], 'tabs'));
+  assert.equal(findNode(stack.children[1], 'tabs'), undefined);
+  assert.ok(findNode(stack.children[1], 'hub-grid'));
 });

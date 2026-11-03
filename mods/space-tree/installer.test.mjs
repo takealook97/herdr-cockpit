@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
+const hubKeys = JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global;
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function sandbox(fn) {
   const folder = mkdtempSync(join(root, '.test-install-'));
@@ -27,7 +28,7 @@ test('installer backs up keys and adds only missing bindings, idempotently', () 
   writeFileSync(keys, original, { mode: 0o640 });
   let result = run(); assert.equal(result.status, 0, result.stderr);
   const data = JSON.parse(readFileSync(keys, 'utf8'));
-  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', 'ctrl-shift-h': 'space-tree.hub' }, terminal: { 'ctrl-a': 'home' } });
+  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', ...hubKeys }, terminal: { 'ctrl-a': 'home' } });
   const backups = readdirSync(join(folder, 'app')).filter(n => n.startsWith('keys.json.bak-'));
   assert.equal(backups.length, 1);
   assert.equal(readFileSync(join(folder, 'app', backups[0]), 'utf8'), original);
@@ -42,7 +43,7 @@ test('installer preserves an existing shortcut and dry-run makes no writes', () 
   assert.equal(readFileSync(keys, 'utf8'), original);
   assert.deepEqual(readdirSync(join(folder, 'app')), ['keys.json']);
   result = run(); assert.equal(result.status, 0, result.stderr);
-  assert.equal(readFileSync(keys, 'utf8'), original);
+  assert.equal(JSON.parse(readFileSync(keys)).global['ctrl-shift-h'], 'app.help');
 }));
 test('empty-home dry-run previews the key and malformed configs fail before installs', () => sandbox(({ folder, keys, run }) => {
   let result = run(['--dry-run']); assert.equal(result.status, 0, result.stderr);
@@ -120,3 +121,21 @@ for (const change of ['modified', 'extra', 'symlink']) test(`installer preserves
   assert.ok(statSync(dir).isDirectory());
   assert.match(result.stdout, /Preserve legacy mod/);
 }));
+
+for (const [key, builtin] of Object.entries({ 'cmd-alt-left': 'pane.go:left', 'cmd-alt-right': 'pane.go:right', 'cmd-alt-up': 'pane.go:up', 'cmd-alt-down': 'pane.go:down', 'cmd-shift-enter': 'pane.zoom' })) {
+  test(`installer migrates only built-in ${key}, preserves custom and bracket shortcuts`, () => sandbox(({ folder, keys, run }) => {
+    const original = JSON.stringify({ global: { [key]: builtin, 'cmd-[': 'agent.prev', 'cmd-]': 'agent.next' } });
+    writeFileSync(keys, original);
+    let result = run(['--dry-run']); assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(keys, 'utf8'), original);
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    const global = JSON.parse(readFileSync(keys)).global;
+    assert.equal(global[key], hubKeys[key]);
+    assert.equal(global['cmd-['], 'agent.prev'); assert.equal(global['cmd-]'], 'agent.next');
+    const backup = readdirSync(join(folder, 'app')).find(n => n.startsWith('keys.json.bak-'));
+    assert.equal(readFileSync(join(folder, 'app', backup), 'utf8'), original);
+    global[key] = 'custom.action'; writeFileSync(keys, JSON.stringify({ global }));
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(readFileSync(keys)).global[key], 'custom.action');
+  }));
+}

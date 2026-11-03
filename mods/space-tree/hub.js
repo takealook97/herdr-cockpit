@@ -1,138 +1,111 @@
-import { spaces, panes, terminals, shared, setShared, hc, run, exec } from 'herdr';
-import { headsFrom, mergeHuds, hubSpace, planHub, observerArgs, observerFor } from './hub-model.js';
+import { spaces, panes, terminals, focused, shared, setShared, layout, run, exec, notify } from 'herdr';
+import { headsFrom, mergeHuds, gridFor, findNode, replaceNode, withStackActive, neighbor, zoomToggle } from './hub-model.js';
 
-// The always-shown space tree owns one manager; creation is strictly user driven.
+const plainLayout = () => JSON.parse(JSON.stringify(layout() ?? null));
+// Host arguments have a 16-level limit; send the layout as a CLI JSON string.
+const SET_LAYOUT = 'b="$HOME/.local/bin/herdr-app"; if [ -x "$b" ]; then exec "$b" do layout.set "$1"; fi; ' +
+  'for a in /Applications/Herdr.app "$HOME/Applications/Herdr.app"; do ' +
+  '[ -x "$a/Contents/MacOS/Herdr" ] && exec -a herdr-app "$a/Contents/MacOS/Herdr" do layout.set "$1"; done; exit 127';
+function setLayout(tree) {
+  return exec('/bin/bash', ['-c', SET_LAYOUT, 'hub', JSON.stringify({ layout: tree })]).then(result => {
+    if (result.code !== 0) throw new Error(result.stderr?.trim() || `layout.set exited ${result.code}`);
+  });
+}
+const reportError = error => notify({ title: 'hub', body: String(error?.message ?? error), level: 'error', timeout: 6000 });
+
 export default class Hub {
   init(_p, cx) {
-    this.snapshots = new Map();
-    this.heads = [];
-    this.pending = new Map();
-    this.killing = new Map();
-    this.renamed = new Set();
-    this.seedRemoved = new Set(shared('hub.seedRemoved') ?? []);
-    setShared('hub.stale', true);
+    this.snapshots = new Map(); this.heads = []; this.signature = '';
+    this.zoomed = null; this.request = 0;
     cx.timer.every(250, cx => this.sync(cx));
   }
-  space() { return hubSpace(spaces(), shared('hub.space')); }
-  active() { return !!this.space()?.active; }
-
+  focusedTerminal() { return focused()?.terminal; }
+  source(cx) {
+    this.sourceAfter = shared("hub.source");
+    if (!this.sourceAfter) return;
+    setShared("hub.source", null);
+    this.hide(cx);
+  }
+  active() { return !!shared('hub.open'); }
   sync(cx) {
     if (this.closed) return;
-    const space = this.space();
-    const current = spaces().find(s => s.active);
-    if (current && current.id !== space?.id) this.previous = current.id;
-    if (space) {
-      if (shared('hub.space') !== space.id) setShared('hub.space', space.id);
-      if (this.creating) {
-        this.creating = false;
-        run('space.move', { id: space.id, index: 1 });
-      }
-    }
     const hud = mergeHuds([...this.snapshots.values()]);
     const core = new Map(terminals().map(t => [t.address, t]));
     hud.terminals = hud.terminals.map(t => ({ ...core.get(t.address), ...t }));
-    this.heads = headsFrom(hud, panes(), spaces(), space?.id);
+    this.heads = headsFrom(hud, panes(), spaces());
     const serialized = JSON.stringify(this.heads);
-    if (serialized !== this.headsSerialized) {
-      this.headsSerialized = serialized;
-      setShared('hub.heads', this.heads);
+    if (serialized !== this.headsSerialized) { this.headsSerialized = serialized; setShared('hub.heads', this.heads); }
+    if (this.zoomed && !this.heads.some(h => h.address === this.zoomed)) this.zoomed = null;
+    if (!this.active()) return;
+    const signature = JSON.stringify([this.heads.map(h => [h.address, h.tabName, h.spaceName, h.space, h.tab]), this.zoomed]);
+    if (signature === this.signature) {
+      this.rebuildTimer?.cancel(); this.pendingSignature = null; return;
     }
-    if (space && this.wantOpen) {
-      this.wantOpen = false;
-      run('space.select', { id: space.id });
-    }
-    if (space && !shared('hub.stale')) this.reconcile(space, cx);
-    cx.notify();
+    if (signature === this.pendingSignature) return;
+    this.rebuildTimer?.cancel(); this.pendingSignature = signature;
+    this.rebuildTimer = cx.timer.after(500, cx => { this.pendingSignature = null; this.apply(cx); });
   }
-
-  reconcile(space, cx) {
-    if (this.busy) return;
-    const tab = [...(space.tabs ?? [])].sort((a, b) => a.index - b.index)[0];
-    if (!tab) return;
-    if (!tab.name && !this.renamed.has(tab.id)) {
-      this.renamed.add(tab.id);
-      run('tab.rename', { id: tab.id, name: 'hub' });
-    }
-    const hubPanes = panes().filter(p => p.tab === tab.id);
-    // Core terminal metadata includes shells, which the agent-only HUD omits.
-    const metadata = new Map(mergeHuds([...this.snapshots.values()]).terminals.map(t => [t.address, t]));
-    for (const info of terminals()) metadata.set(info.address, info);
-    const plan = planHub({ heads: this.heads, hubPanes, observers: [...metadata.values()] });
-    const now = Date.now();
-    for (const [address, expires] of this.pending) if (!plan.add.includes(address) || expires < now) this.pending.delete(address);
-    for (const [terminal, expires] of this.killing) if (!hubPanes.some(p => p.terminal === terminal) || expires < now) this.killing.delete(terminal);
-    const remove = [...plan.remove];
-    if (plan.killSeed && !this.seedRemoved.has(space.id)) {
-      remove.push(plan.killSeed);
-      this.seedRemoved.add(space.id);
-      setShared('hub.seedRemoved', [...this.seedRemoved]);
-    }
-    for (const terminal of remove) if (!this.killing.has(terminal)) {
-      this.killing.set(terminal, now + 10000);
-      run('terminal.kill', { terminal });
-    }
-    this.layout(space, tab, hubPanes, metadata, !plan.add.length && !remove.length && !this.killing.size, cx);
-    const add = plan.add.filter(address => !this.pending.has(address));
-    if (!add.length) return;
-    this.busy = true;
-    for (const address of add) this.pending.set(address, now + 10000);
+  apply(cx, focusAddress) {
+    this.rebuildTimer?.cancel(); this.pendingSignature = null;
+    // Serialize writes and reread shared state after each await so rapid toggle/zoom
+    // cannot let an earlier CLI response reopen a now-hidden hub.
+    this.request++;
+    if (focusAddress) this.focusAfter = focusAddress;
+    if (this.writing) return;
+    this.writing = true;
     cx.spawn(async cx => {
       try {
-        for (const address of add) {
-          if (this.closed || this.space()?.id !== space.id) break;
-          try {
-            const result = await hc(observerArgs(space.id, tab.id, address));
-            if (result.code !== 0) this.pending.delete(address);
-          } catch { this.pending.delete(address); }
-        }
-      } finally { this.busy = false; cx.notify(); }
+        let applied;
+        do {
+          applied = this.request;
+          if (this.closed) break;
+          const open = this.active(), tree = plainLayout();
+          if (!findNode(tree, 'work-stack') || !findNode(tree, 'hub-grid')) throw new Error('Hub requires the cockpit work-stack layout.');
+          const signature = JSON.stringify([this.heads.map(h => [h.address, h.tabName, h.spaceName, h.space, h.tab]), this.zoomed]);
+          const next = withStackActive(replaceNode(tree, 'hub-grid', gridFor(this.heads, this.zoomed)), 'work-stack', open ? 'hub-view' : 'work-normal');
+          await setLayout(next);
+          if (this.closed) break;
+          if (applied !== this.request) continue;
+          this.signature = signature;
+          run('layout.select', { stack: 'work-stack', child: open ? 'hub-view' : 'work-normal' });
+          run(open ? 'layout.hide' : 'layout.show', { id: 'tabs' });
+          if (open && this.focusAfter) run('pane.focus', { terminal: this.focusAfter });
+          this.focusAfter = null;
+          if (!open && this.sourceAfter) {
+            const source = this.sourceAfter; this.sourceAfter = null;
+            run('space.select', { id: source.space });
+            run('tab.select', { id: source.tab });
+            run('pane.focus', { terminal: source.address });
+          }
+        } while (applied !== this.request);
+      } catch (error) { this.signature = ''; reportError(error); }
+      finally { this.writing = false; cx.notify(); }
     });
   }
-
-  layout(space, tab, hubPanes, metadata, ready, cx) {
-    const order = this.heads.flatMap(head => hubPanes.filter(p =>
-      observerFor(metadata.get(p.terminal) ?? p) === head.address).map(p => p.terminal));
-    // Pane traversal order changes when the grid is written; only the set matters.
-    const signature = JSON.stringify([space.id, tab.id, this.heads.map(h => h.address),
-      hubPanes.map(p => p.terminal ?? p.pane).sort(), order]);
-    if (signature !== this.layoutSignature) {
-      this.layoutSignature = signature;
-      this.layoutApplied = null;
-      this.layoutPending = null;
-    }
-    if (!ready) { this.layoutPending = null; return; }
-    if (this.layoutPending || this.layoutApplied === signature) return;
-    const request = { signature };
-    this.layoutPending = request;
-    cx.timer.after(500, cx => {
-      if (this.layoutPending !== request) return;
-      this.layoutPending = null;
-      if (this.closed || this.busy || shared('hub.stale') || this.space()?.id !== space.id) return;
-      this.layoutApplied = signature;
-      cx.spawn(async () => {
-        try {
-          await exec('sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud',
-            'hub-layout', '--space', space.id, '--tab', tab.id, '--order', order.join(',')]);
-        } catch { /* Try again only when the observer set or head order changes. */ }
-      });
-    });
+  open(cx, address) {
+    if (this.closed) return;
+    if (address && this.zoomed && address !== this.zoomed) this.zoomed = null;
+    setShared('hub.open', true); this.sync(cx);
+    this.apply(cx, address ?? this.heads.find(h => h.address === focused()?.terminal)?.address ?? this.heads[0]?.address);
   }
-
-  open(cx) {
-    this.wantOpen = true;
-    this.sync(cx);
-    if (!this.space() && !this.creating) {
-      this.creating = true;
-      // run is fire-and-forget; the live spaces snapshot supplies the new ids.
-      run('space.new', { name: 'hub' });
-    }
+  hide(cx) {
+    if (!this.active()) return;
+    setShared('hub.open', false); this.zoomed = null;
+    this.rebuildTimer?.cancel(); this.pendingSignature = null;
+    this.apply(cx);
   }
-  hide() {
-    this.wantOpen = false;
-    const target = spaces().find(s => s.id === this.previous && s.id !== this.space()?.id)
-      ?? spaces().find(s => s.id !== this.space()?.id);
-    if (this.active() && target) run('space.select', { id: target.id });
+  toggle(cx) { if (this.active()) this.hide(cx); else this.open(cx); }
+  go(direction) {
+    if (!this.active()) { run('pane.go', { direction }); return; }
+    const shown = this.zoomed ? this.heads.filter(h => h.address === this.zoomed) : this.heads;
+    const address = neighbor(shown, focused()?.terminal, direction);
+    if (address) run('pane.focus', { terminal: address });
   }
-  toggle(cx) { if (this.active()) this.hide(); else this.open(cx); }
-  close() { this.closed = true; }
+  zoom(cx) {
+    if (!this.active()) { run('pane.zoom'); return; }
+    const address = focused()?.terminal;
+    if (!this.heads.some(h => h.address === address)) return;
+    this.zoomed = zoomToggle(this.zoomed, address); this.apply(cx, address);
+  }
+  close() { this.closed = true; this.rebuildTimer?.cancel(); }
 }

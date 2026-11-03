@@ -30,9 +30,15 @@ export default class SpaceTree extends Plumbing {
     cx.spawn(async cx => {
       for (;;) {
         const command = await nextCommand();
-        if (command === "focus") this.handle.focus();
-        else if (command === "hub") this.hub.toggle(cx);
-        else if (command === "hub-close") this.hub.hide();
+        if (command == null || this.closed) break;
+        try {
+          if (command === "focus") this.handle.focus();
+          else if (command === "hub") this.hub.toggle(cx);
+          else if (command === "hub-close") this.hub.hide(cx);
+          else if (["go-left", "go-right", "go-up", "go-down"].includes(command)) this.hub.go(command.slice(3));
+          else if (command === "zoom") this.hub.zoom(cx);
+          else if (command === "source") this.hub.source(cx);
+        } catch (error) { notify({ title: "hub", body: String(error), level: "error" }); }
         cx.notify();
       }
     });
@@ -83,7 +89,7 @@ export default class SpaceTree extends Plumbing {
     const core = new Map(terminals().map(t => [t.address, t]));
     const orch = { ...this.orch, terminals: (this.orch.terminals ?? []).map(t => ({ ...core.get(t.address), ...t })) };
     return { machines: ms, spaces: sp, panes: ps, orch, aliases,
-      hub: { id: this.hub.space()?.id, heads: this.hub.heads, active: this.hubActive() },
+      hub: { heads: this.hub.heads, active: this.hubActive(), terminal: this.hub.focusedTerminal() },
       activeSpaceId: spaces().find(s => s.active)?.id };
   }
 
@@ -138,18 +144,20 @@ export default class SpaceTree extends Plumbing {
     if (JSON.stringify(keptMachines) !== JSON.stringify(storedMachines)) setShared("space-tree.alias.machine.keys", keptMachines);
   }
 
-  close() { this.hub?.close(); this.input?.release(); }
+  close() { this.closed = true; this.hub?.close(); this.input?.release(); }
 
   hubActive() { return this.hub?.active() ?? false; }
   select(row, cx) {
     if (this.editing || this.movingTab) return;
-    if (row.hub) { this.hub.open(cx); return; }
+    if (row.hub) { this.hub.open(cx, row.terminal); return; }
+    if (["space", "tab", "pane"].includes(row.kind)) this.hub.hide(cx);
     this.highlight = row.key; this.handle.focus();
     if (row.kind === "space" || row.kind === "tab") run(`${row.kind}.select`, { id: row.id });
     if (row.kind === "pane") run("pane.focus", { pane: row.id });
     cx.notify();
   }
   contextMenu(row) {
+    if (row.hub) return;
     if (row.kind === "space") return this.menu({ id: row.id });
     if (row.kind === "tab") return openOverlay({ mod: "menu", kind: "popup", width: 200,
       props: { tab: "tab", target: { id: row.id, space: row.space } } });
@@ -190,7 +198,7 @@ export default class SpaceTree extends Plumbing {
       this.highlight = rows[Math.max(0, Math.min(rows.length - 1, at + (e.key === "up" ? -1 : 1)))].key;
     } else if (e.key === "left" || e.key === "right") this.toggle(row, cx, e.key === "right");
     else if (e.key === "enter") this.select(row, cx);
-    else if (e.key === "f2" && renameId(row) != null) startRename(this, row.kind, renameId(row), row.data?.named ? row.data.name : row.name, cx, row.data?.named);
+    else if (e.key === "f2" && !row.hub && renameId(row) != null) startRename(this, row.kind, renameId(row), row.data?.named ? row.data.name : row.name, cx, row.data?.named);
     else return;
     cx.stop_propagation(); cx.notify();
   }

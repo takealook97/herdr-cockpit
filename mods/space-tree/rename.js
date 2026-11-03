@@ -37,6 +37,7 @@ export function finishRename(view, cx, cancel = false) {
   cx.notify();
 }
 export function renameId(row) {
+  if (row.hub) return null;
   return row.kind === "pane" ? row.terminal : row.kind === "machine" ? row.id ?? "local" : row.id;
 }
 export function nameElement(view, row, t) {

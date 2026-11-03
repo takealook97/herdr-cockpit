@@ -8,18 +8,12 @@ export function observerFor(info = {}) {
   return null;
 }
 
-export function hubSpace(spaces = [], remembered) {
-  const local = spaces.filter(s => !s.machine);
-  return local.find(s => s.id === remembered) ?? local.find(s => s.name === 'hub');
-}
-
 // HUD terminals are agent-only. Keep full remote addresses and exclude all workers.
-export function headsFrom(hud = {}, panes = [], spaces = [], hubId) {
+export function headsFrom(hud = {}, panes = [], spaces = []) {
   const workers = new Set((hud.runs ?? []).flatMap(r => (r.workers ?? []).map(w => w.terminal)));
   const agents = new Map((hud.terminals ?? []).filter(t => observerFor(t) === null).map(t => [t.address, t]));
   const seen = new Set(), heads = [];
   for (const space of spaces) {
-    if (space.id === hubId) continue;
     const tabs = [...(space.tabs ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     for (const tab of tabs) for (const pane of panes.filter(p => p.tab === tab.id)) {
       const address = pane.terminal, info = agents.get(address);
@@ -32,28 +26,6 @@ export function headsFrom(hud = {}, panes = [], spaces = [], hubId) {
   return heads;
 }
 
-// Only hubPanes may become destructive actions. Callers supply the hub tab's panes.
-export function planHub({ heads = [], hubPanes = [], observers = [] } = {}) {
-  const wanted = new Set(heads.map(h => typeof h === 'string' ? h : h.address));
-  const info = new Map(observers.map(t => [t.address ?? t.terminal, t]));
-  const present = new Set(), remove = [], seeds = [];
-  for (const pane of hubPanes) {
-    if (!pane.terminal) continue;
-    const target = observerFor(info.get(pane.terminal) ?? pane);
-    if (target === null) { seeds.push(pane.terminal); continue; }
-    if (!wanted.has(target) || present.has(target)) remove.push(pane.terminal);
-    else present.add(target);
-  }
-  return { add: [...wanted].filter(address => !present.has(address)), remove,
-    ...(present.size && seeds.length ? { killSeed: seeds[0] } : {}) };
-}
-
-export const observerArgs = (space, tab, address) => [
-  'run', '--keep', '--bg', '--json', '--no-parent',
-  '--label', `herdr.space=${space}`, '--label', `herdr.tab=${tab}`,
-  '--label', `hub.observer=${address}`, '--', 'hc', 'attach', '--observe', '--history', '2000', address,
-];
-
 // Poll each machine's local helper. Only unqualified addresses gain a prefix.
 export function mergeHuds(snapshots) {
   const qualify = (machine, address) => !address || !machine || address.includes('/') ? address : `${machine}/${address}`;
@@ -65,4 +37,41 @@ export function mergeHuds(snapshots) {
       head_terminal: qualify(machine, r.head_terminal), workspace: qualify(machine, r.workspace), tab: qualify(machine, r.tab),
       workers: (r.workers ?? []).map(w => ({ ...w, terminal: qualify(machine, w.terminal) })) }))),
   };
+}
+
+export const gridShape = n => ({ rows: n <= 2 ? 1 : 2, cols: Math.ceil(n / (n <= 2 ? 1 : 2)) });
+export const zoomToggle = (zoom, address) => address && zoom !== address ? address : null;
+export function neighbor(heads, address, direction) {
+  const i = heads.findIndex(h => h.address === address);
+  if (i < 0) return heads[0]?.address;
+  const { cols } = gridShape(heads.length), row = Math.floor(i / cols), col = i % cols;
+  const next = direction === 'left' ? (col > 0 ? i - 1 : i)
+    : direction === 'right' ? (col + 1 < cols ? i + 1 : i)
+    : direction === 'up' ? (row > 0 ? i - cols : i)
+    : direction === 'down' ? i + cols : i;
+  return heads[next]?.address ?? address;
+}
+export const findNode = (node, id) => !node ? null : node.id === id ? node
+  : (node.children ?? []).map(n => findNode(n, id)).find(Boolean);
+export function replaceNode(node, id, replacement) {
+  if (!node) return node;
+  if (node.id === id) return replacement;
+  return node.children ? { ...node, children: node.children.map(n => replaceNode(n, id, replacement)) } : node;
+}
+export function withStackActive(tree, id, active) {
+  const stack = findNode(tree, id);
+  return stack ? replaceNode(tree, id, { ...stack, active }) : tree;
+}
+export function gridFor(heads, zoom) {
+  const shown = zoom ? heads.filter(h => h.address === zoom) : heads;
+  const cell = h => ({ id: `hub-cell-${h.address}`, type: 'column', background: 'background',
+    border: { width: 1, color: 'border' }, radius: 10, focus: { border: { width: 1, color: 'accent' } },
+    children: [{ id: `hub-head-${h.address}`, type: 'block', size: { px: 30 },
+      content: { mod: 'hub-head', props: { address: h.address, tabName: h.tabName, spaceName: h.spaceName, space: h.space, tab: h.tab } } },
+    { id: `hub-terminal-${h.address}`, type: 'block', content: { terminal: h.address } }] });
+  const { rows, cols } = gridShape(shown.length);
+  return { id: 'hub-grid', type: 'column', padding: 8, gap: 8,
+    children: shown.length ? Array.from({ length: rows }, (_, r) => ({ id: `hub-row-${r}`, type: 'row', gap: 8,
+      children: shown.slice(r * cols, (r + 1) * cols).map(cell) }))
+      : [{ id: 'hub-empty', type: 'block', content: { mod: 'hub-head', props: { empty: true } } }] };
 }
