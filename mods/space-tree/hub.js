@@ -15,9 +15,29 @@ const reportError = error => notify({ title: 'hub', body: String(error?.message 
 
 export default class Hub {
   init(_p, cx) {
+    this.cx = cx;
     this.snapshots = new Map(); this.heads = []; this.signature = '';
     this.zoomed = null; this.request = 0;
     cx.timer.every(250, cx => this.sync(cx));
+  }
+  gridSignature() {
+    return JSON.stringify([this.heads.map(h => [h.address, h.tabName, h.spaceName, h.space, h.tab]), this.zoomed, this.focusedAddress]);
+  }
+  updateGrid() { this.apply(this.cx); }
+  render() {
+    if (this.closed || !this.active()) return;
+    const address = focused()?.terminal;
+    if (!this.heads.some(h => h.address === address)) return;
+    if (address === this.pendingFocus) return;
+    this.focusTimer?.cancel(); this.pendingFocus = null;
+    if (address === this.appliedFocus) return;
+    this.pendingFocus = address;
+    this.focusTimer = this.cx.timer.after(30, () => {
+      this.pendingFocus = null;
+      if (this.closed || !this.active()) return;
+      this.focusedAddress = address;
+      this.updateGrid();
+    });
   }
   focusedTerminal() { return focused()?.terminal; }
   source(cx) {
@@ -37,7 +57,7 @@ export default class Hub {
     if (serialized !== this.headsSerialized) { this.headsSerialized = serialized; setShared('hub.heads', this.heads); }
     if (this.zoomed && !this.heads.some(h => h.address === this.zoomed)) this.zoomed = null;
     if (!this.active()) return;
-    const signature = JSON.stringify([this.heads.map(h => [h.address, h.tabName, h.spaceName, h.space, h.tab]), this.zoomed]);
+    const signature = this.gridSignature();
     if (signature === this.signature) {
       this.rebuildTimer?.cancel(); this.pendingSignature = null; return;
     }
@@ -50,7 +70,7 @@ export default class Hub {
     // Serialize writes and reread shared state after each await so rapid toggle/zoom
     // cannot let an earlier CLI response reopen a now-hidden hub.
     this.request++;
-    if (focusAddress) this.focusAfter = focusAddress;
+    if (focusAddress) { this.focusAfter = focusAddress; this.focusedAddress = focusAddress; }
     if (this.writing) return;
     this.writing = true;
     cx.spawn(async cx => {
@@ -61,12 +81,12 @@ export default class Hub {
           if (this.closed) break;
           const open = this.active(), tree = plainLayout();
           if (!findNode(tree, 'work-stack') || !findNode(tree, 'hub-grid')) throw new Error('Hub requires the cockpit work-stack layout.');
-          const signature = JSON.stringify([this.heads.map(h => [h.address, h.tabName, h.spaceName, h.space, h.tab]), this.zoomed]);
-          const next = withStackActive(replaceNode(tree, 'hub-grid', gridFor(this.heads, this.zoomed)), 'work-stack', open ? 'hub-view' : 'work-normal');
+          const signature = this.gridSignature(), focusedAddress = this.focusedAddress;
+          const next = withStackActive(replaceNode(tree, 'hub-grid', gridFor(this.heads, this.zoomed, focusedAddress)), 'work-stack', open ? 'hub-view' : 'work-normal');
           await setLayout(next);
           if (this.closed) break;
           if (applied !== this.request) continue;
-          this.signature = signature;
+          this.signature = signature; this.appliedFocus = focusedAddress;
           run('layout.select', { stack: 'work-stack', child: open ? 'hub-view' : 'work-normal' });
           run(open ? 'layout.hide' : 'layout.show', { id: 'tabs' });
           if (open && this.focusAfter) run('pane.focus', { terminal: this.focusAfter });
@@ -90,6 +110,7 @@ export default class Hub {
   }
   hide(cx) {
     if (!this.active()) return;
+    this.focusTimer?.cancel(); this.pendingFocus = null;
     setShared('hub.open', false); this.zoomed = null;
     this.rebuildTimer?.cancel(); this.pendingSignature = null;
     this.apply(cx);
@@ -107,5 +128,5 @@ export default class Hub {
     if (!this.heads.some(h => h.address === address)) return;
     this.zoomed = zoomToggle(this.zoomed, address); this.apply(cx, address);
   }
-  close() { this.closed = true; this.rebuildTimer?.cancel(); }
+  close() { this.closed = true; this.rebuildTimer?.cancel(); this.focusTimer?.cancel(); }
 }

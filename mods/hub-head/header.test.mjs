@@ -13,16 +13,17 @@ function header(empty = false, active = false) {
 test('header matches pane size and colors, shows source title and dim cwd with one source button', () => {
   const h = header();
   assert.equal(h.root.style.px, 10); assert.equal(h.root.style.gap, 8); assert.equal(h.root.style.text_size, 12);
-  assert.equal(h.root.style.bg, 'background'); assert.equal(h.root.style.border_t, 2);
-  assert.equal(h.root.style.border_color, 'border'); assert.equal(h.root.style.opacity, 0.85);
-  const title = walk(h.root).find(n => n?.nodes?.includes('Review · Project'));
+  assert.equal(h.root.style.bg, 'background'); assert.equal(h.root.style.border_t, undefined);
+  assert.equal(h.root.style.border_color, 'border'); assert.equal(h.root.style.opacity, undefined);
+  assert.equal(h.root.style.border_b, 1); assert.equal(h.root.style.hover, undefined);
+  const title = walk(h.root).find(n => n?.nodes?.includes('Project · Review'));
   const cwd = walk(h.root).find(n => n?.nodes?.includes('~/project'));
-  assert.equal(title.style.text_color, 'muted'); assert.equal(cwd.style.text_color, 'dim');
+  assert.equal(title.style.text_color, 'foreground'); assert.equal(cwd.style.text_color, 'dim');
   const focused = header(false, true).root;
-  assert.equal(focused.style.bg, 'raised'); assert.equal(focused.style.border_t, 2);
-  assert.equal(focused.style.border_color, 'accent'); assert.equal(focused.style.opacity, undefined);
-  assert.equal(walk(focused).find(n => n?.nodes?.includes('Review · Project')).style.text_color, 'foreground');
-  assert.ok(walk(h.root).includes('Review · Project'));
+  assert.equal(focused.style.bg, 'background'); assert.equal(focused.style.border_t, undefined);
+  assert.equal(focused.style.border_color, 'border'); assert.equal(focused.style.opacity, undefined);
+  assert.equal(walk(focused).find(n => n?.nodes?.includes('Project · Review')).style.text_color, 'foreground');
+  assert.ok(walk(h.root).includes('Project · Review'));
   assert.ok(walk(h.root).includes('~/project'));
   assert.equal(walk(h.root).filter(n => n?.style?.tooltip).length, 1);
   assert.equal(byId(h.root, 'hub-source-remote/t1').style.tooltip, 'Go to source');

@@ -107,3 +107,26 @@ test('failed layout write reports error and can be retried', async () => {
   h.failWrite = false; h.view.sync(h.cx); h.tick(500); await h.flush();
   assert.equal(runs(h)[0][0], 'layout.select');
 });
+
+test('render debounces focus writes, cancels superseded focus, and retains ring outside hub', async () => {
+  const h = setup(); await h.flush();
+  h.panes.push({ pane: 'p2', tab: 'tb', terminal: 't2' }, { pane: 'p3', tab: 'tb', terminal: 't3' });
+  h.hud.terminals.push({ address: 't2' }, { address: 't3' });
+  h.tree.refreshOrch(h.cx); await h.flush();
+  h.view.open(h.cx, 't1'); await h.flush();
+  const count = h.writes.length;
+  h.focus = 't2'; h.view.render(); h.view.render();
+  h.focus = 't3'; h.view.render();
+  assert.equal(h.writes.length, count);
+  assert.equal(h.timers.filter(t => t.ms === 30 && !t.canceled).length, 1);
+  h.tick(30); await h.flush();
+  assert.equal(h.writes.length, count + 1);
+  assert.equal(model.findNode(h.writes.at(-1), 'hub-cell-t3').border.color, 'accent');
+  assert.equal(model.findNode(h.writes.at(-1), 'hub-cell-t1').border.color, 'border');
+  h.focus = 'outside'; h.view.render(); h.tick(30); await h.flush();
+  assert.equal(h.writes.length, count + 1);
+  h.focus = 't2'; h.view.render(); h.focus = 't3'; h.view.render();
+  h.tick(30); await h.flush(); assert.equal(h.writes.length, count + 1);
+  h.focus = 't2'; h.view.render(); h.view.hide(h.cx); await h.flush();
+  const hidden = h.writes.length; h.tick(30); await h.flush(); assert.equal(h.writes.length, hidden);
+});

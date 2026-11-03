@@ -16,7 +16,8 @@ test('grid rule covers n=1..9 exactly once, with native cards and interactive te
     assert.deepEqual(terminals(grid), heads(n).map(h => h.address));
     assert.equal(grid.gap, 8); assert.equal(grid.padding, 8);
     const cell = grid.children[0].children[0];
-    assert.deepEqual(cell.focus, { border: { width: 1, color: 'accent' } });
+    assert.equal(cell.focus, undefined);
+    assert.deepEqual(cell.border, { width: 1, color: 'border' });
     assert.equal(cell.radius, 10); assert.equal(cell.children[0].size.px, 30);
     assert.equal(cell.children[0].content.mod, 'hub-head');
   }
@@ -79,4 +80,18 @@ test('cockpit stacks hub and normal work; tab bar belongs only to normal work', 
   assert.ok(findNode(stack.children[0], 'tabs'));
   assert.equal(findNode(stack.children[1], 'tabs'), undefined);
   assert.ok(findNode(stack.children[1], 'hub-grid'));
+});
+
+test('focused address colors only the whole matching card', () => {
+  const grid = gridFor(heads(3), null, 't2');
+  for (const h of heads(3)) {
+    const cell = findNode(grid, `hub-cell-${h.address}`);
+    assert.deepEqual(cell.border, { width: 1, color: h.address === 't2' ? 'accent' : 'border' });
+    assert.equal(cell.focus, undefined);
+  }
+});
+test('hub names put space first and never include model text', () => {
+  const rows = buildTree({ hub: { heads: [{ ...heads(1)[0], model: 'sol', effort: 'high' }] } });
+  const row = rows.find(r => r.terminal === 't1');
+  assert.equal(row.name, 'Work · Tab 0'); assert.equal(row.sub, '');
 });

@@ -108,7 +108,7 @@ test("hubRow renders a count header and a compact head row", () => {
   const a = render(view, header, t), b = render(view, head, t);
   assert.equal(a.style.h, 26); assert.equal(b.style.h, 24);
   assert.ok(walk(a).includes("hub")); assert.ok(walk(a).includes("2"));
-  assert.ok(walk(b).includes("Review")); assert.ok(walk(b).includes("Project"));
+  assert.ok(walk(b).includes("Review")); assert.ok(!walk(b).includes("Project"));
   assert.equal(a.style.tooltip, "Head hub · Ctrl-Shift-H");
   assert.equal(b.style.tooltip, "Show in hub");
   assert.ok(!walk(b).some(n => n?.style?.border_l || n?.style?.absolute));

@@ -165,8 +165,8 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
         emit("space", "hub-entry", 1, { hub: true, name: `hub · ${hub.heads?.length ?? 0}`, data: {}, foldable: false,
           active: !!hub.active, sectionColorKey: "hub", sectionDepth: 1 });
         for (const head of hub.heads ?? []) emit("pane", `hub:${head.address}`, 2, { hub: true,
-          key: `hub-head:${head.address}`, name: `${head.tabName || "Terminal"} · ${head.spaceName || "Space"}`,
-          sub: [head.model, head.effort].filter(Boolean).join("-"), terminal: head.address,
+          key: `hub-head:${head.address}`, name: `${head.spaceName || "Space"} · ${head.tabName || "Terminal"}`,
+          sub: "", terminal: head.address,
           data: panes.find(p => p.terminal === head.address) ?? {}, status: head.status,
           foldable: false, active: !!hub.active && hub.terminal === head.address, sectionColorKey: "hub", sectionDepth: 1 });
       }

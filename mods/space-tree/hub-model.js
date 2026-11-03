@@ -62,10 +62,10 @@ export function withStackActive(tree, id, active) {
   const stack = findNode(tree, id);
   return stack ? replaceNode(tree, id, { ...stack, active }) : tree;
 }
-export function gridFor(heads, zoom) {
+export function gridFor(heads, zoom, focusedAddress) {
   const shown = zoom ? heads.filter(h => h.address === zoom) : heads;
   const cell = h => ({ id: `hub-cell-${h.address}`, type: 'column', background: 'background',
-    border: { width: 1, color: 'border' }, radius: 10, focus: { border: { width: 1, color: 'accent' } },
+    border: { width: 1, color: h.address === focusedAddress ? 'accent' : 'border' }, radius: 10,
     children: [{ id: `hub-head-${h.address}`, type: 'block', size: { px: 30 },
       content: { mod: 'hub-head', props: { address: h.address, tabName: h.tabName, spaceName: h.spaceName, space: h.space, tab: h.tab } } },
     { id: `hub-terminal-${h.address}`, type: 'block', content: { terminal: h.address } }] });

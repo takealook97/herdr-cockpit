@@ -204,6 +204,7 @@ export default class SpaceTree extends Plumbing {
   }
 
   render() {
+    this.hub?.render();
     if (props()?.treeMenu) return menuView(this);
     const t = theme(), input = this.inputs();
     this.visible = buildTree({ ...input, folded: this.treeFolded });

@@ -103,7 +103,6 @@ export function hubRow(view, row, t) {
       .child(div().px(6).rounded(8).bg(t.hover).text_size(10.5).text_color(t.muted).child(count));
   }
   return el.child(icon(row, t))
-    .child(div().flex_none().min_w(0).max_w_3_5().truncate().text_color(t.foreground).child(row.name))
-    .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(row.sub))
+    .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(row.name))
     .child(dot(row, t));
 }
