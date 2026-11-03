@@ -14,6 +14,23 @@ export const machineId = name => `machine:${name ?? ""}`;
 export const rowId = (kind, id) => `${kind}:${id}`;
 export const aliasKey = (kind, id) => `space-tree.alias.${kind}.${id}`;
 
+export function assignSectionColors(orderedSpaceIds, stored = {}, palette = []) {
+  const colors = { ...stored }, counts = new Map(palette.map(c => [c, 0]));
+  let previous;
+  for (const id of orderedSpaceIds) {
+    const current = colors[id];
+    const valid = palette.includes(current) && current !== previous &&
+      (orderedSpaceIds.length > palette.length || counts.get(current) === 0);
+    const choices = palette.filter(c => c !== previous);
+    const color = valid ? current : choices.reduce((best, c) => counts.get(c) < counts.get(best) ? c : best, choices[0]);
+    if (color == null) continue;
+    colors[id] = color;
+    counts.set(color, counts.get(color) + 1);
+    previous = color;
+  }
+  return colors;
+}
+
 export function orchIndexes(orch = {}) {
   const workers = {}, heads = {}, tabs = {}, workspaces = new Set();
   for (const run of orch.runs ?? []) {
@@ -22,7 +39,7 @@ export function orchIndexes(orch = {}) {
     for (const w of run.workers ?? []) if (w.terminal) workers[w.terminal] = w;
     if (run.tab) tabs[run.tab] = true;
   }
-  return { workers, heads, tabs, workspaces,
+  return { workers, heads, tabs, workspaces, enabled: orch.orch === true, lastModel: orch.lastModel ?? {},
     terminals: Object.fromEntries((orch.terminals ?? []).map(t => [t.address, t])) };
 }
 
@@ -31,15 +48,16 @@ export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
   const alias = aliases[aliasKey("pane", pane.terminal)];
   if (alias) return alias;
   const worker = orchIndex.workers?.[pane.terminal];
-  if (worker) return [worker.label, worker.name].filter(Boolean).join(" · ").toLowerCase();
+  if (worker) return (worker.label || worker.name || "worker").toLowerCase();
   // Only active runs identify heads; vanilla panes retain program names.
-  if (orchIndex.heads?.[pane.terminal]) return "head";
+  if (orchIndex.heads?.[pane.terminal] || (orchIndex.enabled && orchIndex.terminals?.[pane.terminal])) return "head";
   return programName(pane).toLowerCase();
 }
 
 export function paneSub(pane, orchIndex = {}, indexInTab = 0) {
   const worker = orchIndex.workers?.[pane.terminal];
-  const info = worker?.model ? worker : orchIndex.terminals?.[pane.terminal];
+  const current = worker?.model ? worker : orchIndex.terminals?.[pane.terminal];
+  const info = current?.model ? current : orchIndex.lastModel?.[pane.terminal];
   const model = info?.model ? [info.model, info.effort].filter(Boolean).join("-").replace(/\s+/g, "-") : "";
   // Status is the row's colored dot; the text line carries only the model or the pane's position.
   return (model || (indexInTab === 0 ? "main" : `sub ${indexInTab}`)).toLowerCase();

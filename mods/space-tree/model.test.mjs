@@ -1,6 +1,33 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { tabIconColor, aggregateStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
+import { assignSectionColors, tabIconColor, aggregateStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
+
+test("section colors repair collisions and remain stable", () => {
+  const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1", "ansi14", "ansi11", "ansi12", "ansi13"];
+  const ids = ["Monday", "Meeting"];
+  const colors = assignSectionColors(ids, { Monday: "ansi3", Meeting: "ansi3" }, palette);
+  assert.notEqual(colors.Monday, colors.Meeting);
+  assert.deepEqual(assignSectionColors(ids, colors, palette), colors);
+  const many = Array.from({ length: 25 }, (_, i) => `space${i}`);
+  const assigned = assignSectionColors(many, {}, palette);
+  for (let i = 1; i < many.length; i++) assert.notEqual(assigned[many[i]], assigned[many[i - 1]]);
+  assert.deepEqual(assignSectionColors(many, assigned, palette), assigned);
+});
+
+test("agent heads depend on orch availability", () => {
+  const p = pane("p", "tab", { terminal: "agent" });
+  const terminals = [{ address: "agent" }];
+  assert.equal(paneName(p, 0, orchIndexes({ orch: true, terminals })), "head");
+  assert.equal(paneName(p, 0, orchIndexes({ orch: false, terminals })), "codex");
+});
+
+test("pane model falls back to last resolved model", () => {
+  const p = pane("p", "tab", { terminal: "agent" });
+  const idx = orchIndexes({ terminals: [{ address: "agent", model: "" }], lastModel: { agent: { model: "claude-opus", effort: "high" } } });
+  assert.equal(paneSub(p, idx), "claude-opus-high");
+  idx.terminals.agent.model = "claude-sonnet";
+  assert.equal(paneSub(p, idx), "claude-sonnet");
+});
 
 const pane = (id, tab = "tab", extra = {}) => ({ pane: id, terminal: `t-${id}`, tab, program: { name: "Codex" }, status: "working", ...extra });
 const sp = (id, tabs = [], extra = {}) => ({ id, name: id, tabs, ...extra });
@@ -67,14 +94,14 @@ test("pane subtitle uses position when model unknown and argv when worker model 
 test("pane naming precedence: alias, worker, Head, main, sub and fallback", () => {
   const w = pane("p", "tab", { terminal: "worker" });
   assert.equal(paneName(w, 0, index, { [aliasKey("pane", "worker")]: "내 이름" }), "내 이름");
-  assert.equal(paneName(w, 0, index), "impl · impl");
+  assert.equal(paneName(w, 0, index), "impl");
   assert.equal(paneName(pane("p", "tab", { terminal: "head" }), 0, index), "head");
   assert.equal(paneName(pane("p"), 0, index), "codex");
   assert.equal(paneName(pane("p"), 1, index), "codex");
   assert.equal(paneName(pane("p"), 4, index), "codex");
   assert.equal(paneName({ terminal: null, mod: "files" }), "files");
   assert.equal(paneName({}), "terminal");
-  assert.equal(paneName(w, 0, index, { [aliasKey("pane", "worker")]: "" }), "impl · impl");
+  assert.equal(paneName(w, 0, index, { [aliasKey("pane", "worker")]: "" }), "impl");
 });
 
 test("pane detail uses worker model, argv model, then position", () => {

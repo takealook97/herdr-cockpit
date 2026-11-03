@@ -2,7 +2,7 @@ import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, nextCommand, props, notify } from "herdr";
 import Plumbing from "./plumbing.js";
-import { buildTree, aliasKey, machineId, rowId, pruneFolded, aggregateStatus } from "./model.js";
+import { buildTree, aliasKey, machineId, rowId, pruneFolded, aggregateStatus, assignSectionColors } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
@@ -16,6 +16,7 @@ export default class SpaceTree extends Plumbing {
     super.init(p, cx);
     try { this.treeFolded = JSON.parse(localStorage.getItem("tree.folded") ?? "{}"); } catch { this.treeFolded = {}; }
     this.orch = {};
+    this.lastModel = {};
     this.orchStale = false;
     this.orchLoaded = false;
     this.highlight = null;
@@ -39,6 +40,11 @@ export default class SpaceTree extends Plumbing {
         if (r.code !== 0) throw new Error("hud unavailable");
         const data = JSON.parse(r.stdout);
         if (!Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
+        for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
+          const terminal = info.address ?? info.terminal;
+          if (terminal && info.model) this.lastModel[terminal] = { model: info.model, effort: info.effort };
+        }
+        data.lastModel = this.lastModel;
         this.orch = data; this.orchStale = false; this.orchLoaded = true;
       } catch { this.orchStale = true; }
       this.polling = false;
@@ -169,13 +175,11 @@ export default class SpaceTree extends Plumbing {
     const t = theme(), input = this.inputs();
     this.visible = buildTree({ ...input, folded: this.treeFolded });
     if (!this.visible.some(r => r.key === this.highlight)) this.highlight = this.visible.find(r => r.active)?.key ?? this.visible[0]?.key;
-    const colors = { ...(shared("space.colors") ?? {}) }, palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
-    let changed = false;
-    for (const s of spaces()) if (!colors[s.id] && s.name !== "~") {
-      colors[s.id] = palette.reduce((best, c) => Object.values(colors).filter(v => v === c).length < Object.values(colors).filter(v => v === best).length ? c : best);
-      changed = true;
-    }
-    if (changed) setShared("space.colors", colors);
+    const stored = shared("space.colors") ?? {};
+    const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1", "ansi14", "ansi11", "ansi12", "ansi13"];
+    const sectionIds = buildTree({ ...input, folded: {} }).filter(row => row.kind === "space" && row.sectionColorKey === row.id && row.name !== "~").map(row => row.id);
+    const colors = assignSectionColors(sectionIds, stored, palette);
+    if (JSON.stringify(colors) !== JSON.stringify(stored)) setShared("space.colors", colors);
     const button = (id, icon, label, action) => div().id(id).size(24).flex_none().flex().items_center().justify_center()
       .rounded(4).tooltip(label).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_click(action).child(svg(`mods/space-tree/${icon}.svg`).size(12));

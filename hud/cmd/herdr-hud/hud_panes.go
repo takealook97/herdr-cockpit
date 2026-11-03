@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -40,6 +41,7 @@ type HUDTerminal struct {
 	Effort  string `json:"effort"`
 }
 type HUDPanes struct {
+	Orch      bool          `json:"orch"`
 	At        time.Time     `json:"at"`
 	Runs      []HUDRun      `json:"runs"`
 	Terminals []HUDTerminal `json:"terminals"`
@@ -232,8 +234,20 @@ func hudParseTerminals(raw []byte) ([]HUDTerminal, error) {
 	}
 	return out, nil
 }
+func hudOrchAvailable() bool {
+	if _, err := exec.LookPath("orch"); err == nil {
+		return true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(home, ".orch", "runs"))
+	return err == nil && info.IsDir()
+}
+
 func hudPanes(ctx context.Context) HUDPanes {
-	out := HUDPanes{At: time.Now(), Runs: []HUDRun{}, Terminals: []HUDTerminal{}}
+	out := HUDPanes{Orch: hudOrchAvailable(), At: time.Now(), Runs: []HUDRun{}, Terminals: []HUDTerminal{}}
 	runs, err := allRuns()
 	if err != nil {
 		out.Error = "cannot read runs"
