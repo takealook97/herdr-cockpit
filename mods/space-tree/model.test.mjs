@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignSectionColors, tabIconColor, aggregateStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
+import { assignSectionColors, tabIconColor, aggregateStatus, hubRowStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
 
 test("section colors repair collisions and remain stable", () => {
   const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1", "ansi14", "ansi11", "ansi12", "ansi13"];
@@ -256,4 +256,18 @@ test("hub view suppresses normal tab selection and exposes header count and head
   assert.equal(rows.find(r => r.kind === "tab").active, false);
   assert.equal(buildTree({ ...input, hub: { ...input.hub, active: false } })
     .find(r => r.kind === "tab").active, true);
+});
+
+
+test("hub row status aggregates only panes in the Head tab", () => {
+  const head = { address: "head", tab: "target" };
+  const headPane = pane("head", "target", { status: "idle" });
+  const worker = pane("worker", "target", { status: "working" });
+  const other = pane("other", "other", { status: "blocked" });
+  assert.equal(hubRowStatus(head, [headPane, worker, other]), "working");
+  assert.equal(hubRowStatus(head, [headPane, { ...worker, status: "blocked" }]), "blocked");
+  assert.equal(hubRowStatus(head, [headPane, { ...worker, status: "idle" }, other]), "idle");
+  assert.equal(hubRowStatus(head, [{ ...headPane, status: "done" }, worker]), "working");
+  const rows = buildTree({ panes: [headPane, worker, other], hub: { heads: [head] } });
+  assert.equal(rows.find(row => row.key === "hub-head:head").status, "working");
 });
