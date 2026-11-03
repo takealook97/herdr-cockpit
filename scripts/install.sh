@@ -164,14 +164,18 @@ if "$build"; then
     CGO_ENABLED=0 go -C "$root/hud" build -trimpath -ldflags '-s -w' -o "$scratch/herdr-hud" ./cmd/herdr-hud
 else
     cp "$prebuilt" "$scratch/herdr-hud"
+    # Copies can restore quarantine, which prevents the helper from running.
+    if [ "$goos" = darwin ]; then xattr -d com.apple.quarantine "$scratch/herdr-hud" 2>/dev/null || true; fi
 fi
 mkdir -p "$HOME/.local/bin" "$app/mods" "$app/layouts"
 # Stage next to the destination so the final rename is atomic.
 helper_tmp=$(mktemp "$HOME/.local/bin/.herdr-hud.XXXXXX")
 trap 'rm -f "${helper_tmp:-}"; rm -rf "$scratch"' EXIT
 cp "$scratch/herdr-hud" "$helper_tmp"
+if [ "$goos" = darwin ]; then xattr -d com.apple.quarantine "$helper_tmp" 2>/dev/null || true; fi
 chmod 755 "$helper_tmp"
 mv -f "$helper_tmp" "$HOME/.local/bin/herdr-hud"
+if [ "$goos" = darwin ]; then xattr -d com.apple.quarantine "$HOME/.local/bin/herdr-hud" 2>/dev/null || true; fi
 for mod in "$root"/mods/*; do
     [ -d "$mod" ] || continue
     mkdir -p "$app/mods/${mod##*/}"
