@@ -38,7 +38,7 @@ export function layoutMode(width, accounts) {
   const mode = { bars: true, accountLine: true };
   const needed = () => accounts.reduce((sum, account) => sum + labelWidth(mode.accountLine) +
     cellWidth('weekly') + (account.provider === 'codex' ? cellWidth('coupon') + 8 : 0) +
-    16 + 2 + 8 + 8, 170 + 40 - (mode.bars ? 0 : 44));
+    16 + 2 + 8 + 10, 170 + 44 - (mode.bars ? 0 : 44));
   if (width < needed()) mode.bars = false;
   if (width < needed()) mode.accountLine = false;
   return mode;

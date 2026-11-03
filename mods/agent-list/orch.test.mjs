@@ -29,3 +29,11 @@ test('omits working count when none are working', () => {
   const index = workerIndex({ runs: [{ head_terminal: 'head', workers: [{ terminal: 't1', status: 'done' }] }] });
   assert.equal(headSuffix('head', index), ' · 1 worker');
 });
+
+test('hides observers from HUD labels and live terminal labels without runs', () => {
+  const index = workerIndex({ terminals: [{ address: 't2', labels: { 'hub.observer': 't1' } }] });
+  assert.equal(isHidden({ address: 't2' }, index), true);
+  assert.equal(isHidden({ terminal: 't2' }, index), true);
+  assert.equal(isHidden({ address: 't3', labels: { 'hub.observer': 'remote/t1' } }, index), true);
+  assert.equal(isHidden({ address: 't1' }, index), false);
+});

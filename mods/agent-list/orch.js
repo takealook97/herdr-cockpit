@@ -1,7 +1,8 @@
 export function workerIndex(hud) {
   const workers = new Map();
   const heads = new Map();
-  if (!Array.isArray(hud?.runs)) return { workers, heads };
+  const observers = new Set((Array.isArray(hud?.terminals) ? hud.terminals : []).filter(t => t?.labels?.["hub.observer"]).map(t => t.address));
+  if (!Array.isArray(hud?.runs)) return { workers, heads, observers };
   for (const run of hud.runs) {
     if (!run || !Array.isArray(run.workers)) continue;
     for (const worker of run.workers) {
@@ -14,14 +15,22 @@ export function workerIndex(hud) {
       heads.set(run.head_terminal, counts);
     }
   }
-  return { workers, heads };
+  return { workers, heads, observers };
 }
 
 export function isHidden(agent, index) {
-  return index.workers.has(agent?.address) || index.workers.has(agent?.terminal);
+  return Boolean(agent?.labels?.["hub.observer"]) || index.observers.has(agent?.address) || index.observers.has(agent?.terminal) || index.workers.has(agent?.address) || index.workers.has(agent?.terminal);
 }
 
 export function headSuffix(address, index) {
   const counts = index.heads.get(address);
   return counts?.total ? ` · ${counts.total} worker${counts.total === 1 ? "" : "s"}${counts.working ? ` (${counts.working} working)` : ""}` : "";
+}
+
+export function freshPanes(value, now = Date.now()) {
+  const at = typeof value?.at === 'number' ? value.at : Date.parse(value?.at);
+  return Number.isFinite(at) && now - at >= 0 && now - at < 10000 ? value : null;
+}
+export function indexSignature(index) {
+  return JSON.stringify([ [...index.workers].sort(), [...index.heads].sort(), [...index.observers].sort() ]);
 }

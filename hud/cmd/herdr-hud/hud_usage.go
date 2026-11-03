@@ -295,6 +295,10 @@ func hudDiscover(ctx context.Context, terminals string, specified bool) ([]HUDAc
 	if terminals == "" {
 		return accounts, nil
 	}
+	hc := hudHCPath()
+	if hc == "" {
+		return accounts, nil
+	}
 	raw, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return accounts, fmt.Errorf("ps: %w", err)
@@ -310,16 +314,20 @@ func hudDiscover(ctx context.Context, terminals string, specified bool) ([]HUDAc
 		if strings.Contains(address, "/") {
 			continue
 		}
-		raw, err := exec.CommandContext(ctx, "hc", "get", address, "--json").Output()
+		raw, err := exec.CommandContext(ctx, hc, "get", address, "--json").Output()
 		if err != nil {
 			failures = append(failures, "terminal lookup failed")
 			continue
 		}
 		var terminal struct {
-			PID int `json:"pid"`
+			PID    int               `json:"pid"`
+			Labels map[string]string `json:"labels"`
 		}
 		if json.Unmarshal(raw, &terminal) != nil || terminal.PID == 0 {
 			failures = append(failures, "terminal has no pid")
+			continue
+		}
+		if terminal.Labels["hub.observer"] != "" {
 			continue
 		}
 		pid, provider := hudFindAgent(terminal.PID, procs, func(pid int) string { return nodeArgs[pid] })

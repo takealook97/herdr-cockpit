@@ -123,7 +123,7 @@ export default class UsageBar extends View {
     const accounts = pickAccounts(state.usage);
     const mode = layoutMode(this.width, accounts);
     const group = id => h_flex().id(id).h(38).items_center().flex_none().px(8).gap(6)
-      .rounded(6).bg(t.chrome).border(1).border_color(t.border).cursor_pointer()
+      .rounded(6).bg(t.chrome).border(1).border_color(t.muted + "66").cursor_pointer()
       .tooltip('Click to refresh usage')
       .on_mouse_down('left', (_event, cx) => cx.stop_propagation())
       .on_click((_event, cx) => this.refreshAll(cx));
@@ -148,10 +148,10 @@ export default class UsageBar extends View {
       }
       groups.push(group(`account-${account.provider}`).child(content));
     }
-    return h_flex().id('root').size_full().min_w(0).px(12).gap(8).items_center()
+    return h_flex().id('root').size_full().min_w(0).px(12).gap(10).items_center()
       .bg(t.chrome).border_b(1).border_color(t.border)
       .on_size_change((size, cx) => { if (this.width !== size.width) { this.width = size.width; cx.notify(); } })
-      .child(h_flex().id('groups').flex_none().min_w(0).items_center().gap(8).children(groups))
+      .child(h_flex().id('groups').flex_none().min_w(0).items_center().gap(10).children(groups))
       .child(h_flex().flex_1().min_w(0))
       .child(system);
   }
