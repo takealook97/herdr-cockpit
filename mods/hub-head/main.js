@@ -1,6 +1,6 @@
 import { View, div, svg, image } from 'gpui-kit';
 import { h_flex } from 'gpui-base';
-import { panes, props, run, shared, setShared, theme, home } from 'herdr';
+import { panes, props, run, shared, theme, home } from 'herdr';
 
 const folder = cwd => !cwd ? '' : cwd === home() ? '~' : cwd.startsWith(home() + '/') ? '~' + cwd.slice(home().length) : cwd;
 export default class HubHead extends View {
@@ -18,13 +18,6 @@ export default class HubHead extends View {
       .when(Boolean(pic), el => el.child(pic))
       .child(div().flex_none().max_w(260).truncate().font_medium().text_color(t.foreground)
         .child(`${head.spaceName || 'Space'} · ${head.tabName || 'Terminal'}`))
-      .child(div().flex_1().truncate().text_color(t.dim).child(folder(pane?.cwd)))
-      .child(div().id(`hub-source-${p.address}`).p(3).rounded(4).text_color(t.dim)
-        .tooltip('Go to source').hover(s => s.bg(t.hover).text_color(t.foreground))
-        .on_click((_e, cx) => {
-          cx.stop_propagation();
-          setShared('hub.source', { address: p.address, space: head.space, tab: head.tab });
-          run('space-tree.source');
-        }).child(svg('mods/hub-head/source.svg').size(14)));
+      .child(div().flex_1().truncate().text_color(t.dim).child(folder(pane?.cwd)));
   }
 }

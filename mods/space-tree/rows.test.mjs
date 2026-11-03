@@ -103,11 +103,11 @@ test("hubRow renders a count header and a compact head row", () => {
   });
   const selected = [], view = { select: row => selected.push(row) };
   const t = h.deps.theme();
-  const header = { kind: "space", key: "hub", name: "hub · 2", hub: true };
-  const head = { kind: "pane", key: "head", name: "Review", sub: "Project", status: "working", data: {} };
+  const header = { kind: "space", key: "hub", name: "hub · 2", count: 2, hub: true };
+  const head = { kind: "pane", key: "head", name: "Project · Review", spaceName: "Project", tabName: "Review", sub: "Project", status: "working", data: {} };
   const a = render(view, header, t), b = render(view, head, t);
-  assert.equal(a.style.h, 26); assert.equal(b.style.h, 24);
-  assert.ok(walk(a).includes("hub")); assert.ok(walk(a).includes("2"));
+  assert.equal(a.style.h, 26); assert.equal(b.style.h, 26);
+  assert.ok(walk(a).includes("HUB")); assert.ok(walk(a).includes("2"));
   assert.ok(walk(b).includes("Review")); assert.ok(!walk(b).includes("Project"));
   assert.equal(a.style.tooltip, "Head hub · Ctrl-Shift-H");
   assert.equal(b.style.tooltip, "Show in hub");
@@ -116,7 +116,7 @@ test("hubRow renders a count header and a compact head row", () => {
   assert.deepEqual(selected, [header, head]);
 });
 
-test("treeChildren groups consecutive hub rows into a card", () => {
+test("treeChildren inserts a hairline after the plain hub section", () => {
   const h = host();
   const Tree = load(new URL("./main.js", import.meta.url), "SpaceTree", {
     ...h.deps, v_flex: retainedElement, Plumbing: class {},
@@ -130,6 +130,61 @@ test("treeChildren groups consecutive hub rows into a card", () => {
     { key: "after", kind: "space", data: {} },
   ];
   const children = tree.treeChildren(h.deps.theme());
-  assert.deepEqual(children.map(n => n.style.id), ["before", "hub-card", "after"]);
-  assert.deepEqual(children[1].nodes.map(n => n.style.id), ["hub", "head-1", "head-2"]);
+  assert.deepEqual(children.map(n => n.style.id), ["before", "hub", "head-1", "head-2", "hub-divider", "after"]);
+  assert.equal(children[1].style.bg, undefined);
+  assert.equal(children[4].style.h, 1);
+  assert.equal(children[4].style.mx, 12);
+  assert.equal(children[4].style.my, 6);
+  assert.equal(children[4].style.bg, "border");
+});
+
+
+test("hub header, status opacity and selected floating card follow v2", () => {
+  const h = host(), t = h.deps.theme();
+  const render = load(new URL("./rows.js", import.meta.url), "hubRow", {
+    ...h.deps, svg: retainedElement, image: retainedElement, nameElement: () => {},
+    tabIconColor, machineConnected, rowDisplay,
+  });
+  const header = render({}, { kind: "space", key: "hub", count: 3, active: true }, t);
+  assert.equal(header.style.mx, 10);
+  assert.equal(header.style.gap, 8);
+  assert.equal(header.style.bg, undefined);
+  assert.equal(header.style.hover, undefined);
+  const [label, pill, rule] = header.nodes;
+  assert.equal(label.style.text_size, 11);
+  assert.equal(label.style.text_color, "accent");
+  assert.equal(pill.style.text_color, "accent");
+  assert.equal(pill.style.rounded, 8);
+  assert.equal(pill.style.px, 6);
+  assert.equal(rule.style.h, 1);
+  assert.equal(rule.style.bg, "border");
+  for (const status of ["idle", "done", "working", "blocked"]) {
+    const row = render({}, { kind: "pane", key: status, status, active: true,
+      spaceName: "Project", tabName: "Review" }, t);
+    assert.equal(row.style.opacity, ["idle", "done"].includes(status) ? 0.62 : 1);
+    assert.equal(row.style.bg, "background");
+    assert.equal(row.style.border, 1);
+    assert.equal(row.style.border_color, "border");
+    assert.equal(row.style.rounded, 7);
+    assert.equal(row.style.mx, 6);
+    assert.equal(row.style.px, 8);
+    assert.equal(row.nodes[0].style.size, 6);
+    if (status === "idle") assert.equal(row.nodes[0].style.border_color, "dim");
+    else assert.equal(row.nodes[0].style.bg, status);
+    if (status === "working") assert.equal(row.nodes[0].style.loop, "opacity");
+    assert.ok(!walk(row).some(n => n?.style?.absolute));
+  }
+});
+
+test("only the active tab paints a selection, regardless of keyboard highlight", () => {
+  const h = host(), t = h.deps.theme();
+  const render = load(new URL("./rows.js", import.meta.url), "treeRow", {
+    ...h.deps, svg: retainedElement, image: retainedElement, nameElement: () => "Name",
+    tabIconColor, machineConnected, rowDisplay,
+  });
+  for (const kind of ["space", "tab", "pane"]) {
+    const row = render({ highlight: "row" }, { key: "row", kind, active: true, data: {}, depth: 1 }, t);
+    assert.equal(row.style.bg, kind === "tab" ? "selected" : "chrome");
+    if (kind === "pane") assert.ok(!walk(row).some(n => n?.style?.absolute));
+  }
 });

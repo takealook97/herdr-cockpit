@@ -10,7 +10,7 @@ function header(empty = false, active = false) {
   });
   return { ...h, root: new Header().render() };
 }
-test('header matches pane size and colors, shows source title and dim cwd with one source button', () => {
+test('header matches pane size and colors, shows source title and dim cwd without a source button', () => {
   const h = header();
   assert.equal(h.root.style.px, 10); assert.equal(h.root.style.gap, 8); assert.equal(h.root.style.text_size, 12);
   assert.equal(h.root.style.bg, 'background'); assert.equal(h.root.style.border_t, undefined);
@@ -25,12 +25,9 @@ test('header matches pane size and colors, shows source title and dim cwd with o
   assert.equal(walk(focused).find(n => n?.nodes?.includes('Project · Review')).style.text_color, 'foreground');
   assert.ok(walk(h.root).includes('Project · Review'));
   assert.ok(walk(h.root).includes('~/project'));
-  assert.equal(walk(h.root).filter(n => n?.style?.tooltip).length, 1);
-  assert.equal(byId(h.root, 'hub-source-remote/t1').style.tooltip, 'Go to source');
+  assert.equal(walk(h.root).filter(n => n?.style?.tooltip).length, 0);
+  assert.equal(byId(h.root, 'hub-source-remote/t1'), undefined);
   h.root.handlers.click(); assert.deepEqual(h.calls.at(-1), { run: ['pane.focus', { terminal: 'remote/t1' }] });
-  byId(h.root, 'hub-source-remote/t1').handlers.click({}, h.cx);
-  assert.deepEqual(h.shared.get('hub.source'), { address: 'remote/t1', space: 'remote/s', tab: 'remote/tb' });
-  assert.deepEqual(h.calls.at(-1), { run: ['space-tree.source'] });
 });
 test('empty hub renders an explanatory placeholder', () => {
   assert.ok(walk(header(true).root).includes('No Head terminals'));

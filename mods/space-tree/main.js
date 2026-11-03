@@ -231,15 +231,13 @@ export default class SpaceTree extends Plumbing {
         .children(this.treeChildren(t)));
   }
 
-  // The hub rows are one card so the section reads as a group apart from the spaces.
+  // Hub rows sit directly in the list, followed by a hairline divider.
   treeChildren(t) {
     const out = [];
-    let card = null;
     this.visible.forEach((row, i) => {
       if (row.hub) {
-        card ??= v_flex().id("hub-card").mx(2).my(6).py(4).gap(1).rounded(8).border(1).border_color(t.border).bg(t.raised);
-        card.child(hubRow(this, row, t));
-        if (!this.visible[i + 1]?.hub) { out.push(card); card = null; }
+        out.push(hubRow(this, row, t));
+        if (!this.visible[i + 1]?.hub) out.push(div().id("hub-divider").mx(12).my(6).h(1).bg(t.border));
         return;
       }
       out.push(treeRow(this, row, t)

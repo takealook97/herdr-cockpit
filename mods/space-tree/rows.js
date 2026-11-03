@@ -49,14 +49,13 @@ export function treeRow(view, row, t) {
   const el = h_flex().id(row.key).relative().h(row.kind === "space" && !row.data.parentId ? 26 : 24)
     .flex_none().pl(2 + row.depth * 12).pr(6).items_center().rounded(5).text_size(12)
     .text_color(row.kind === "machine" ? t.muted : row.orch && view.orchStale ? t.dim : t.foreground)
-    .bg(row.hub && !row.active ? t.background : row.active ? row.kind === "pane" ? t.raised : t.selected : row.key === view.highlight ? t.raised : t.chrome)
+    .bg(row.kind === "tab" && row.active ? t.selected : t.chrome)
     .hover(s => s.bg(t.hover))
     .when(row.hub, e => e.tooltip("Head hub · Ctrl-Shift-H"))
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })
     .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); if (!row.hub) view.contextMenu(row); })
     .when(row.sectionColorKey != null, e => e.child(div().absolute().left(2 + row.sectionDepth * 12).top(0).bottom(0).w(2)
       .bg(row.sectionColorKey === "hub" ? t.ansi5 : t[(shared("space.colors") ?? {})[row.sectionColorKey]] ?? t.accent)))
-    .when(row.kind === "pane" && row.active, e => e.child(div().absolute().left(0).top(0).bottom(0).w(2).bg(t.accent)))
     .when(row.guide === "├", e => e.child(div().absolute().top(0).bottom(0)
       .left(2 + row.depth * 12).border_l(1).border_color(t.border)))
     .child(main)
@@ -89,20 +88,31 @@ export function treeRow(view, row, t) {
   return el;
 }
 
-// Hub rows: a header ('hub' and a count chip) and one compact row per Head, without rails or guides.
+// The hub is a plain section; only its focused Head receives a floating card.
 export function hubRow(view, row, t) {
   const header = row.kind === "space";
-  const el = h_flex().id(row.key).h(header ? 26 : 24).flex_none().items_center().gap(6)
-    .pl(header ? 10 : 12).pr(8).mx(4).rounded(6).text_size(12)
-    .bg(row.active ? t.selected : t.raised).hover(s => s.bg(t.hover))
+  const el = h_flex().id(row.key).h(26).flex_none().items_center().gap(8)
     .tooltip(header ? "Head hub · Ctrl-Shift-H" : "Show in hub")
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); });
   if (header) {
-    const count = row.name.split(" · ")[1] ?? "";
-    return el.child(div().flex_1().font_semibold().text_color(t.foreground).child("hub"))
-      .child(div().px(6).rounded(8).bg(t.hover).text_size(10.5).text_color(t.muted).child(count));
+    return el.mx(10)
+      .child(div().text_size(11).font_semibold().text_color(row.active ? t.accent : t.dim)
+        .hover(s => s.text_color(row.active ? t.accent : t.muted)).child("HUB"))
+      .child(div().px(6).rounded(8).bg(t.hover).text_size(10.5)
+        .text_color(row.active ? t.accent : t.muted).child(String(row.count ?? 0)))
+      .child(div().flex_1().h(1).bg(t.border));
   }
-  return el.child(icon(row, t))
-    .child(div().flex_1().min_w(0).truncate().text_color(t.foreground).child(row.name))
-    .child(dot(row, t));
+  const status = row.status ?? "idle";
+  const indicator = div().size(6).rounded(3).flex_none()
+    .when(status === "idle", e => e.border(1).border_color(t.dim))
+    .when(status !== "idle", e => e.bg(tone(t, status)))
+    .when(status === "working", e => e.loop("opacity", { from: 0.35, to: 1, period: 1800 }));
+  return el.mx(6).px(8).rounded(7).text_size(12)
+    .opacity(status === "idle" || status === "done" ? 0.62 : 1)
+    .when(row.active, e => e.bg(t.background).border(1).border_color(t.border))
+    .hover(s => s.bg(t.hover))
+    .child(indicator)
+    .child(h_flex().flex_1().min_w(0).truncate()
+      .child(div().flex_none().text_color(t.dim).child(`${row.spaceName} · `))
+      .child(div().min_w(0).truncate().text_color(t.foreground).child(row.tabName)));
 }

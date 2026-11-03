@@ -240,3 +240,20 @@ test("vanilla agents retain program names without a run", () => {
   assert.equal(paneName(p, 0, index), "codex");
   assert.equal(paneSub(p, index), "gpt-6.1-sol-low");
 });
+
+test("hub view suppresses normal tab selection and exposes header count and head labels", () => {
+  const input = { spaces: [{ id: "s", name: "Project", active: true,
+    tabs: [{ id: "tb", name: "Review", active: true }] }],
+    hub: { active: true, terminal: "t1", heads: [
+      { address: "t1", spaceName: "Project", tabName: "Review", status: "working" },
+    ] } };
+  const rows = buildTree(input);
+  assert.equal(rows.find(r => r.key === "hub-entry").count, 1);
+  const head = rows.find(r => r.key === "hub-head:t1");
+  assert.equal(head.spaceName, "Project");
+  assert.equal(head.tabName, "Review");
+  assert.equal(head.active, true);
+  assert.equal(rows.find(r => r.kind === "tab").active, false);
+  assert.equal(buildTree({ ...input, hub: { ...input.hub, active: false } })
+    .find(r => r.kind === "tab").active, true);
+});

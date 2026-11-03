@@ -147,7 +147,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
       const ps = panes.filter(p => p.tab === tab.id);
       const tr = emit("tab", tab.id, depth + 1, { sectionColorKey, sectionDepth, name: tab.name, data: tab, space: s.id,
         guide: ti === tabs.length - 1 && !children.length ? "└" : "├", count: ps.length,
-        status: tabStatus(tab), active: !!tab.active && s.id === activeSpaceId });
+        status: tabStatus(tab), active: !hub?.active && !!tab.active && s.id === activeSpaceId });
       if (!tr.open) return;
       ps.forEach((pane, pi) => emit("pane", pane.pane, depth + 2, { sectionColorKey, sectionDepth,
         name: paneName(pane, pi, index, aliases), sub: paneSub(pane, index, pi),
@@ -162,10 +162,11 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
     const row = emit("machine", name, 0, { name: aliases[aliasKey("machine", name ?? "local")] || name || "This computer", data });
     if (row.open) {
       if (name === null && hub) {
-        emit("space", "hub-entry", 1, { hub: true, name: `hub · ${hub.heads?.length ?? 0}`, data: {}, foldable: false,
+        emit("space", "hub-entry", 1, { hub: true, name: `hub · ${hub.heads?.length ?? 0}`, count: hub.heads?.length ?? 0, data: {}, foldable: false,
           active: !!hub.active, sectionColorKey: "hub", sectionDepth: 1 });
         for (const head of hub.heads ?? []) emit("pane", `hub:${head.address}`, 2, { hub: true,
           key: `hub-head:${head.address}`, name: `${head.spaceName || "Space"} · ${head.tabName || "Terminal"}`,
+          spaceName: head.spaceName || "Space", tabName: head.tabName || "Terminal",
           sub: "", terminal: head.address,
           data: panes.find(p => p.terminal === head.address) ?? {}, status: head.status,
           foldable: false, active: !!hub.active && hub.terminal === head.address, sectionColorKey: "hub", sectionDepth: 1 });
