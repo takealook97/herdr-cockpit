@@ -1,0 +1,19 @@
+{
+  "cerberus": {
+    "RECIPE.md": "f4b5a5a12d5971de20dfd1ea42ebb81003d1a10a97c9062431654b86ffb7bae6",
+    "main.js": "24e315119f4b1fc39e1c8f1abac378e98acb1c34fc9c4ee598e906d9d93a9d55",
+    "mod.json": "e3ca0fd6047d996f5a9cc7a03e2f374f494f09b28690551ab193eff1fc61bec5",
+    "model.js": "e0c42e53ae449c11cf1ed32ecdf8175d94dad9718dc1a3d8490cf7e913e5f651"
+  },
+  "cerberus-bar": {
+    "RECIPE.md": "68e85833eeaf5dd2494c28959e2e5eff53d8a7119b205d133fbf7c5b2534a5e2",
+    "main.js": "847cda1e307adb64092957408bddaa9d207c4001f915caf24edd5e32377a2847",
+    "mod.json": "6fb0fe0af49cf5447a5b6f4ddffe8aea74d0d01fe851da28629c0c6edc5c3d27",
+    "model.js": "e0c42e53ae449c11cf1ed32ecdf8175d94dad9718dc1a3d8490cf7e913e5f651"
+  },
+  "cerberus-cell": {
+    "RECIPE.md": "70e3a24ede1334d40c261aed3918507345f5a226ede7c8190728efbf106b0bb2",
+    "main.js": "8863446811804655c467af88797c0686ea1454938439282d53f1bd01a8338abf",
+    "mod.json": "ca0ab513e84324c0615f66faa485327582ec356f80122b1c3383019d5df53b5c"
+  }
+}

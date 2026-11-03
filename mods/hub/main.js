@@ -1,24 +1,16 @@
 import { View, div } from 'gpui-kit';
-import { exec, spaces, machines, panes, shared, setShared, openOverlay, closeOverlay, nextCommand, props, run } from 'herdr';
-import { headsFrom, mergeHuds, gridFor } from './model.js';
+import { exec, spaces, machines, panes, shared, setShared, layout, nextCommand, run } from 'herdr';
+import { headsFrom, mergeHuds, gridFor, findNode, replaceNode } from './model.js';
 
-// A zero-height layout block keeps the command receiver resident. A mod.open
-// copy only forwards to it, so there is exactly one polling/overlay owner.
-export default class Cerberus extends View {
+// A zero-height layout block keeps the command receiver resident.
+export default class Hub extends View {
   init(_p, cx) {
-    this.launcher = !!props()?.overlay;
-    if (this.launcher) {
-      run('cerberus.toggle');
-      closeOverlay(props().overlay);
-      return;
-    }
     this.snapshots = new Map();
     this.heads = [];
-    this.overlay = null;
     this.signature = '';
-    setShared('cerberus.open', false);
-    setShared('cerberus.sending', false);
-    setShared('cerberus.stale', true);
+    setShared('hub.open', false);
+    setShared('hub.sending', false);
+    setShared('hub.stale', true);
     this.refresh(cx);
     cx.timer.every(3000, cx => this.refresh(cx));
     cx.timer.every(250, cx => this.sync(cx));
@@ -49,7 +41,7 @@ export default class Cerberus extends View {
       }));
       for (const machine of this.snapshots.keys()) if (!names.includes(machine)) this.snapshots.delete(machine);
       this.polling = false;
-      setShared('cerberus.stale', results.some(ok => !ok));
+      setShared('hub.stale', results.some(ok => !ok));
       this.sync(cx);
       cx.notify();
     });
@@ -60,55 +52,64 @@ export default class Cerberus extends View {
     const serialized = JSON.stringify(this.heads);
     if (serialized !== this.headsSerialized) {
       this.headsSerialized = serialized;
-      setShared('cerberus.heads', this.heads);
+      setShared('hub.heads', this.heads);
     }
-    if (!this.overlay) return;
-    if (this.closeRequested && !shared('cerberus.sending')) { this.hide(); return; }
-    const view = { focus: shared('cerberus.focus') ?? null, page: shared('cerberus.page') ?? 0 };
+    const stack = findNode(layout(), 'work-stack');
+    const open = stack?.active === 'hub-view';
+    if (shared('hub.open') !== open) setShared('hub.open', open);
+    if (!open) { this.rebuildTimer?.cancel(); this.pendingSignature = null; return; }
+    if (this.closeRequested && !shared('hub.sending')) { this.hide(); return; }
+    const view = { focus: shared('hub.focus') ?? null, page: shared('hub.page') ?? 0 };
     // Status changes update live cell headers; blocked borders require a rebuild.
     const signature = JSON.stringify([this.heads.map(({ status, ...h }) => ({ ...h, blocked: status === 'blocked' })), view]);
     if (signature === this.signature) {
       this.rebuildTimer?.cancel(); this.pendingSignature = null; return;
     }
-    if (shared('cerberus.sending') || signature === this.pendingSignature) return;
+    if (shared('hub.sending') || signature === this.pendingSignature) return;
     this.rebuildTimer?.cancel();
     this.pendingSignature = signature;
     this.rebuildTimer = cx.timer.after(1000, cx => {
-      if (!this.overlay || shared('cerberus.sending')) { this.pendingSignature = null; return; }
-      this.show(); cx.notify();
+      if (findNode(layout(), 'work-stack')?.active !== 'hub-view' || shared('hub.sending')) { this.pendingSignature = null; return; }
+      this.updateGrid(); cx.notify();
     });
   }
 
-  show() {
-    this.closeRequested = false;
-    const focus = shared('cerberus.focus') ?? null;
+  updateGrid() {
+    const tree = layout();
+    if (!findNode(tree, 'work-stack') || !findNode(tree, 'hub-grid')) return;
+    const focus = shared('hub.focus') ?? null;
     const pages = Math.max(1, Math.ceil(this.heads.length / 9));
-    const page = Math.min(pages - 1, Math.max(0, shared('cerberus.page') ?? 0));
-    if (page !== shared('cerberus.page')) setShared('cerberus.page', page);
+    const page = Math.min(pages - 1, Math.max(0, shared('hub.page') ?? 0));
+    if (page !== shared('hub.page')) setShared('hub.page', page);
     this.signature = JSON.stringify([this.heads.map(({ status, ...h }) => ({ ...h, blocked: status === 'blocked' })), { focus, page }]);
     this.pendingSignature = null;
-    if (this.overlay) closeOverlay(this.overlay);
-    this.overlay = openOverlay({ kind: 'window', key: 'cerberus', frame: 'none', width: 0.96, height: 0.92,
-      layout: { id: 'cerberus', type: 'column', gap: 4, padding: 4, background: 'canvas', resizable: false,
-        children: [
-          { id: 'cerberus-bar', type: 'block', size: { px: 44 }, content: { mod: 'cerberus-bar' } },
-          gridFor(this.heads, focus, page),
-        ] } });
-    setShared('cerberus.open', true);
+    const next = replaceNode(tree, 'hub-grid', [gridFor(this.heads, focus, page)]);
+    if (next !== tree) run('layout.set', { layout: next });
+  }
+  show() {
+    if (!findNode(layout(), 'work-stack')) {
+      setShared('hub.unavailable', 'Hub requires the cockpit work-stack layout.');
+      return;
+    }
+    setShared('hub.unavailable', null);
+    this.closeRequested = false;
+    this.updateGrid();
+    run('layout.select', { stack: 'work-stack', child: 'hub-view' });
+    setShared('hub.open', true);
   }
   hide(force = false) {
-    if (!force && shared('cerberus.sending')) { this.closeRequested = true; return; }
+    if (!force && shared('hub.sending')) { this.closeRequested = true; return; }
     this.closeRequested = false;
     this.rebuildTimer?.cancel();
     this.pendingSignature = null;
-    if (this.overlay) closeOverlay(this.overlay);
-    this.overlay = null;
-    setShared('cerberus.open', false);
+    if (findNode(layout(), 'work-stack')?.active === 'hub-view')
+      run('layout.select', { stack: 'work-stack', child: 'work-normal' });
+    setShared('hub.open', false);
   }
   toggle(cx) {
-    if (this.overlay) this.hide();
+    if (findNode(layout(), 'work-stack')?.active === 'hub-view') this.hide();
     else { this.sync(cx); this.show(); }
   }
-  close() { if (!this.launcher) this.hide(true); }
-  render() { return div().id('cerberus-controller').size_full(); }
+  close() { this.rebuildTimer?.cancel(); }
+  render() { return div().id('hub-controller').size_full(); }
 }

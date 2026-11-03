@@ -48,7 +48,7 @@ test('grid geometry for 1 through 10 keeps each terminal once, with a header abo
     const cells = grid.type === 'row' ? grid.children : grid.children.flatMap(r => r.children);
     for (const cell of cells) {
       assert.equal(cell.children[0].size.px, 26);
-      assert.equal(cell.children[0].content.mod, 'cerberus-cell');
+      assert.equal(cell.children[0].content.mod, 'hub-cell');
       assert.equal(cell.children[1].content.terminal, cell.children[0].content.props.address);
     }
   }
@@ -83,5 +83,5 @@ test('broadcast selection defaults to all, respects exclusions and enrolls new h
 
 test('sandboxed mods carry identical model helpers', () => {
   assert.equal(readFileSync(new URL('./model.js', import.meta.url), 'utf8'),
-    readFileSync(new URL('../cerberus/model.js', import.meta.url), 'utf8'));
+    readFileSync(new URL('../hub/model.js', import.meta.url), 'utf8'));
 });

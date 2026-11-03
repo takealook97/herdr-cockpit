@@ -42,9 +42,9 @@ const block = (id, content, extra = {}) => ({ id, type: 'block', content, ...ext
 const group = (id, type, children, extra = {}) => ({ id, type, children, gap: 4, resizable: false, ...extra });
 function cell(head, index, focus) {
   const h = typeof head === 'string' ? { address: head, tabName: head, spaceName: '', status: 'idle' } : head;
-  const id = `cerberus-cell-${index}`;
+  const id = `hub-cell-${index}`;
   return group(id, 'column', [
-    block(`${id}-header`, { mod: 'cerberus-cell', props: { ...h, focus: h.address === focus } }, { size: { px: 26 } }),
+    block(`${id}-header`, { mod: 'hub-cell', props: { ...h, focus: h.address === focus } }, { size: { px: 26 } }),
     block(`${id}-terminal`, { terminal: h.address }),
   ], { gap: 0, min: 0, border: { width: 1, color: h.status === 'blocked' ? 'blocked' : 'border' } });
 }
@@ -59,17 +59,36 @@ export function gridFor(headsOrN, focus = null, page = 0) {
   const pages = Math.max(1, Math.ceil(heads.length / 9));
   const current = Math.max(0, Math.min(pages - 1, page));
   const visible = heads.slice(current * 9, current * 9 + 9);
-  if (!visible.length) return block('cerberus-empty', { mod: 'cerberus-cell', props: { empty: true } });
+  if (!visible.length) return block('hub-empty', { mod: 'hub-cell', props: { empty: true } });
   const cells = visible.map((h, i) => cell(h, current * 9 + i, focus));
   const at = visible.findIndex(h => address(h) === focus);
-  if (at !== -1 && cells.length > 1) return group('cerberus-grid', 'row', [
+  if (at !== -1 && cells.length > 1) return group('hub-tiles', 'row', [
     { ...cells[at], size: { weight: 2 } },
-    group('cerberus-rest', 'column', cells.filter((_, i) => i !== at), { size: { weight: 1 }, min: 0 }),
+    group('hub-rest', 'column', cells.filter((_, i) => i !== at), { size: { weight: 1 }, min: 0 }),
   ]);
-  if (cells.length <= 3) return group('cerberus-grid', 'row', cells);
+  if (cells.length <= 3) return group('hub-tiles', 'row', cells);
   const columns = cells.length === 4 ? 2 : 3;
   const rows = [];
   for (let i = 0; i < cells.length; i += columns)
-    rows.push(group(`cerberus-row-${i / columns}`, 'row', cells.slice(i, i + columns), { min: 0 }));
-  return group('cerberus-grid', 'column', rows);
+    rows.push(group(`hub-row-${i / columns}`, 'row', cells.slice(i, i + columns), { min: 0 }));
+  return group('hub-tiles', 'column', rows);
+}
+
+// Preserve the original tree for equal or missing targets; callers can skip writes.
+export function findNode(tree, id) {
+  if (!tree) return null;
+  if (tree.id === id) return tree;
+  for (const child of tree.children ?? []) {
+    const found = findNode(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+export function replaceNode(tree, id, children) {
+  if (!tree) return tree;
+  if (tree.id === id) return JSON.stringify(tree.children) === JSON.stringify(children)
+    ? tree : { ...tree, children: JSON.parse(JSON.stringify(children)) };
+  if (!tree.children) return tree;
+  const next = tree.children.map(child => replaceNode(child, id, children));
+  return next.every((child, index) => child === tree.children[index]) ? tree : { ...tree, children: next };
 }

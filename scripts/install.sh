@@ -49,7 +49,10 @@ for path in sorted(glob.glob(os.path.join(snippets, "*.json"))):
             raise ValueError("Key section must be an object: " + section)
         target = data.setdefault(section, {})
         for key, action in bindings.items():
-            if key not in target:
+            if section == "global" and key == "ctrl-shift-h" and target.get(key) == "cerberus.toggle":
+                target[key] = action
+                changes.append(section + ":" + key + " (migrate cerberus.toggle)")
+            elif key not in target:
                 target[key] = action
                 changes.append(section + ":" + key)
 if mode == "validate":
@@ -78,6 +81,31 @@ finally:
         os.unlink(staged)
 print("Merged missing keys: " + ", ".join(changes))
 PYKEYS
+}
+legacy_mods() {
+    python3 - "$root/scripts/legacy-cerberus.json" "$app/mods" "$1" <<'PYLEGACY'
+import hashlib, json, pathlib, shutil, sys
+manifest, mods, mode = sys.argv[1:]
+for name, expected in json.loads(pathlib.Path(manifest).read_text()).items():
+    folder = pathlib.Path(mods) / name
+    if not folder.exists() and not folder.is_symlink():
+        continue
+    entries = list(folder.rglob("*")) if folder.is_dir() and not folder.is_symlink() else []
+    if folder.is_symlink() or not folder.is_dir() or any(p.is_symlink() for p in entries):
+        print("Preserve legacy mod (not an unmodified install): " + str(folder))
+        continue
+    files = {str(p.relative_to(folder)): hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in entries if p.is_file()}
+    # Extra files, including editor files, belong to the user: keep the directory.
+    dirs = {str(p.relative_to(folder)) for p in entries if p.is_dir()}
+    expected_dirs = {str(parent) for file in expected for parent in pathlib.Path(file).parents if str(parent) != "."}
+    if files != expected or dirs != expected_dirs:
+        print("Preserve legacy mod (modified or extra files): " + str(folder))
+        continue
+    print(("Would remove" if mode == "dry-run" else "Remove") + " unmodified legacy mod: " + str(folder))
+    if mode != "dry-run":
+        shutil.rmtree(folder)
+PYLEGACY
 }
 merge_keys validate
 # Themes: only the shipped names; never replace a different file unless --force.
@@ -110,6 +138,7 @@ if "$dry_run"; then
     echo "Sync custom mods: $app/mods (exclude tests and editor files)"
     echo "Copy custom layouts: $app/layouts"
     merge_keys dry-run
+    legacy_mods dry-run
     for name in $themes_to_copy; do
         if [ -e "$app/themes/$name.json" ]; then
             if cmp -s "$root/themes/$name.json" "$app/themes/$name.json"; then echo "Theme $name: unchanged"; else echo "Theme $name: overwrite (--force)"; fi
@@ -143,6 +172,7 @@ for layout in "$root"/layouts/*.json; do
     cp "$layout" "$app/layouts/"
 done
 merge_keys write
+legacy_mods write
 if [ -n "$themes_to_copy" ]; then
     mkdir -p "$app/themes"
     for name in $themes_to_copy; do
