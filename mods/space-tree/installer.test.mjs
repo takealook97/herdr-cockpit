@@ -110,8 +110,9 @@ test('app-generated editor files do not prevent safe legacy removal', () => sand
   for (const name of Object.keys(legacyAssets)) assert.ok(!readdirSync(join(folder, 'app', 'mods')).includes(name));
 }));
 
-for (const change of ['modified', 'extra', 'symlink']) test(`installer preserves previous hub controller with ${change} files`, () => sandbox(({ folder, run }) => {
-  const dir = oldInstall(folder, 'hub');
+for (const name of ['hub', 'hub-bar', 'hub-cell'])
+for (const change of ['modified', 'extra', 'symlink']) test(`installer preserves previous ${name} with ${change} files`, () => sandbox(({ folder, run }) => {
+  const dir = oldInstall(folder, name);
   if (change === 'modified') writeFileSync(join(dir, 'main.js'), '// custom controller');
   if (change === 'extra') writeFileSync(join(dir, 'notes.txt'), 'user notes');
   if (change === 'symlink') symlinkSync(join(dir, 'main.js'), join(dir, 'gpui-kit.d.ts'));

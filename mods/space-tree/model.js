@@ -1,3 +1,4 @@
+import { observerFor } from "./hub-model.js";
 export const tabIconColor = (status, active) => active ? "foreground" : status === "working" || status === "blocked" ? status : "muted";
 
 export const aggregateStatus = statuses => ["blocked", "working", "done", "idle"]
@@ -45,6 +46,9 @@ export function orchIndexes(orch = {}) {
 
 const programName = pane => pane.program?.name || pane.app || pane.mod || "Terminal";
 export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
+  const target = observerFor(orchIndex.terminals?.[pane.terminal] ?? pane);
+  const source = orchIndex.hubHeads?.find(h => h.address === target);
+  if (source) return `${source.tabName} · ${source.spaceName}`;
   const alias = aliases[aliasKey("pane", pane.terminal)];
   if (alias) return alias;
   const worker = orchIndex.workers?.[pane.terminal];
@@ -56,7 +60,9 @@ export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
 
 export function paneSub(pane, orchIndex = {}, indexInTab = 0) {
   const worker = orchIndex.workers?.[pane.terminal];
-  const current = worker?.model ? worker : orchIndex.terminals?.[pane.terminal];
+  const terminal = orchIndex.terminals?.[pane.terminal];
+  const source = orchIndex.hubHeads?.find(h => h.address === observerFor(terminal ?? pane));
+  const current = source ?? (worker?.model ? worker : terminal);
   const info = current?.model ? current : orchIndex.lastModel?.[pane.terminal];
   const model = info?.model ? [info.model, info.effort].filter(Boolean).join("-").replace(/\s+/g, "-") : "";
   // Status is the row's colored dot; the text line carries only the model or the pane's position.
@@ -113,9 +119,9 @@ export function pruneFolded(folded = {}, liveIds) {
 }
 
 export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, aliases = {},
-  folded = {}, activeSpaceId } = {}) {
+  folded = {}, activeSpaceId, hub } = {}) {
   activeSpaceId ??= spaces.map(e => e.w ?? e).find(s => s.active)?.id;
-  const index = orchIndexes(orch), result = [];
+  const index = { ...orchIndexes(orch), hubHeads: hub?.heads ?? [] }, result = [];
   // Accept shipped ordered() entries ({w,i,g,tree}) or explicit {parentId}.
   let parent = null;
   const entries = spaces.map((entry, i) => {
@@ -127,18 +133,18 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
   const names = [null, ...new Set([...machines.map(m => m.name), ...entries.map(s => s.machine)]
     .filter(name => name != null))].sort((a, b) => a === null ? -1 : b === null ? 1 : a.localeCompare(b));
   const emit = (kind, id, depth, fields) => {
-    const key = kind === "machine" ? machineId(id) : rowId(kind, id);
+    const key = fields.hub ? "hub-entry" : kind === "machine" ? machineId(id) : rowId(kind, id);
     const row = { kind, id, key, depth, guide: "", foldable: kind !== "pane",
       open: !(folded[key] ?? foldDefault(kind, id, activeSpaceId)), ...fields };
     result.push(row); return row;
   };
-  const addSpace = (s, depth, guide = "", sectionColorKey = s.id, sectionDepth = depth) => {
+  const addSpace = (s, depth, guide = "", sectionColorKey = s.id, sectionDepth = depth, isHub = false) => {
     const tabStatus = tab => {
       const ps = panes.filter(p => p.tab === tab.id);
       return aggregateStatus(ps.length ? ps.map(p => p.status) : [tab.status]);
     };
     const statuses = (s.tabs ?? []).map(tabStatus);
-    const row = emit("space", s.id, depth, { sectionColorKey, sectionDepth, name: s.name, status: aggregateStatus(statuses.length ? statuses : [s.status]), guide,
+    const row = emit("space", s.id, depth, { hub: isHub, sectionColorKey, sectionDepth, name: isHub ? "hub" : s.name, status: aggregateStatus(statuses.length ? statuses : [s.status]), guide,
       active: s.id === activeSpaceId, data: s });
     const children = entries.filter(c => c.parentId === s.id);
     const tabs = row.open ? s.tabs ?? [] : [];
@@ -159,7 +165,15 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
   names.forEach(name => {
     const data = machines.find(m => (m.name ?? null) === name) ?? { name, layout: "ready" };
     const row = emit("machine", name, 0, { name: aliases[aliasKey("machine", name ?? "local")] || name || "This computer", data });
-    if (row.open) entries.filter(s => (s.machine ?? null) === name && !s.parentId).forEach(s => addSpace(s, 1));
+    if (row.open) {
+      if (name === null && hub) {
+        const actual = entries.find(s => s.id === hub.id && !s.machine);
+        if (actual) addSpace(actual, 1, "", "hub", 1, true);
+        else emit("space", "hub-entry", 1, { hub: true, name: "hub", data: {}, foldable: false,
+          active: false, sectionColorKey: "hub", sectionDepth: 1 });
+      }
+      entries.filter(s => (s.machine ?? null) === name && !s.parentId && s.id !== hub?.id).forEach(s => addSpace(s, 1));
+    }
   });
   return result;
 }

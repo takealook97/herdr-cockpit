@@ -1,10 +1,10 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, machines, panes, terminals, layout, run, exec, shared, setShared, theme, openOverlay, nextCommand, props, notify } from "herdr";
+import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, nextCommand, props, notify } from "herdr";
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
-import { buildTree, aliasKey, machineId, rowId, pruneFolded, aggregateStatus, assignSectionColors } from "./model.js";
+import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
@@ -80,12 +80,15 @@ export default class SpaceTree extends Plumbing {
     for (const p of ps) if (p.terminal) {
       const key = aliasKey("pane", p.terminal); aliases[key] = shared(key);
     }
-    return { machines: ms, spaces: sp, panes: ps, orch: this.orch, aliases,
+    const core = new Map(terminals().map(t => [t.address, t]));
+    const orch = { ...this.orch, terminals: (this.orch.terminals ?? []).map(t => ({ ...core.get(t.address), ...t })) };
+    return { machines: ms, spaces: sp, panes: ps, orch, aliases,
+      hub: { id: this.hub.space()?.id, heads: this.hub.heads, active: this.hubActive() },
       activeSpaceId: spaces().find(s => s.active)?.id };
   }
 
   liveKeys(input) {
-    return [machineId(null), ...input.machines.map(m => machineId(m.name)),
+    return ["hub-entry", machineId(null), ...input.machines.map(m => machineId(m.name)),
       ...input.spaces.flatMap(e => [rowId("space", e.w.id), ...(e.w.tabs ?? []).map(t => rowId("tab", t.id))]),
       ...input.panes.map(p => rowId("pane", p.pane))];
   }
@@ -137,15 +140,10 @@ export default class SpaceTree extends Plumbing {
 
   close() { this.hub?.close(); this.input?.release(); }
 
-  hubActive() {
-    const visit = node => node?.id === "work-stack" ? node.active === "hub-view"
-      : (node?.children ?? []).some(visit);
-    return visit(layout());
-  }
+  hubActive() { return this.hub?.active() ?? false; }
   select(row, cx) {
     if (this.editing || this.movingTab) return;
-    if (["space", "tab", "pane"].includes(row.kind) && this.hubActive())
-      run("layout.select", { stack: "work-stack", child: "work-normal" });
+    if (row.hub) { this.hub.open(cx); return; }
     this.highlight = row.key; this.handle.focus();
     if (row.kind === "space" || row.kind === "tab") run(`${row.kind}.select`, { id: row.id });
     if (row.kind === "pane") run("pane.focus", { pane: row.id });
@@ -204,7 +202,7 @@ export default class SpaceTree extends Plumbing {
     if (!this.visible.some(r => r.key === this.highlight)) this.highlight = this.visible.find(r => r.active)?.key ?? this.visible[0]?.key;
     const stored = shared("space.colors") ?? {};
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1", "ansi14", "ansi11", "ansi12", "ansi13"];
-    const sectionIds = buildTree({ ...input, folded: {} }).filter(row => row.kind === "space" && row.sectionColorKey === row.id && row.name !== "~").map(row => row.id);
+    const sectionIds = buildTree({ ...input, folded: {} }).filter(row => row.kind === "space" && !row.hub && row.sectionColorKey === row.id && row.name !== "~").map(row => row.id);
     const colors = assignSectionColors(sectionIds, stored, palette);
     if (JSON.stringify(colors) !== JSON.stringify(stored)) setShared("space.colors", colors);
     const button = (id, icon, label, action) => div().id(id).size(24).flex_none().flex().items_center().justify_center()
@@ -214,13 +212,6 @@ export default class SpaceTree extends Plumbing {
       .size_full().min_h(0).bg(t.chrome).text_size(12)
       .on_hover((hovered, cx) => { if (!hovered) clearDrag(this, cx); })
       .on_mouse_up("left", (_e, cx) => clearDrag(this, cx))
-      .child(h_flex().id("hub-entry").bg(this.hubActive() ? t.selected : t.chrome).h(30).flex_none().px(12).gap(6).items_center()
-        .text_color(t.foreground).cursor_pointer().hover(el => el.bg(t.hover))
-        .tooltip("Head hub · Ctrl-Shift-H")
-        .on_click((_e, cx) => this.hub.toggle(cx))
-        .child(div().size(6).rounded(3).bg(t[aggregateStatus((shared("hub.heads") ?? []).map(h => h.status))]))
-        .child(div().flex_1().font_semibold().child("hub"))
-        .child(div().text_color(t.dim).child(String((shared("hub.heads") ?? []).length))))
       .child(h_flex().h(30).flex_none().pl(12).pr(8).items_center().text_color(t.muted)
         .child(div().flex_1().child("Spaces"))
         .when(this.orchStale, el => el.child(div().text_size(10).text_color(t.dim).tooltip("herdr-hud unavailable; retaining last data").child("⚠")))

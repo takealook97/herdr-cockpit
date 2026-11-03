@@ -1,167 +1,163 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { load, host, element, byId } from '../hub-bar/host.test.mjs';
+import { load, host, element, byId } from './host.test.mjs';
 import * as model from './hub-model.js';
-const cockpit = () => JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url), 'utf8'));
-function setup(tree = cockpit()) {
-  const h = host(); h.layout = tree;
-  h.spaces = [{ id: 's', name: 'Repo', machine: null, tabs: [{ id: 'tb', name: 'Head', index: 1 }] }];
-  h.panes = [{ tab: 'tb', terminal: 't1', status: 'working' }];
-  h.hud = { runs: [], terminals: [{ address: 't1' }] };
-  h.responses = () => ({ code: 0, stdout: JSON.stringify(h.hud) });
+import { buildTree, assignSectionColors, tabIconColor, machineConnected, rowDisplay, machineId, rowId } from './model.js';
+
+function setup({ existing = false } = {}) {
+  const h = host();
+  h.spaces = [{ id: 's', name: 'Repo', active: true, tabs: [{ id: 'tb', name: 'Head', index: 1 }] }];
+  h.panes = [{ pane: 'p', tab: 'tb', terminal: 't1', status: 'working' }];
+  h.terminals = [{ address: 't1', model: 'sol' }];
+  h.hud = { runs: [], terminals: [{ address: 't1', model: 'sol' }] };
+  h.addHub = () => {
+    h.spaces.push({ id: 'h', name: 'hub', active: false, tabs: [{ id: 'ht', name: 'Mirrors', index: 1 }] });
+    h.panes.push({ pane: 'seed-pane', tab: 'ht', terminal: 'seed' });
+    h.terminals.push({ address: 'seed', argv: ['zsh'] });
+  };
+  if (existing) h.addHub();
   const deps = {
-    ...h.deps, ...model, layout: () => h.layout, spaces: () => h.spaces,
-    machines: () => [], panes: () => h.panes, nextCommand: () => new Promise(resolve => { h.command = resolve; }),
-    exec: async (...args) => { h.calls.push({ exec: args }); return h.responses(args); },
+    ...h.deps, ...model, spaces: () => h.spaces, panes: () => h.panes, terminals: () => h.terminals,
+    machines: () => [], nextCommand: () => new Promise(resolve => { h.command = resolve; }),
+    exec: async () => ({ code: h.fail ? 1 : 0, stdout: JSON.stringify(h.hud) }),
     run: (command, args) => {
       h.calls.push({ run: [command, args] });
-      if (command === 'layout.set') h.layout = args.layout;
-      if (command === 'layout.select') model.findNode(h.layout, args.stack).active = args.child;
+      if (command === 'space.select') for (const s of h.spaces) s.active = s.id === args.id;
     },
   };
   const Hub = load(new URL('./hub.js', import.meta.url), 'Hub', deps);
   const SpaceTree = load(new URL('./main.js', import.meta.url), 'SpaceTree', {
     ...deps, Hub, Plumbing: class { init() {} }, initRename() {}, props: () => ({}),
     localStorage: { getItem() { return null; } }, v_flex: element, svg: element,
-    buildTree: () => [], assignSectionColors: () => ({}), aggregateStatus: () => 'idle',
+    buildTree, assignSectionColors, machineId, rowId,
+    treeRow: load(new URL('./rows.js', import.meta.url), 'treeRow', {
+      ...h.deps, svg: element, image: element, nameElement: (_v, row) => row.name, tabIconColor, machineConnected, rowDisplay,
+    }),
   });
   h.tree = new SpaceTree(); h.tree.init({}, h.cx);
   h.view = h.tree.hub;
-  h.view.refresh = cx => h.tree.refreshOrch(cx);
+  h.observer = (terminal = 'o1', target = 't1') => {
+    const info = { address: terminal, labels: { 'hub.observer': target }, argv: ['hc', 'attach', '--observe', target] };
+    h.terminals.push(info); h.hud.terminals.push(info);
+    h.panes.push({ pane: `pane-${terminal}`, tab: 'ht', terminal });
+  };
   return h;
 }
-const writes = h => h.calls.filter(c => c.run?.[0] === 'layout.set');
-const active = h => model.findNode(h.layout, 'work-stack').active;
-test('toggle selects inline hub and normal tab view, preserving bar and normal subtree', async () => {
+const runs = h => h.calls.filter(c => c.run).map(c => c.run);
+const launches = h => h.calls.filter(c => c.hc);
+
+test('poll never creates a space; open creates lazily, waits for ids, moves first and selects hub', async () => {
   const h = setup(); await h.flush();
-  const normal = model.findNode(h.layout, 'work-normal'), bar = model.findNode(h.layout, 'hub-bar');
-  h.view.toggle(h.cx);
-  assert.equal(active(h), 'hub-view');
-  assert.equal(model.findNode(h.layout, 'hub-grid').children[0].children[0].children[1].content.terminal, 't1');
-  assert.equal(model.findNode(h.layout, 'work-normal'), normal);
-  assert.equal(model.findNode(h.layout, 'hub-bar'), bar);
-  h.view.toggle(h.cx);
-  assert.equal(active(h), 'work-normal');
-  assert.equal(h.shared.get('hub.open'), false);
+  assert.deepEqual(runs(h), []);
+  h.view.open(h.cx); h.view.open(h.cx);
+  assert.deepEqual(runs(h), [['space.new', { name: 'hub' }]]);
+  h.addHub(); h.view.sync(h.cx); await h.flush();
+  assert.deepEqual(runs(h), [['space.new', { name: 'hub' }], ['space.move', { id: 'h', index: 1 }], ['space.select', { id: 'h' }]]);
+  assert.equal(h.shared.get('hub.space'), 'h');
+  assert.deepEqual(launches(h)[0].hc, model.observerArgs('h', 'ht', 't1'));
+  assert.equal(h.view.active(), true);
 });
-test('grid changes debounce while open and stop on sidebar exit', async () => {
-  const h = setup(); await h.flush(); h.view.toggle(h.cx);
-  h.panes.push({ tab: 'tb', terminal: 't2', status: 'idle' }); h.hud.terminals.push({ address: 't2' });
-  h.view.refresh(h.cx); await h.flush();
-  assert.equal(writes(h).length, 1);
-  h.panes[1].status = 'blocked'; h.view.sync(h.cx);
-  assert.equal(h.timers.filter(t => !t.canceled).length, 1);
-  h.tick(1000); assert.equal(writes(h).length, 2);
-  assert.equal(active(h), 'hub-view');
-  h.shared.set('hub.focus', 't1'); h.view.sync(h.cx);
-  model.findNode(h.layout, 'work-stack').active = 'work-normal';
-  h.tick(1000); assert.equal(writes(h).length, 2);
-  h.view.sync(h.cx); assert.equal(h.shared.get('hub.open'), false);
+test('toggle returns to previous space; pinned click opens even when hub is already active', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  h.view.toggle(h.cx); await h.flush(); assert.equal(h.view.active(), true);
+  h.view.toggle(h.cx); assert.equal(h.spaces[0].active, true);
+  h.command('hub'); await Promise.resolve(); assert.equal(h.view.active(), true);
+  h.tree.select({ hub: true }, h.cx); assert.equal(h.view.active(), true);
+  h.command('hub-close'); await Promise.resolve(); assert.equal(h.spaces[0].active, true);
 });
-test('status updates remain live and failed polls retain Heads and pause broadcast', async () => {
-  const h = setup(); await h.flush(); h.view.toggle(h.cx);
-  h.panes[0].status = 'done'; h.view.sync(h.cx);
-  assert.equal(h.timers.filter(t => !t.canceled).length, 0);
-  assert.equal(h.shared.get('hub.heads')[0].status, 'done');
-  h.responses = () => ({ code: 1 }); h.view.refresh(h.cx); await h.flush();
-  assert.equal(h.shared.get('hub.heads').length, 1);
+test('reconciliation deduplicates in-flight adds and kills seed exactly once after a live observer exists', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  h.view.sync(h.cx); h.view.sync(h.cx); await h.flush();
+  assert.equal(launches(h).length, 1);
+  assert.equal(runs(h).length, 0);
+  h.observer(); h.view.sync(h.cx); h.view.sync(h.cx); await h.flush();
+  assert.deepEqual(runs(h), [['terminal.kill', { terminal: 'seed' }]]);
+  assert.deepEqual(h.shared.get('hub.heads').map(h => h.address), ['t1']);
+  h.panes.push({ tab: 'ht', terminal: 'user-shell' }); h.view.sync(h.cx);
+  assert.equal(runs(h).length, 1);
+});
+test('only observers inside the hub tab are removed when their head disappears', async () => {
+  const h = setup({ existing: true }); h.observer('o1', 'gone');
+  h.terminals.push({ address: 'outside', labels: { 'hub.observer': 'gone' } });
+  h.panes.push({ tab: 'tb', terminal: 'outside' });
+  await h.flush();
+  assert.deepEqual(runs(h), [['terminal.kill', { terminal: 'o1' }]]);
+});
+test('failed helper poll retains heads and pauses destructive reconciliation', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  h.fail = true; h.tree.refreshOrch(h.cx); await h.flush();
+  h.observer('stale', 'unknown'); h.view.sync(h.cx);
   assert.equal(h.shared.get('hub.stale'), true);
+  assert.equal(h.shared.get('hub.heads').length, 1);
+  assert.deepEqual(runs(h), []);
 });
-test('in-flight sends defer requested close and grid changes', async () => {
-  const h = setup(); await h.flush(); h.view.toggle(h.cx);
-  h.shared.set('hub.sending', true); h.shared.set('hub.focus', 't1'); h.view.sync(h.cx);
-  assert.equal(h.timers.length, 0);
-  h.view.hide(); assert.equal(active(h), 'hub-view');
-  h.shared.set('hub.sending', false); h.view.sync(h.cx);
-  assert.equal(active(h), 'work-normal');
+test('observer core metadata excludes observers even when old HUD omits labels', async () => {
+  const h = setup();
+  h.panes.push({ tab: 'tb', terminal: 'observer' });
+  h.terminals.push({ address: 'observer', argv: ['hc', 'attach', '--observe', 't1'] });
+  h.hud.terminals.push({ address: 'observer' });
+  await h.flush();
+  assert.deepEqual(h.view.heads.map(h => h.address), ['t1']);
 });
-test('equal grids skip layout writes; paging and focus retain the stable grid slot', async () => {
-  const h = setup(); await h.flush(); h.view.toggle(h.cx);
-  h.view.updateGrid(); assert.equal(writes(h).length, 1);
-  h.shared.set('hub.page', 99); h.view.updateGrid();
-  assert.equal(h.shared.get('hub.page'), 0); assert.equal(writes(h).length, 1);
-  h.shared.set('hub.focus', 't1'); h.view.sync(h.cx); h.tick(1000);
-  assert.ok(model.findNode(h.layout, 'hub-grid'));
+test('failed observer launch is retried without killing the shell', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  h.view.pending.clear();
+  // Inject a failure through the bound fake hc on a separate host.
+  const failing = host(), deps = { ...failing.deps, ...model, spaces: () => h.spaces, panes: () => h.panes,
+    terminals: () => h.terminals, hc: async () => { throw new Error('offline'); } };
+  const Hub = load(new URL('./hub.js', import.meta.url), 'Hub', deps);
+  const manager = new Hub(); manager.init({}, failing.cx);
+  manager.snapshots.set(null, { data: h.hud }); failing.shared.set('hub.stale', false);
+  manager.sync(failing.cx); await failing.flush();
+  assert.equal(manager.pending.size, 0);
+  assert.deepEqual(runs(failing), []);
 });
-test('another layout stays untouched and reports why hub cannot open', async () => {
-  const h = setup({ id: 'other', type: 'column', children: [] }); await h.flush(); h.view.toggle(h.cx);
-  assert.equal(h.calls.filter(c => c.run).length, 0);
-  assert.match(h.shared.get('hub.unavailable'), /work-stack/);
-});
-test('remote helpers qualify full worker addresses before exclusion', async () => {
+test('regular tree navigation runs native space/tab/pane commands without layout operations', async () => {
   const h = setup(); await h.flush();
-  h.spaces.push({ id: 'remote/host/s', name: 'Remote', machine: 'remote/host', tabs: [{ id: 'remote/host/tb', index: 1, name: 'Remote Head' }] });
-  h.panes.push({ tab: 'remote/host/tb', terminal: 'remote/host/t1' }, { tab: 'remote/host/tb', terminal: 'remote/host/t2' });
-  h.responses = args => ({ code: 0, stdout: JSON.stringify(args[2].on ? {
-    runs: [{ workers: [{ terminal: 't2' }] }], terminals: [{ address: 't1' }, { address: 't2' }],
-  } : h.hud) });
-  h.view.refresh(h.cx); await h.flush();
-  assert.deepEqual(h.shared.get('hub.heads').map(h => h.address), ['t1', 'remote/host/t1']);
+  for (const kind of ['space', 'tab', 'pane']) h.tree.select({ kind, id: 'target', key: 'k' }, h.cx);
+  assert.deepEqual(runs(h), [['space.select', { id: 'target' }], ['tab.select', { id: 'target' }], ['pane.focus', { pane: 'target' }]]);
 });
-test('cockpit mounts always-shown space tree, stable stack slots and hub key', () => {
-  const tree = cockpit();
-  assert.equal(model.findNode(tree, 'hub-controller'), null);
-  assert.equal(model.findNode(tree, 'space-tree').content.mod, 'space-tree');
-  assert.equal(model.findNode(tree, 'work-stack').active, 'work-normal');
-  assert.equal(model.findNode(tree, 'hub-bar').size.px, 44);
-  assert.equal(model.findNode(tree, 'panel').hidden, true);
-  assert.equal(JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global['ctrl-shift-h'], 'space-tree.hub');
-  for (const mod of ['hub-bar', 'hub-cell'])
-    assert.doesNotMatch(readFileSync(new URL(`../${mod}/main.js`, import.meta.url), 'utf8'), /openOverlay|closeOverlay/);
-});
-test('replaceNode is immutable and returns same root for equal children or missing ids', () => {
-  const tree = cockpit(), children = [model.gridFor(4)];
-  const next = model.replaceNode(tree, 'hub-grid', children);
-  assert.notEqual(next, tree);
-  assert.equal(model.findNode(tree, 'hub-grid').children[0].content.props.empty, true);
-  assert.deepEqual(model.findNode(next, 'hub-grid').children, children);
-  children[0].children = [];
-  assert.notDeepEqual(model.findNode(next, 'hub-grid').children, children);
-  assert.equal(model.replaceNode(next, 'hub-grid', model.findNode(next, 'hub-grid').children), next);
-  assert.equal(model.replaceNode(next, 'absent', []), next);
+test('controller close stops future polling mutations', async () => {
+  const h = setup(); await h.flush(); h.view.close(); h.addHub(); h.view.sync(h.cx); await h.flush();
+  assert.equal(launches(h).length, 0);
 });
 
-test('space-tree command receiver and pinned entry use the same hub toggle', async () => {
-  const h = setup(); await h.flush();
-  h.command('hub'); await Promise.resolve();
-  assert.equal(active(h), 'hub-view');
-  assert.equal(writes(h).length, 1);
-  h.tree.inputs = () => ({});
-  byId(h.tree.render(), 'hub-entry').handlers.click({}, h.cx);
-  assert.equal(active(h), 'work-normal');
-  h.command('hub'); await Promise.resolve();
-  assert.equal(active(h), 'hub-view');
-  h.command('hub-close'); await Promise.resolve();
-  assert.equal(active(h), 'work-normal');
+
+test('first render places clickable hub row directly below This computer and uses space row geometry', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  h.tree.inputs = () => ({ machines: [], spaces: h.spaces, panes: h.panes, orch: h.hud, hub: { id: 'h', heads: h.view.heads } });
+  h.tree.machines = []; h.tree.reconnecting = {}; h.tree.rebuilt = () => false;
+  const root = h.tree.render(), list = byId(root, 'tree-list');
+  assert.equal(list.nodes[0].style.id, 'machine:');
+  assert.equal(list.nodes[1].style.id, 'hub-entry');
+  assert.equal(list.nodes[1].style.h, 26);
+  assert.equal(list.nodes[1].style.pl, 14);
+  list.nodes[1].handlers.click({}, h.cx);
+  assert.equal(h.view.active(), true);
+  list.nodes[1].handlers.click({}, h.cx);
+  assert.equal(h.view.active(), true);
 });
-test('an externally selected hub builds its grid on the live sync timer', async () => {
-  const h = setup(); await h.flush();
-  model.findNode(h.layout, 'work-stack').active = 'hub-view';
-  h.intervals.find(t => t.ms === 250).fn(h.cx);
-  h.tick(1000);
-  assert.equal(writes(h).length, 1);
-  assert.equal(model.findNode(h.layout, 'hub-cell-0-terminal').content.terminal, 't1');
-  h.intervals.find(t => t.ms === 250).fn(h.cx); h.tick(1000);
-  assert.equal(writes(h).length, 1);
+test('initial metadata loading cannot remove existing observers', async () => {
+  const h = setup({ existing: true }); h.observer('existing', 'unknown');
+  h.view.sync(h.cx);
+  assert.deepEqual(runs(h), []);
+  await h.flush();
+  assert.deepEqual(runs(h), [['terminal.kill', { terminal: 'existing' }]]);
+});
+test('hub fold key is retained by pruning', async () => {
+  const h = setup({ existing: true }); await h.flush();
+  assert.ok(h.tree.liveKeys({ machines: [], spaces: [], panes: [] }).includes('hub-entry'));
 });
 
-test('shared polling retains orch availability, models and remote run tab guards', async () => {
-  const h = setup(); await h.flush();
-  h.hud.orch = true;
-  h.hud.terminals[0].model = 'sol';
-  h.tree.refreshOrch(h.cx); await h.flush();
-  assert.equal(h.tree.orch.orch, true);
-  assert.equal(h.tree.orch.lastModel.t1.model, 'sol');
-  h.spaces.push({ machine: 'remote/host' });
-  h.responses = args => ({ code: 0, stdout: JSON.stringify(args[2].on ? {
-    orch: true, terminals: [], runs: [{ tab: 't3', workspace: 's3', workers: [] }],
-  } : h.hud) });
-  h.tree.refreshOrch(h.cx); await h.flush();
-  assert.equal(h.tree.orch.runs[0].tab, 'remote/host/t3');
-  h.responses = () => ({ code: 1 });
-  h.tree.refreshOrch(h.cx); await h.flush();
-  assert.equal(h.tree.orchStale, true);
-  assert.equal(h.tree.orch.orch, true);
-  assert.equal(h.tree.orch.lastModel.t1.model, 'sol');
+
+test('seed removal survives a controller restart and preserves later hub shells', async () => {
+  const h = setup({ existing: true }); h.observer(); await h.flush();
+  assert.deepEqual(h.shared.get('hub.seedRemoved'), ['h']);
+  h.calls.length = 0;
+  const Hub = load(new URL('./hub.js', import.meta.url), 'Hub', { ...h.deps, ...model,
+    spaces: () => h.spaces, panes: () => h.panes, terminals: () => h.terminals });
+  const restarted = new Hub(); restarted.init({}, h.cx);
+  restarted.snapshots.set(null, { data: h.hud });
+  h.shared.set('hub.stale', false); restarted.sync(h.cx); await h.flush();
+  assert.deepEqual(runs(h), []);
 });

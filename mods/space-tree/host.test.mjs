@@ -19,7 +19,7 @@ export function element() {
 export const walk = node => typeof node === 'object' && node ? [node, ...(node.nodes ?? []).flatMap(walk)] : [node];
 export const byId = (node, id) => walk(node).find(n => n?.style?.id === id);
 export const load = (url, name, deps) => {
-  const source = readFileSync(url, 'utf8').replace(/^import .*;\n/gm, '').replace('export default ', '');
+  const source = readFileSync(url, 'utf8').replace(/^import .*;\n/gm, '').replace('export default ', '').replace(/^export /gm, '');
   return new Function(...Object.keys(deps), `${source}; return ${name};`)(...Object.values(deps));
 };
 export function host(initial = {}) {

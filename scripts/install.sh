@@ -87,7 +87,10 @@ legacy_mods() {
     python3 - "$root/scripts/legacy-cerberus.json" "$app/mods" "$1" <<'PYLEGACY'
 import hashlib, json, pathlib, shutil, sys
 manifest, mods, mode = sys.argv[1:]
-for name, expected in json.loads(pathlib.Path(manifest).read_text()).items():
+legacy = json.loads(pathlib.Path(manifest).read_text())
+# Exact previous in-layout hub assets; preserve any user changes.
+legacy.update({'hub-bar': {'mod.json': '2d4318e56bcc9b7a96e5af2da1173a4c16c56e412a17382882658beb04830d33', 'RECIPE.md': 'f09d17b9a6f1bf9bd872d29b7c3db00696ac5599e6b1743a2146079513120adb', 'main.js': '7fa119b316c980475931a64fb5bd89d8323abe725cb22de384e533345ea0ff00', 'model.js': '283fc3179f1f6416e4db88a379b98bd2f54bfbf770862bfe7bd9c566dfe92413'}, 'hub-cell': {'mod.json': '3a6baf344cf9980aa6338efaace426a180df6d84e78772000f1461a48eff38b9', 'RECIPE.md': '4e592724b39a760d269b739b0d9fcad851e0ac8d1a7050ac822d16e0849e591c', 'main.js': '4e5b79ccfd36502ad12bedeba77eb71f84745e423b22b70965a3905899cb0ad7'}})
+for name, expected in legacy.items():
     folder = pathlib.Path(mods) / name
     if not folder.exists() and not folder.is_symlink():
         continue

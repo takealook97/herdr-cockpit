@@ -20,7 +20,7 @@ make setup
 make install
 ```
 
-The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, and `mods/{usage-bar,space-tree,agent-list,hub-bar,hub-cell}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing bindings win, including a conflicting Ctrl-Shift-H; the previous `cerberus.toggle` and `hub.toggle` bindings migrate to `space-tree.hub`. Old `hub`, `cerberus`, `cerberus-bar`, and `cerberus-cell` directories are removed only when their complete file set and contents match the previous install; app-generated `gpui-kit.d.ts` and `jsconfig.json` are ignored during comparison, while modified directories and other extra files are preserved. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation. Different existing theme files are preserved unless `--force` is given.
+The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, and `mods/{usage-bar,space-tree,agent-list}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing bindings win, including a conflicting Ctrl-Shift-H; the previous `cerberus.toggle` and `hub.toggle` bindings migrate to `space-tree.hub`. Old `hub`, `hub-bar`, `hub-cell`, `cerberus`, `cerberus-bar`, and `cerberus-cell` directories are removed only when their complete file set and contents match the previous install; app-generated `gpui-kit.d.ts` and `jsconfig.json` are ignored during comparison, while modified directories and other extra files are preserved. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation. Different existing theme files are preserved unless `--force` is given.
 
 Select **cockpit** in Herdr's layout chooser (**Ctrl-Shift-L**), or invoke `layout.switch cockpit`. Keep the shipped layouts available as a fallback.
 
@@ -37,15 +37,13 @@ Omit machine names to target all connected machines. This explicitly writes to t
 
 ## hub
 
-Click the pinned **hub** row at the top of space-tree, or press **Ctrl-Shift-H**, to switch the work area between the normal tab view and hub. Usage and the sidebar stay visible. It shows agent terminals excluding orch workers, ordered by space then tab index. Each cell uses the existing terminal and PTY: typing there reaches that agent directly. Click its tab name to select the source space/tab; click ↗ to give it two thirds of the view and stack the rest alongside. The × button or a space/tab/pane row returns to the normal tab view.
+Click **hub**, the first space row under **This computer**, or press **Ctrl-Shift-H**, to open a real Herdr space containing read-only mirrors of your Head terminals. The space is created on first open and placed first on this computer. Ctrl-Shift-H returns from hub to the previously selected space; clicking the row always opens hub.
 
-One to three Heads share a row, four use 2×2, five to six use three columns and two rows, and seven to nine use three columns and three rows. Larger sets have page controls; chips and broadcast selection cover all pages. Blocked Heads have a colored border. Changes to the Head set, focus, or page update only the grid subtree after a one-second debounce. The bar and unsent composer draft remain mounted. Grid updates and close requests wait for an active broadcast to complete.
+Each Head has a native terminal pane running `hc attach --observe --history 2000 <address>`. These mirrors share the source PTY output and reject input. Native pane resizing, zooming, navigation and shortcuts work as usual. The tree labels observer panes `<head tab> · <head space>` and shows the source model. To send input, select the source space and terminal.
 
-The header chips toggle broadcast recipients; all Heads start included. Type in the composer and press Enter or Send. For multiple recipients, the first submit arms **Confirm N**, and a second submit sends to that exact selection. Editing text, toggling a chip, or pressing Esc cancels confirmation. Sending uses `hc send <address> <text>`, which pastes the text and presses Enter; it does not force past a blocked prompt. A partial failure identifies failed tabs and leaves the draft; retry individually to avoid duplicate messages to successful recipients.
+Heads are local and remote agent terminals excluding orch workers, observer terminals and terminals inside hub. Space-tree polls each machine's helper every three seconds, adding mirrors for new Heads and removing observers for vanished Heads. Only terminals in hub's managed tab are eligible for removal. The initial shell is removed once a surviving observer appears; an empty hub keeps its shell until then. Failed helper polls retain the last known metadata and pause reconciliation. Install `herdr-hud` on remote machines for their Heads to appear.
 
-Space-tree polls the local helper and each connected machine's helper every three seconds. Install `herdr-hud` on remote machines for their Heads to appear. Missing or incomplete helper data retains known cells and pauses broadcast until metadata recovers. The pinned count and cell headers keep updating while the hub is closed or open. Selection exclusions persist through Herdr's shared mod state; new Heads are included by default.
-
-The always-shown `space-tree` mod handles `space-tree.hub` and owns the hub controller, because Herdr delivers mod commands only to shown mod copies. The `work-stack` switches between `work-normal` (tabs, terminals, files/changes panel) and `hub-view` (bar and grid). For another custom layout, copy that stack and include a shown space-tree block. A layout without `work-stack` is left untouched and reports that hub is unavailable.
+The always-shown `space-tree` handles `space-tree.hub` and manages this space independently of the cockpit layout. The pinned row shows the Head count, has its own section color, and expands to show the hub tab and its native panes. The real hub space is not listed a second time.
 
 ## Themes
 
@@ -75,7 +73,7 @@ The usage bar polls system readings every second and selected-account usage ever
 
 ## Privacy
 
-There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude transcript inspection reads only model/effort metadata from a bounded tail and emits no message contents. The hub displays live terminal content locally; broadcast sends only the text you submit to the selected terminal addresses. The mod does not save message text or terminal screens. Herdr persists Head metadata, selection exclusions, focus, and page state through its shared mod state. Terminal programs may retain messages as part of their own histories. Review screenshots before sharing them.
+There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude transcript inspection reads only model/effort metadata from a bounded tail and emits no message contents. The hub displays live terminal content locally through read-only observers. Herdr persists the hub space id and Head metadata in shared mod state. The mod does not save terminal screens or message text. Review screenshots before sharing them.
 
 ## Develop
 
@@ -85,9 +83,6 @@ make test
 herdr-app check "$PWD/mods/usage-bar"
 herdr-app check "$PWD/mods/space-tree"
 herdr-app check "$PWD/mods/agent-list"
-for mod in space-tree hub-bar hub-cell; do
-  herdr-app check "$PWD/mods/$mod"
-done
 ```
 
 `make setup` enables the tracked commit-message hook: English `type: imperative summary`, up to 72 characters, without a trailing period. Tests use synthetic fixtures and fake commands, with no provider network requests or personal app state.
