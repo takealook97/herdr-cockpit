@@ -198,7 +198,7 @@ test("tab icon color follows active state and actionable status", () => {
   }
 });
 
- test("section ownership follows the repository through worktrees, tabs and panes", () => {
+test("section ownership follows the repository through worktrees, tabs and panes", () => {
   const rows = buildTree({ spaces: [sp("repo", [tab("rt")]), sp("wt", [tab("wt-tab")], { parentId: "repo" }), sp("other", [tab("ot")])],
     panes: [pane("rp", "rt"), pane("wp", "wt-tab"), pane("op", "ot")] });
   assert.deepEqual(rows.map(r => [r.id, r.sectionColorKey, r.sectionDepth]), [

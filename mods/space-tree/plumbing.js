@@ -1,4 +1,4 @@
-// Workspace spaces: stable colored avatars, worktrees under their checkout,
+// Workspace spaces: stable colored section rails, worktrees under their checkout,
 // grouped by machine when more than one is known. After a space's name, the repo
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.

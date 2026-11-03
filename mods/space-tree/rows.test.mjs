@@ -64,3 +64,13 @@ test("drop mouse-up on a space or tab row does not also select that row", () => 
     assert.deepEqual(calls.at(-1), { command: `${kind}.select`, args: { id: row.id } });
   }
 });
+
+
+test("repository section rails span every descendant without letter avatars", () => {
+  assert.match(rows, /row\.sectionColorKey != null/);
+  assert.match(rows, /\.left\(2 \+ row\.sectionDepth \* 12\)\.top\(0\)\.bottom\(0\)\.w\(2\)/);
+  assert.match(rows, /shared\("space.colors"\)/);
+  assert.doesNotMatch(rows, /toUpperCase|accent_foreground/);
+  const main = readFileSync(new URL("./main.js", import.meta.url), "utf8");
+  assert.match(main, /this\.visible\[i - 1\]\?\.sectionColorKey != null, el => el\.mt\(4\)/);
+});
