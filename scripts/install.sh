@@ -23,6 +23,58 @@ for layout in "$root"/layouts/*.json; do
         echo "Refusing shipped layout: $name" >&2; exit 1 ;; esac
     [ ! -L "$app/layouts/$name" ] || { echo 'Refusing symlink layout' >&2; exit 1; }
 done
+command -v python3 >/dev/null || { echo 'Python 3 is required to merge key snippets' >&2; exit 1; }
+[ ! -L "$app/keys.json" ] || { echo 'Refusing symlink keys.json' >&2; exit 1; }
+merge_keys() {
+    python3 - "$root/keys" "$app/keys.json" "$1" <<'PYKEYS'
+import glob, json, os, shutil, stat, sys, tempfile, time
+snippets, destination, mode = sys.argv[1:]
+def object_json(path):
+    with open(path, encoding="utf-8") as source:
+        data = json.load(source)
+    if not isinstance(data, dict):
+        raise ValueError("Key config must be an object: " + path)
+    return data
+existing = os.path.exists(destination)
+data = object_json(destination) if existing else {}
+changes = []
+for path in sorted(glob.glob(os.path.join(snippets, "*.json"))):
+    for section, bindings in object_json(path).items():
+        if not isinstance(bindings, dict) or not isinstance(data.get(section, {}), dict):
+            raise ValueError("Key section must be an object: " + section)
+        target = data.setdefault(section, {})
+        for key, action in bindings.items():
+            if key not in target:
+                target[key] = action
+                changes.append(section + ":" + key)
+if mode == "validate":
+    sys.exit(0)
+if not changes:
+    print("Key bindings already present; preserving existing bindings")
+    sys.exit(0)
+if mode == "dry-run":
+    print("Merge missing keys: " + ", ".join(changes))
+    print("Back up existing keys.json before merging" if existing else "Create keys.json")
+    sys.exit(0)
+os.makedirs(os.path.dirname(destination), exist_ok=True)
+if existing:
+    backup = destination + ".bak-" + str(time.time_ns())
+    shutil.copy2(destination, backup)
+    print("Backed up keys.json: " + backup)
+fd, staged = tempfile.mkstemp(prefix=".keys-", dir=os.path.dirname(destination))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        json.dump(data, output, indent=2)
+        output.write("\n")
+    os.chmod(staged, stat.S_IMODE(os.stat(destination).st_mode) if existing else 0o600)
+    os.replace(staged, destination)
+finally:
+    if os.path.exists(staged):
+        os.unlink(staged)
+print("Merged missing keys: " + ", ".join(changes))
+PYKEYS
+}
+merge_keys validate
 command -v rsync >/dev/null || { echo 'rsync is required' >&2; exit 1; }
 case $(uname -s) in Darwin) goos=darwin ;; Linux) goos=linux ;; *) echo 'Unsupported OS' >&2; exit 1 ;; esac
 case $(uname -m) in arm64|aarch64) goarch=arm64 ;; x86_64|amd64) goarch=amd64 ;; *) echo 'Unsupported architecture' >&2; exit 1 ;; esac
@@ -39,6 +91,7 @@ if "$dry_run"; then
     echo "Install helper: $HOME/.local/bin/herdr-hud"
     echo "Sync custom mods: $app/mods (exclude tests and editor files)"
     echo "Copy custom layouts: $app/layouts"
+    merge_keys dry-run
     exit 0
 fi
 scratch=$(mktemp -d)
@@ -64,4 +117,5 @@ for layout in "$root"/layouts/*.json; do
     [ -f "$layout" ] || continue
     cp "$layout" "$app/layouts/"
 done
+merge_keys write
 echo "Installed herdr-hud and cockpit files. Select cockpit in the layout chooser."

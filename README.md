@@ -7,10 +7,10 @@ Screenshot placeholder: a sanitized preview will be added after an installed-lay
 ## Requirements
 
 - Herdr.app with custom layout/mod support and its `hc` command.
-- macOS or Linux on arm64 or amd64, Bash, and rsync.
+- macOS or Linux on arm64 or amd64, Bash, rsync, and Python 3 (for safe key merging).
 - Go 1.27+ to build, or a trusted prebuilt helper at `bin/<os>-<arch>/herdr-hud` (for example `bin/darwin-arm64/herdr-hud`).
 - The provider CLIs and your own logins for the usage cards you want: `codex`, `claude`, and `agy` for Gemini. Missing providers show placeholders.
-- Node.js for development tests; Python 3 and Go for the optional remote installer.
+- Node.js for development tests; Go for the optional remote installer.
 
 ## Install
 
@@ -20,7 +20,7 @@ make setup
 make install
 ```
 
-The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json` and `mods/{usage-bar,space-tree,agent-list}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it never changes app state, keys, settings, or the selected layout.
+The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json` and `mods/{usage-bar,space-tree,agent-list,cerberus,cerberus-bar,cerberus-cell}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing bindings always win, including a conflicting Ctrl-Shift-H. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation.
 
 Select **cockpit** in Herdr's layout chooser (**Ctrl-Shift-L**), or invoke `layout.switch cockpit`. Keep the shipped layouts available as a fallback.
 
@@ -34,6 +34,18 @@ To install only the helper on connected Herdr machines:
 ```
 
 Omit machine names to target all connected machines. This explicitly writes to those machines. The script cross-builds for each detected Darwin/Linux arm64/amd64 platform, uploads in 7 MB parts with `hc file write`, verifies the joined SHA-256 before installation, and checks `sys`. It does not install remote mods or change layouts.
+
+## cerberus: Head hub
+
+Click the pinned **cerberus** row at the top of space-tree, or press **Ctrl-Shift-H**, to toggle a live Head hub over the current tab. It shows agent terminals excluding orch workers, ordered by space then tab index. Each cell uses the existing terminal and PTY: typing there reaches that agent directly. Click its tab name to select the source space/tab; click ↗ to give it two thirds of the view and stack the rest alongside. The × button closes the hub.
+
+One to three Heads share a row, four use 2×2, five to six use three columns and two rows, and seven to nine use three columns and three rows. Larger sets have page controls; chips and broadcast selection cover all pages. Blocked Heads have a colored border. Changes to the Head set rebuild the window after a one-second debounce, using a named window to preserve placement. **A rebuild clears an unsent composer draft**, so finish messages before changing the grid or focus mode. Rebuilds and close requests wait for an active broadcast to complete.
+
+The header chips toggle broadcast recipients; all Heads start included. Type in the composer and press Enter or Send. For multiple recipients, the first submit arms **Confirm N**, and a second submit sends to that exact selection. Editing text, toggling a chip, or pressing Esc cancels confirmation. Sending uses `hc send <address> <text>`, which pastes the text and presses Enter; it does not force past a blocked prompt. A partial failure identifies failed tabs and leaves the draft; retry individually to avoid duplicate messages to successful recipients.
+
+The controller polls the local helper and each connected machine's helper every three seconds. Install `herdr-hud` on remote machines for their Heads to appear. Missing or incomplete helper data retains known cells and pauses broadcast until metadata recovers. The pinned count and cell headers keep updating while the hub is closed or open. Selection exclusions persist through Herdr's shared mod state; new Heads are included by default.
+
+`layouts/cockpit.json` includes a zero-height `cerberus` controller block because Herdr delivers mod commands only to shown mod copies. For another custom layout, include that controller block as well as the desired entry point. `mod.open {name: "cerberus"}` forwards to the resident controller.
 
 ## Data collection
 
@@ -59,7 +71,7 @@ The usage bar polls system readings every second and selected-account usage ever
 
 ## Privacy
 
-There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude transcript inspection reads only model/effort metadata from a bounded tail and emits no message contents. Review screenshots before sharing them.
+There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude transcript inspection reads only model/effort metadata from a bounded tail and emits no message contents. The cerberus hub displays live terminal content locally; broadcast sends only the text you submit to the selected terminal addresses. The mod does not save message text or terminal screens. Herdr persists Head metadata, selection exclusions, focus, and page state through its shared mod state. Terminal programs may retain messages as part of their own histories. Review screenshots before sharing them.
 
 ## Develop
 
@@ -69,12 +81,15 @@ make test
 herdr-app check "$PWD/mods/usage-bar"
 herdr-app check "$PWD/mods/space-tree"
 herdr-app check "$PWD/mods/agent-list"
+for mod in cerberus cerberus-bar cerberus-cell; do
+  herdr-app check "$PWD/mods/$mod"
+done
 ```
 
 `make setup` enables the tracked commit-message hook: English `type: imperative summary`, up to 72 characters, without a trailing period. Tests use synthetic fixtures and fake commands, with no provider network requests or personal app state.
 
 ## Uninstall
 
-Switch to a shipped layout first. Remove only the installed `layouts/cockpit.json`, `mods/usage-bar`, `mods/space-tree`, and `mods/agent-list` from your Herdr app home, plus `$HOME/.local/bin/herdr-hud`. Optionally remove `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`. On remote machines remove the helper there as well. Your provider logins, cr/orch data, and other Herdr settings stay in place.
+Switch to a shipped layout first. Remove only the installed `layouts/cockpit.json`, `mods/usage-bar`, `mods/space-tree`, `mods/agent-list`, and `mods/cerberus*` from your Herdr app home, plus `$HOME/.local/bin/herdr-hud`. Optionally remove `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`. Remove `global.ctrl-shift-h` from `keys.json` only if it still points to `cerberus.toggle`; keep any replacement shortcut. On remote machines remove the helper there as well. Your provider logins, cr/orch data, and other Herdr settings stay in place.
 
 MIT licensed; see [LICENSE](LICENSE).

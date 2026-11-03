@@ -87,6 +87,17 @@
       "resizable": false,
       "children": [
         {
+          "id": "cerberus-controller",
+          "type": "block",
+          "size": {
+            "px": 0
+          },
+          "min": 0,
+          "content": {
+            "mod": "cerberus"
+          }
+        },
+        {
           "id": "usage",
           "type": "block",
           "size": {

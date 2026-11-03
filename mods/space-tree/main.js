@@ -2,7 +2,7 @@ import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, nextCommand, props, notify } from "herdr";
 import Plumbing from "./plumbing.js";
-import { buildTree, aliasKey, machineId, rowId, pruneFolded } from "./model.js";
+import { buildTree, aliasKey, machineId, rowId, pruneFolded, aggregateStatus } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
@@ -183,6 +183,13 @@ export default class SpaceTree extends Plumbing {
       .size_full().min_h(0).bg(t.chrome).text_size(12)
       .on_hover((hovered, cx) => { if (!hovered) clearDrag(this, cx); })
       .on_mouse_up("left", (_e, cx) => clearDrag(this, cx))
+      .child(h_flex().id("cerberus-entry").h(30).flex_none().px(12).gap(6).items_center()
+        .text_color(t.foreground).cursor_pointer().hover(el => el.bg(t.hover))
+        .tooltip("Head hub · Ctrl-Shift-H")
+        .on_click(() => run("cerberus.toggle"))
+        .child(div().size(6).rounded(3).bg(t[aggregateStatus((shared("cerberus.heads") ?? []).map(h => h.status))]))
+        .child(div().flex_1().font_semibold().child("cerberus"))
+        .child(div().text_color(t.dim).child(String((shared("cerberus.heads") ?? []).length))))
       .child(h_flex().h(30).flex_none().pl(12).pr(8).items_center().text_color(t.muted)
         .child(div().flex_1().child("Spaces"))
         .when(this.orchStale, el => el.child(div().text_size(10).text_color(t.dim).tooltip("herdr-hud unavailable; retaining last data").child("⚠")))
