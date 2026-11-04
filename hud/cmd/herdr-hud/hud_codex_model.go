@@ -16,6 +16,7 @@ import (
 )
 
 const hudCodexTailLimit = 4 * 1024 * 1024
+const hudCodexCacheVersion = 1
 
 // Resolve only process-bound local sessions. Neither cwd nor account identifies a session.
 func hudResolveCodexModels(ctx context.Context, out *HUDPanes) {
@@ -238,14 +239,15 @@ func hudCodexRollouts(raw string) map[int][]string {
 var hudCodexCacheMu sync.Mutex
 
 type hudCodexCacheEntry struct {
-	PID    int    `json:"pid"`
-	Path   string `json:"path"`
-	Mtime  int64  `json:"mtime"`
-	Size   int64  `json:"size"`
-	Device uint64 `json:"device"`
-	Inode  uint64 `json:"inode"`
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
+	Version int    `json:"version"`
+	PID     int    `json:"pid"`
+	Path    string `json:"path"`
+	Mtime   int64  `json:"mtime"`
+	Size    int64  `json:"size"`
+	Device  uint64 `json:"device"`
+	Inode   uint64 `json:"inode"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort"`
 }
 
 func hudCodexCachePath() string { return filepath.Join(hudCacheDir(), "codex-models.json") }
@@ -268,7 +270,7 @@ func hudCodexTranscript(ctx context.Context, pid int, path string) (model, effor
 	if err != nil || !info.Mode().IsRegular() {
 		return
 	}
-	entry := hudCodexCacheEntry{PID: pid, Path: path, Mtime: info.ModTime().UnixNano(), Size: info.Size()}
+	entry := hudCodexCacheEntry{Version: hudCodexCacheVersion, PID: pid, Path: path, Mtime: info.ModTime().UnixNano(), Size: info.Size()}
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 		entry.Device, entry.Inode = uint64(stat.Dev), uint64(stat.Ino)
 	}
@@ -285,7 +287,7 @@ func hudCodexTranscript(ctx context.Context, pid int, path string) (model, effor
 	}
 	key := fmt.Sprintf("%d:%s", pid, path)
 	previous, ok := cache[key]
-	same := ok && previous.PID == pid && previous.Path == path && previous.Device == entry.Device && previous.Inode == entry.Inode
+	same := ok && previous.Version == hudCodexCacheVersion && previous.PID == pid && previous.Path == path && previous.Device == entry.Device && previous.Inode == entry.Inode
 	if same && previous.Mtime == entry.Mtime && previous.Size == entry.Size {
 		return previous.Model, previous.Effort
 	}
@@ -304,11 +306,11 @@ func hudCodexTranscript(ctx context.Context, pid int, path string) (model, effor
 	if err != nil || ctx.Err() != nil {
 		return "", ""
 	}
-	freshModel, freshEffort := hudCodexTurnContext(raw, offset > 0)
-	if freshModel != "" {
+	freshModel, freshEffort, hasModel, hasEffort := hudCodexMetadata(raw, offset > 0)
+	if hasModel {
 		model = freshModel
 	}
-	if freshEffort != "" {
+	if hasEffort {
 		effort = freshEffort
 	}
 	entry.Model, entry.Effort = model, effort
@@ -326,36 +328,77 @@ func hudCodexTranscript(ctx context.Context, pid int, path string) (model, effor
 	return
 }
 
-// Only newline-terminated turn_context metadata is decoded; message contents are ignored.
+// Only newline-terminated metadata records are decoded; message contents are ignored.
 func hudCodexTurnContext(raw []byte, partialPrefix bool) (string, string) {
+	model, effort, _, _ := hudCodexMetadata(raw, partialPrefix)
+	return model, effort
+}
+
+func hudCodexMetadata(raw []byte, partialPrefix bool) (model, effort string, hasModel, hasEffort bool) {
 	lines := bytes.Split(raw, []byte{'\n'})
 	if partialPrefix && len(lines) > 0 {
 		lines = lines[1:]
 	}
-	model, effort := "", ""
-	for i := len(lines) - 2; i >= 0 && (model == "" || effort == ""); i-- {
+	for i := len(lines) - 2; i >= 0 && (!hasModel || !hasEffort); i-- {
 		var record struct {
-			Type    string `json:"type"`
-			Payload struct {
-				Model           string `json:"model"`
-				Effort          string `json:"effort"`
-				ReasoningEffort string `json:"reasoning_effort"`
-			} `json:"payload"`
+			Type    string          `json:"type"`
+			Payload json.RawMessage `json:"payload"`
 		}
-		if json.Unmarshal(lines[i], &record) != nil || record.Type != "turn_context" {
+		if json.Unmarshal(lines[i], &record) != nil {
 			continue
 		}
-		if model == "" {
-			model = record.Payload.Model
+		var payload map[string]json.RawMessage
+		if json.Unmarshal(record.Payload, &payload) != nil {
+			continue
 		}
-		if effort == "" {
-			effort = record.Payload.Effort
-			if effort == "" {
-				effort = record.Payload.ReasoningEffort
+		settings := false
+		switch record.Type {
+		case "turn_context":
+		case "event_msg":
+			var kind string
+			if json.Unmarshal(payload["type"], &kind) != nil || kind != "thread_settings_applied" {
+				continue
+			}
+			var fields map[string]json.RawMessage
+			if json.Unmarshal(payload["thread_settings"], &fields) != nil || fields == nil {
+				continue
+			}
+			payload = fields
+			settings = true
+		default:
+			continue
+		}
+		// Settings fields are optional; null or an empty string explicitly clears them.
+		// Empty turn_context fields have historically meant unavailable metadata.
+		field := func(key string) (string, bool) {
+			value, ok := payload[key]
+			if !ok {
+				return "", false
+			}
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				return "", settings
+			}
+			var result string
+			if json.Unmarshal(value, &result) != nil {
+				return "", false
+			}
+			return result, settings || result != ""
+		}
+		if !hasModel {
+			model, hasModel = field("model")
+		}
+		if !hasEffort {
+			if settings {
+				effort, hasEffort = field("reasoning_effort")
+			} else {
+				effort, hasEffort = field("effort")
+				if !hasEffort {
+					effort, hasEffort = field("reasoning_effort")
+				}
 			}
 		}
 	}
-	return model, effort
+	return
 }
 
 func hudWriteCodexCache(cache map[string]hudCodexCacheEntry) {

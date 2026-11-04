@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -276,5 +277,51 @@ func TestHUDCodexPartialContextChanges(t *testing.T) {
 	codexWrite(t, path, raw+strings.Repeat("x", hudCodexTailLimit)+"\n"+codexContext("new", ""))
 	if m, e := hudCodexTranscript(context.Background(), 1, path); m != "new" || e != "low" {
 		t.Fatalf("model-only switch outside previous tail: %q %q", m, e)
+	}
+}
+
+func TestHUDCodexSettingsOrdering(t *testing.T) {
+	settings := func(fields string) string {
+		return `{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":` + fields + `}}` + "\n"
+	}
+	for _, tc := range []struct{ name, raw, model, effort string }{
+		{"effort change", codexContext("astra", "xhigh") + settings(`{"model":"astra","reasoning_effort":"medium"}`), "astra", "medium"},
+		{"model change", codexContext("astra", "high") + settings(`{"model":"sol"}`), "sol", "high"},
+		{"effort only", codexContext("astra", "high") + settings(`{"reasoning_effort":"medium"}`), "astra", "medium"},
+		{"reverse", settings(`{"model":"sol","reasoning_effort":"medium"}`) + codexContext("astra", "xhigh"), "astra", "xhigh"},
+		{"cleared effort", codexContext("astra", "high") + settings(`{"reasoning_effort":null}`), "astra", ""},
+		{"cleared model", codexContext("astra", "high") + settings(`{"model":""}`), "", "high"},
+		{"unfinished settings", codexContext("astra", "high") + strings.TrimSuffix(settings(`{"model":"sol"}`), "\n"), "astra", "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, e := hudCodexTurnContext([]byte(tc.raw), false)
+			if m != tc.model || e != tc.effort {
+				t.Fatalf("got %q %q want %q %q", m, e, tc.model, tc.effort)
+			}
+		})
+	}
+}
+
+func TestHUDCodexSettingsCacheVersion(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "rollout.jsonl")
+	raw := codexContext("astra", "xhigh") + `{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"reasoning_effort":"medium"}}}` + "\n"
+	codexWrite(t, path, raw)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := hudCodexCacheEntry{PID: 42, Path: path, Mtime: info.ModTime().UnixNano(), Size: info.Size(), Model: "astra", Effort: "xhigh"}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		entry.Device, entry.Inode = uint64(stat.Dev), uint64(stat.Ino)
+	}
+	hudWriteCodexCache(map[string]hudCodexCacheEntry{fmt.Sprintf("%d:%s", 42, path): entry})
+	if m, e := hudCodexTranscript(context.Background(), 42, path); m != "astra" || e != "medium" {
+		t.Fatalf("stale cache: %q %q", m, e)
+	}
+	// Explicit clears must also replace a retained value when older metadata falls outside the tail.
+	codexWrite(t, path, raw+strings.Repeat("x", hudCodexTailLimit)+"\n"+`{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"reasoning_effort":null}}}`+"\n")
+	if m, e := hudCodexTranscript(context.Background(), 42, path); m != "astra" || e != "" {
+		t.Fatalf("cached clear: %q %q", m, e)
 	}
 }
