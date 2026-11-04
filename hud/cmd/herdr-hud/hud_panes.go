@@ -337,6 +337,7 @@ func hudPanes(ctx context.Context) HUDPanes {
 	}
 	out.Terminals = filtered
 	hudResolveClaudeModels(ctx, &out)
+	hudResolveCodexModels(ctx, &out)
 	return out
 }
 
