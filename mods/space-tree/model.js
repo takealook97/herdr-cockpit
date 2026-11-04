@@ -145,7 +145,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
     const row = emit("space", s.id, depth, { sectionColorKey, sectionDepth, name: s.name, status: aggregateStatus(statuses.length ? statuses : [s.status]), guide,
       active: s.id === activeSpaceId, data: s });
     const children = entries.filter(c => c.parentId === s.id);
-    const tabs = row.open ? s.tabs ?? [] : [];
+    const tabs = row.open ? (s.tabs ?? []).filter(tab => s.machine == null || !tab.settled) : [];
     tabs.forEach((tab, ti) => {
       const ps = panes.filter(p => p.tab === tab.id);
       const tr = emit("tab", tab.id, depth + 1, { sectionColorKey, sectionDepth, name: tab.name, data: tab, space: s.id,
