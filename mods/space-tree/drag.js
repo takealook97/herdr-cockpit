@@ -7,18 +7,20 @@ export function clearDrag(view, cx) {
 }
 const orchPending = view => view.orchStale || !view.orchLoaded;
 const orchWarning = "orch status not loaded yet; try again in a moment";
-function validate(view, source, row, api) {
+function validate(view, source, row, api, spaces = api.spaces()) {
   if (row?.hub || source?.hub) return { ok: false, reason: "Hub is a locked section." };
+  const unavailable = { ok: false, reason: "The tab or space is no longer available." };
+  const from = spaces.find(s => s.id === source?.space);
+  const tab = from?.tabs?.find(t => t.id === source?.id);
+  const indexed = t => t && Number.isInteger(t.index) && t.index > 0;
+  if (!from || !indexed(tab)) return unavailable;
+  if (!row) return { ok: true };
+  const target = spaces.find(s => s.id === (row.kind === "space" ? row.id : row.space));
+  if (!target || (row.kind === "tab" && !indexed(target.tabs?.find(t => t.id === row.id)))) return unavailable;
+  if (row.kind === "tab" && target.id === from.id && row.id !== source.id) return { ok: true };
   if (orchPending(view)) return { ok: false, reason: orchWarning };
-  const spaces = api.spaces(), from = spaces.find(s => s.id === source.space);
-  if (row?.kind === "tab" && row.space === source.space && row.id !== source.id &&
-      !from?.tabs.some(t => t.id === row.id && Number.isInteger(t.index) && t.index > 0)) {
-    return { ok: false, reason: "The tab or space is no longer available." };
-  }
-  return canMoveTab({ tab: from?.tabs.find(t => t.id === source.id), panes: api.panes(),
-    orchIndex: orchIndexes(view.orch), fromSpace: from,
-    toSpace: row ? spaces.find(s => s.id === (row.kind === "space" ? row.id : row.space)) : from,
-    sourceOnly: !row || (row.kind === "tab" && row.space === source.space && row.id !== source.id) });
+  return canMoveTab({ tab, panes: api.panes(), orchIndex: orchIndexes(view.orch),
+    fromSpace: from, toSpace: target });
 }
 export function beginTabDrag(view, row, cx, api) {
   if (view.editing || view.movingTab) return;
@@ -43,7 +45,7 @@ export function dropTab(view, row, cx, api) {
   const tab = from?.tabs.find(t => t.id === source.id);
   const target = spaces.find(s => s.id === (row.kind === "space" ? row.id : row.space));
   const ps = api.panes();
-  const check = validate(view, source, row, api);
+  const check = validate(view, source, row, api, spaces);
   if (!check.ok) api.warn(check.reason);
   else if (row.kind === "tab" && target.id === from.id) {
     const targetTab = from.tabs.find(t => t.id === row.id);

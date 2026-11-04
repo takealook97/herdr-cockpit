@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { load, host, element } from './host.test.mjs';
 import * as model from './hub-model.js';
+import { beginTabDrag, hoverTabTarget, dropTab } from './drag.js';
 import { buildTree, assignSectionColors, machineId, rowId } from './model.js';
 const layout = JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url)));
 function setup() {
@@ -180,4 +181,46 @@ test('losing all local heads during a pending write cannot focus an old head and
   assert.ok(!runs(h).some(([cmd]) => cmd === 'pane.focus'));
   h.view.open(h.cx, 'remote/t1'); await h.flush();
   assert.ok(!runs(h).some(([cmd]) => cmd === 'pane.focus'));
+});
+
+
+test('native sibling drag order flows through sidebar, shared heads and Hub grid', async () => {
+  const h = setup(); await h.flush();
+  h.spaces = [
+    { id: 's', name: 'Tools', active: true, tabs: ['lukuku-os', 'slack', 'herdr', 'orch'].map((id, i) => ({ id, name: id, index: i + 1 })) },
+    { id: 's2', name: 'Other', tabs: [{ id: 'other', name: 'Other', index: 1 }] },
+    { id: 'remote/s', machine: 'remote', tabs: [{ id: 'remote/tab', index: 1 }] },
+  ];
+  h.panes = [...h.spaces[0].tabs, ...h.spaces[1].tabs].map(t => ({ tab: t.id, terminal: `term-${t.id}` }));
+  h.panes.push({ tab: 'remote/tab', terminal: 'remote/term' });
+  h.view.snapshots = new Map([['local', { data: { terminals: h.panes.map(p => ({ address: p.terminal })), runs: [] } }]]);
+  h.focus = 'term-herdr'; h.view.open(h.cx, h.focus); await h.flush();
+  const calls = [], view = { orchStale: true }, api = {
+    spaces: () => h.spaces, panes: () => h.panes, warn: message => assert.fail(message),
+    run(command, args) {
+      calls.push([command, args]); assert.equal(command, 'tab.move');
+      const tabs = h.spaces[0].tabs, at = tabs.findIndex(t => t.id === args.id);
+      const [moved] = tabs.splice(at, 1); tabs.splice(args.index - 1, 0, moved);
+      tabs.forEach((t, i) => { t.index = i + 1; });
+    },
+  };
+  const reorder = async (source, target, expected) => {
+    const row = { kind: 'tab', id: target, space: 's', key: target };
+    beginTabDrag(view, { id: source, space: 's' }, h.cx, api);
+    hoverTabTarget(view, row, h.cx, api); assert.equal(view.tabOver, target);
+    dropTab(view, row, h.cx, api); h.view.sync(h.cx); h.tick(500); await h.flush();
+    const sidebar = buildTree({ spaces: h.spaces, panes: h.panes, hub: { heads: h.view.heads } });
+    assert.deepEqual(sidebar.filter(r => r.kind === 'tab' && r.space === 's').map(r => r.id), expected);
+    const addresses = [...expected.map(id => `term-${id}`), 'term-other'];
+    assert.deepEqual(h.shared.get('hub.heads').map(head => head.address), addresses);
+    assert.deepEqual(sidebar.filter(r => r.hub && r.kind === 'pane').map(r => r.terminal), addresses);
+    assert.deepEqual(terminals(model.findNode(h.writes.at(-1), 'hub-grid')), h.view.zoomed ? ['term-herdr'] : addresses);
+    assert.equal(h.view.focusedAddress, 'term-herdr');
+  };
+  await reorder('lukuku-os', 'orch', ['slack', 'herdr', 'orch', 'lukuku-os']);
+  await reorder('lukuku-os', 'slack', ['lukuku-os', 'slack', 'herdr', 'orch']);
+  h.view.zoom(h.cx); await h.flush();
+  await reorder('slack', 'orch', ['lukuku-os', 'herdr', 'orch', 'slack']);
+  assert.equal(h.view.zoomed, 'term-herdr');
+  assert.deepEqual(calls.map(c => c[0]), ['tab.move', 'tab.move', 'tab.move']);
 });

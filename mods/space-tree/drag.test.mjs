@@ -53,7 +53,7 @@ function harness({ named = true, stuck = false, inactiveTab = false, third = fal
   const original = third ? [...ps, { tab: "tb1", terminal: "t3" }] : ps;
   let panes = original.map(p => ({ ...p })), spaces = [
     { id: "sp1", name: "Source", active: true, tabs: [tab, sibling] },
-    { id: "sp2", name: "Target", active: false, tabs: [] },
+    { id: "sp2", name: "Target", active: false, tabs: [{ id: "target-tab", index: 1 }] },
   ];
   const calls = [], queue = [], warnings = [], notices = [];
   let done = 0, nextTab = 0;
@@ -169,7 +169,7 @@ test("drag candidates clear on cancel; editing and busy moves cannot start anoth
 test("drop on another tab resolves its space and rechecks newly protected orch data", () => {
   const view = { orchLoaded: true, tabDrag: { id: "tb1", space: "sp1" }, orch: { runs: [{ tab: "tb1" }] } };
   const warnings = [], cx = { notify() {} };
-  const api = { spaces: () => [{ id: "sp1", tabs: [tab, sibling] }, { id: "sp2", tabs: [] }],
+  const api = { spaces: () => [{ id: "sp1", tabs: [tab, sibling] }, { id: "sp2", tabs: [{ id: "other", index: 1 }] }],
     panes: () => ps, warn: message => warnings.push(message) };
   assert.equal(dropTab(view, { kind: "tab", id: "other", space: "sp2" }, cx, api), true);
   assert.equal(view.tabDrag, null); assert.match(warnings[0], /active orch run/);
@@ -202,13 +202,6 @@ test("drops fail closed before the first orch poll and with stale orch data", ()
   }
 });
 
-test("protected sources refuse drag start without a ghost or target highlight", () => {
-  const h = harness(), cx = { notify() {} };
-  const view = { orchLoaded: true, orch: { runs: [{ tab: "tb1" }] } };
-  beginTabDrag(view, { id: "tb1", space: "sp1" }, cx, h.api);
-  assert.equal(view.tabDrag, null); assert.equal(view.tabOver, null);
-  assert.match(h.warnings[0], /active orch run/);
-});
 
 test("only valid destinations highlight, and source movability is rechecked on hover", () => {
   const h = harness(), cx = { notify() {} };
@@ -296,4 +289,51 @@ test("recovery observes a keep that applies before its dispatch throws", () => {
   assert.equal(h.calls.filter(c => c.command === "terminal.keep").length, 2);
   assert.match(h.warnings[0], /2 terminal\(s\) restored in Source/);
   assert.equal(h.done, 1);
+});
+
+test('native sibling reorder works offline and for protected sources, while relocation stays guarded', () => {
+  const cases = [
+    { flags: {} }, { flags: { orchLoaded: true, orchStale: true } },
+    { flags: { orchLoaded: true, orch: { runs: [{ tab: 'tb1' }] } } },
+    { flags: { orchLoaded: true, orch: { runs: [{ workers: [{ terminal: 't1' }] }] } } },
+    { flags: { orchLoaded: true }, panes: [{ tab: 'tb1', terminal: null }] },
+    { flags: { orchLoaded: true }, panes: [] },
+  ];
+  for (const { flags, panes } of cases) for (const [source, target] of [[tab, sibling], [sibling, tab]]) {
+    const h = harness(), cx = { notify() {} }, view = { ...flags };
+    if (panes) h.api.panes = () => panes;
+    // Protect the source for the reverse-direction cases too.
+    if (flags.orch?.runs?.[0]?.tab) view.orch = { runs: [{ tab: source.id }] };
+    if (flags.orch?.runs?.[0]?.workers) h.api.panes = () => [{ tab: source.id, terminal: 't1' }];
+    beginTabDrag(view, { ...source, space: 'sp1' }, cx, h.api);
+    assert.ok(view.tabDrag);
+    const row = { kind: 'tab', id: target.id, space: 'sp1', key: target.id };
+    hoverTabTarget(view, row, cx, h.api); assert.equal(view.tabOver, target.id);
+    dropTab(view, row, cx, h.api);
+    assert.deepEqual(h.calls, [{ command: 'tab.move', args: { id: source.id, index: target.index } }]);
+    h.calls.length = 0;
+    beginTabDrag(view, { ...source, space: 'sp1' }, cx, h.api);
+    const dest = { kind: 'space', id: 'sp2', key: 'dest' };
+    hoverTabTarget(view, dest, cx, h.api); assert.equal(view.tabOver, null);
+    dropTab(view, dest, cx, h.api); assert.deepEqual(h.calls, []); assert.ok(h.warnings.length);
+  }
+});
+
+test('reorder rechecks current indices and existence, and invalid sources cannot start', () => {
+  const cx = { notify() {} }, row = { kind: 'tab', id: 'other', space: 'sp1', key: 'other' };
+  for (const mutation of ['index', 'source', 'target', 'invalid-source', 'invalid-target']) {
+    const h = harness(), view = {};
+    h.spaces[0].tabs = h.spaces[0].tabs.map(t => ({ ...t }));
+    beginTabDrag(view, { id: 'tb1', space: 'sp1' }, cx, h.api);
+    if (mutation === 'index') h.spaces[0].tabs[1].index = 7;
+    if (mutation === 'source') h.spaces[0].tabs.shift();
+    if (mutation === 'target') h.spaces[0].tabs.pop();
+    if (mutation === 'invalid-source') h.spaces[0].tabs[0].index = 0;
+    if (mutation === 'invalid-target') h.spaces[0].tabs[1].index = 0;
+    dropTab(view, row, cx, h.api);
+    assert.deepEqual(h.calls, mutation === 'index' ? [{ command: 'tab.move', args: { id: 'tb1', index: 7 } }] : []);
+  }
+  for (const bad of [{ id: 'missing', space: 'sp1' }, { id: 'tb1', space: 'missing' }, { id: 'tb1', space: 'sp1', hub: true }]) {
+    const h = harness(), view = {}; beginTabDrag(view, bad, cx, h.api); assert.equal(view.tabDrag, null);
+  }
 });

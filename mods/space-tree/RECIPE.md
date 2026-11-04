@@ -9,3 +9,5 @@ The locked hub section is first under This computer, has its own background and 
 The layout requires work-stack with work-normal and hub-view children, and a hub-grid node. Cards have 30 px hub-head headers. Rows = count <= 2 ? 1 : 2; columns = ceil(count / rows). Cmd-Alt-arrow commands move between neighboring cells using the focused terminal. Cmd-Shift-Enter toggles the focused cell full view. Outside hub the wrappers call the built-in pane.go and pane.zoom commands; bracket agent navigation is unchanged.
 
 Tests use synthetic metadata and a fake command host. Run `make test` and `herdr-app check "$PWD/mods/space-tree"`. Real terminal input, source navigation, geometry and remote reconnects require an authorized interactive check. Tests and generated editor files are excluded from installation.
+
+Drag a tab row onto a sibling tab row to reorder the persisted native Herdr tabs. The sidebar and Hub list and grid automatically follow that shared order, including when orch metadata is unavailable. Dragging to another space relocates terminals and remains subject to orch status, worker, mod-pane and machine protections.
