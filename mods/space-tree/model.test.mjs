@@ -291,3 +291,16 @@ test("settled remote spaces disappear unless they contain visible descendants", 
   assert.ok(rows.find(r => r.id === "gt"));
   assert.deepEqual(spaces.at(-1).tabs.map(t => t.id), ["mt1", "mt2"]);
 });
+
+test("current terminal model and effort override stale worker launch metadata", () => {
+  const p = pane("p", "tab", { terminal: "agent", status: "idle" });
+  const idx = orchIndexes({ runs: [{ workers: [{ terminal: "agent", model: "launch", effort: "high" }] }],
+    terminals: [{ address: "agent", model: "current", effort: "low" }] });
+  assert.equal(paneSub(p, idx), "current-low");
+  idx.terminals.agent.effort = "max";
+  assert.equal(paneSub(p, idx), "current-max");
+  idx.terminals.agent = { model: "" };
+  assert.equal(paneSub(p, idx), "launch-high");
+  idx.lastModel.agent = { model: "resolved", effort: "max" };
+  assert.equal(paneSub(p, idx), "resolved-max");
+});

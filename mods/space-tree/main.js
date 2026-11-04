@@ -61,9 +61,12 @@ export default class SpaceTree extends Plumbing {
       }));
       for (const machine of this.hub.snapshots.keys()) if (!names.includes(machine)) this.hub.snapshots.delete(machine);
       const data = mergeHuds([...this.hub.snapshots.values()]);
-      for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
-        const terminal = info.address ?? info.terminal;
-        if (terminal && info.model) this.lastModel[terminal] = { model: info.model, effort: info.effort };
+      for (const info of data.runs.flatMap(run => run.workers ?? [])) {
+        if (info.terminal && info.model && !this.lastModel[info.terminal]?.model)
+          this.lastModel[info.terminal] = { model: info.model, effort: info.effort };
+      }
+      for (const info of data.terminals) {
+        if (info.address && info.model) this.lastModel[info.address] = { model: info.model, effort: info.effort };
       }
       data.lastModel = this.lastModel;
       this.orch = data;

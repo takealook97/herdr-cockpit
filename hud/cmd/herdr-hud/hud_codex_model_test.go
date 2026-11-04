@@ -263,3 +263,18 @@ func TestHUDCodexDeadline(t *testing.T) {
 		t.Fatal("deadline/fallback")
 	}
 }
+
+func TestHUDCodexPartialContextChanges(t *testing.T) {
+	raw := codexContext("current", "high") + codexContext("", "low")
+	if m, e := hudCodexTurnContext([]byte(raw), false); m != "current" || e != "low" {
+		t.Fatalf("effort-only switch: %q %q", m, e)
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "rollout-partial.jsonl")
+	codexWrite(t, path, raw)
+	hudCodexTranscript(context.Background(), 1, path)
+	codexWrite(t, path, raw+strings.Repeat("x", hudCodexTailLimit)+"\n"+codexContext("new", ""))
+	if m, e := hudCodexTranscript(context.Background(), 1, path); m != "new" || e != "low" {
+		t.Fatalf("model-only switch outside previous tail: %q %q", m, e)
+	}
+}

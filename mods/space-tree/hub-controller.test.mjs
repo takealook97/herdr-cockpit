@@ -224,3 +224,22 @@ test('native sibling drag order flows through sidebar, shared heads and Hub grid
   assert.equal(h.view.zoomed, 'term-herdr');
   assert.deepEqual(calls.map(c => c[0]), ['tab.move', 'tab.move', 'tab.move']);
 });
+
+test('normal refresh updates idle model and effort and retains current values on fallback', async () => {
+  const h = setup(); await h.flush();
+  h.panes[0].status = 'idle';
+  h.hud.runs = [{ workers: [{ terminal: 't1', model: 'launch', effort: 'high' }] }];
+  const refresh = async () => { h.intervals.find(t => t.ms === 3000).fn(h.cx); await h.flush(); };
+  h.hud.terminals = [{ address: 't1' }];
+  await refresh();
+  assert.deepEqual(h.tree.lastModel.t1, { model: 'launch', effort: 'high' });
+  h.hud.terminals = [{ address: 't1', model: 'current', effort: 'low' }];
+  await refresh();
+  assert.deepEqual(h.tree.lastModel.t1, { model: 'current', effort: 'low' });
+  h.hud.terminals[0].effort = 'max';
+  await refresh();
+  assert.deepEqual(h.tree.lastModel.t1, { model: 'current', effort: 'max' });
+  h.hud.terminals = [{ address: 't1' }];
+  await refresh();
+  assert.deepEqual(h.tree.orch.lastModel.t1, { model: 'current', effort: 'max' });
+});

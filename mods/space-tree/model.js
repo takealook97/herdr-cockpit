@@ -60,8 +60,9 @@ export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
 export function paneSub(pane, orchIndex = {}, indexInTab = 0) {
   const worker = orchIndex.workers?.[pane.terminal];
   const terminal = orchIndex.terminals?.[pane.terminal];
-  const current = worker?.model ? worker : terminal;
-  const info = current?.model ? current : orchIndex.lastModel?.[pane.terminal];
+  // Session-resolved terminal metadata wins over the worker launch catalog.
+  const last = orchIndex.lastModel?.[pane.terminal];
+  const info = terminal?.model ? terminal : last?.model ? last : worker;
   const model = info?.model ? [info.model, info.effort].filter(Boolean).join("-").replace(/\s+/g, "-") : "";
   // Status is the row's colored dot; the text line carries only the model or the pane's position.
   return (model || (indexInTab === 0 ? "main" : `sub ${indexInTab}`)).toLowerCase();

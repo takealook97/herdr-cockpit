@@ -305,8 +305,11 @@ func hudCodexTranscript(ctx context.Context, pid int, path string) (model, effor
 		return "", ""
 	}
 	freshModel, freshEffort := hudCodexTurnContext(raw, offset > 0)
-	if freshModel != "" || freshEffort != "" {
-		model, effort = freshModel, freshEffort
+	if freshModel != "" {
+		model = freshModel
+	}
+	if freshEffort != "" {
+		effort = freshEffort
 	}
 	entry.Model, entry.Effort = model, effort
 	// Drop previous associations for a reused PID, including switching back to an old path.
@@ -329,7 +332,8 @@ func hudCodexTurnContext(raw []byte, partialPrefix bool) (string, string) {
 	if partialPrefix && len(lines) > 0 {
 		lines = lines[1:]
 	}
-	for i := len(lines) - 2; i >= 0; i-- {
+	model, effort := "", ""
+	for i := len(lines) - 2; i >= 0 && (model == "" || effort == ""); i-- {
 		var record struct {
 			Type    string `json:"type"`
 			Payload struct {
@@ -341,15 +345,17 @@ func hudCodexTurnContext(raw []byte, partialPrefix bool) (string, string) {
 		if json.Unmarshal(lines[i], &record) != nil || record.Type != "turn_context" {
 			continue
 		}
-		effort := record.Payload.Effort
-		if effort == "" {
-			effort = record.Payload.ReasoningEffort
+		if model == "" {
+			model = record.Payload.Model
 		}
-		if record.Payload.Model != "" || effort != "" {
-			return record.Payload.Model, effort
+		if effort == "" {
+			effort = record.Payload.Effort
+			if effort == "" {
+				effort = record.Payload.ReasoningEffort
+			}
 		}
 	}
-	return "", ""
+	return model, effort
 }
 
 func hudWriteCodexCache(cache map[string]hudCodexCacheEntry) {

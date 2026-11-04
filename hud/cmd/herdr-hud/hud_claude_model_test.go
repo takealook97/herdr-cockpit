@@ -258,3 +258,42 @@ func TestHUDClaudeTranscriptCommands(t *testing.T) {
 		})
 	}
 }
+
+func TestHUDClaudeIdleSwitchAndTailRetention(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	home := t.TempDir()
+	writeHUDClaudeSession(t, home, 501, "idle", "/fixture")
+	dir := filepath.Join(home, "projects", "-fixture")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "idle.jsonl")
+	original := `{"type":"assistant","message":{"model":"claude-sonnet-5-5"},"perTurnEffort":"medium"}` + "\n"
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(wantModel, wantEffort string) {
+		t.Helper()
+		for i := 0; i < 2; i++ {
+			m, e := hudClaudeTranscript(home, 501)
+			if m != wantModel || e != wantEffort {
+				t.Fatalf("read %d: %q %q, want %q %q", i, m, e, wantModel, wantEffort)
+			}
+		}
+	}
+	write(original)
+	check("claude-sonnet-5-5", "medium")
+	switched := original + `{"type":"user","message":{"content":"<local-command-stdout>Set model to Opus 5.5 with high effort</local-command-stdout>"}}` + "\n"
+	write(switched)
+	check("opus-5.5", "high")
+	// No assistant turn is required; a newer effort command invalidates the cache.
+	switched += strings.Repeat("x", 300*1024) + "\n" + `{"type":"user","message":{"content":"<local-command-stdout>Set effort to max</local-command-stdout>"}}` + "\n"
+	write(switched)
+	check("opus-5.5", "max")
+	// Truncation must not retain metadata from the old transcript.
+	write("{bad}\n")
+	check("", "")
+}

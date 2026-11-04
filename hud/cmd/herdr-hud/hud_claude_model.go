@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 var hudClaudeProjectChar = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -18,6 +19,7 @@ var hudClaudeVersion = regexp.MustCompile(`^(.*)-([0-9]+)-([0-9]+)$`)
 var hudClaudeCommandOutput = regexp.MustCompile(`(?s)<local-command-stdout>(.*?)</local-command-stdout>`)
 var hudClaudeCommandModel = regexp.MustCompile(`(?i)\bSet model to\s+` + "`" + `?([a-z][a-z0-9_-]*)(?:\s+([0-9]+(?:\.[0-9]+)*))?` + "`" + `?`)
 var hudClaudeCommandEffort = regexp.MustCompile(`(?i)\bSet effort (?:level )?to\s+` + "`" + `?(low|medium|high|xhigh|max)\b`)
+var hudClaudeModelEffort = regexp.MustCompile(`(?i)\bwith\s+(low|medium|high|xhigh|max)\s+effort\b`)
 var hudClaudeDate = regexp.MustCompile(`-[0-9]{8}$`)
 
 func hudModelDisplay(id string) string {
@@ -79,15 +81,27 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 		cache = map[string]hudClaudeCacheEntry{}
 	}
 	key := fmt.Sprintf("%d:%s", pid, path)
-	if entry, ok := cache[key]; ok && entry.Mtime == info.ModTime().UnixNano() && entry.Size == info.Size() {
-		return entry.Model, entry.Effort
+	entry := hudClaudeCacheEntry{Version: 2, Mtime: info.ModTime().UnixNano(), Size: info.Size()}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		entry.Device, entry.Inode = uint64(stat.Dev), uint64(stat.Ino)
+	}
+	previous, ok := cache[key]
+	same := ok && previous.Version == entry.Version && previous.Device == entry.Device && previous.Inode == entry.Inode
+	if same && previous.Mtime == entry.Mtime && previous.Size == entry.Size {
+		return previous.Model, previous.Effort
+	}
+	// Retain metadata outside the tail only while the same transcript grows.
+	retainedModel, retainedEffort := "", ""
+	if same && entry.Size > previous.Size {
+		retainedModel, retainedEffort = previous.Model, previous.Effort
 	}
 	readOK := false
 	defer func() {
 		if !readOK {
 			return
 		}
-		cache[key] = hudClaudeCacheEntry{info.ModTime().UnixNano(), info.Size(), model, effort}
+		entry.Model, entry.Effort = model, effort
+		cache[key] = entry
 		if len(cache) > 256 {
 			cache = map[string]hudClaudeCacheEntry{key: cache[key]}
 		}
@@ -167,8 +181,14 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 						model += "-" + match[2]
 					}
 				}
-				if match := hudClaudeCommandEffort.FindStringSubmatch(output[1]); effort == "" && match != nil {
-					effort = strings.ToLower(match[1])
+				if effort == "" {
+					match := hudClaudeCommandEffort.FindStringSubmatch(output[1])
+					if match == nil && hudClaudeCommandModel.MatchString(output[1]) {
+						match = hudClaudeModelEffort.FindStringSubmatch(output[1])
+					}
+					if match != nil {
+						effort = strings.ToLower(match[1])
+					}
 				}
 			}
 		}
@@ -183,16 +203,25 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 			}
 		}
 	}
+	if model == "" {
+		model = retainedModel
+	}
+	if effort == "" {
+		effort = retainedEffort
+	}
 	return model, effort
 }
 
 var hudClaudeCacheMu sync.Mutex
 
 type hudClaudeCacheEntry struct {
-	Mtime  int64  `json:"mtime"`
-	Size   int64  `json:"size"`
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
+	Version int    `json:"version"`
+	Device  uint64 `json:"device"`
+	Inode   uint64 `json:"inode"`
+	Mtime   int64  `json:"mtime"`
+	Size    int64  `json:"size"`
+	Model   string `json:"model"`
+	Effort  string `json:"effort"`
 }
 
 func hudClaudeCachePath() string {
