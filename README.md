@@ -2,7 +2,7 @@
 
 A compact cockpit for Herdr.app: provider usage across the top, a machine/space/tab/pane tree on the left, and an agent list underneath. The standalone `herdr-hud` helper supplies system readings, usage, and terminal models. It works with ordinary CLI logins; cr and orch are optional.
 
-Drag sibling tab rows to save their native Herdr order; the sidebar and Hub follow that order. When a remote machine is unavailable, the cockpit tab bar's close button hides the tab on this screen while keeping its machine registration and remote tasks. Select the remote space and use **Show hidden tabs** to restore hidden tabs.
+Drag sibling tab rows to save their native Herdr order; the sidebar and Hub follow that order. When a remote machine is unavailable, the cockpit tab bar's close button hides the tab on this screen while keeping its machine registration and remote tasks. Remote spaces with all tabs hidden disappear from the tree. Right-click the remote machine and choose **Show hidden tabs** to restore them.
 
 Screenshot placeholder: a sanitized preview will be added after an installed-layout review. No screenshot or personal app state is bundled.
 

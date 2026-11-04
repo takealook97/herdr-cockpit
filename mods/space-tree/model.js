@@ -136,7 +136,17 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
       open: !(folded[key] ?? foldDefault(kind, id, activeSpaceId)), ...fields };
     result.push(row); return row;
   };
-  const addSpace = (s, depth, guide = "", sectionColorKey = s.id, sectionDepth = depth) => {
+  const childrenOf = s => entries.filter(c => c.parentId === s.id);
+  const visible = (s, visiting = new Set()) => {
+    if (visiting.has(s)) return false;
+    const tabs = s.tabs ?? [];
+    if (s.machine == null || !tabs.length || tabs.some(tab => !tab.settled)) return true;
+    const next = new Set(visiting).add(s);
+    return childrenOf(s).some(child => visible(child, next));
+  };
+  const addSpace = (s, depth, guide = "", sectionColorKey = s.id, sectionDepth = depth, ancestors = new Set()) => {
+    if (ancestors.has(s)) return;
+    const next = new Set(ancestors).add(s);
     const tabStatus = tab => {
       const ps = panes.filter(p => p.tab === tab.id);
       return aggregateStatus(ps.length ? ps.map(p => p.status) : [tab.status]);
@@ -144,7 +154,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
     const statuses = (s.tabs ?? []).map(tabStatus);
     const row = emit("space", s.id, depth, { sectionColorKey, sectionDepth, name: s.name, status: aggregateStatus(statuses.length ? statuses : [s.status]), guide,
       active: s.id === activeSpaceId, data: s });
-    const children = entries.filter(c => c.parentId === s.id);
+    const children = childrenOf(s).filter(child => !next.has(child) && visible(child, next));
     const tabs = row.open ? (s.tabs ?? []).filter(tab => s.machine == null || !tab.settled) : [];
     tabs.forEach((tab, ti) => {
       const ps = panes.filter(p => p.tab === tab.id);
@@ -158,7 +168,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
         data: pane, terminal: pane.terminal, status: pane.status, active: !!pane.focused && s.id === activeSpaceId,
         guide: pi === ps.length - 1 ? "└" : "├" }));
     });
-    children.forEach((child, i) => addSpace(child, depth + 1, i === children.length - 1 ? "└" : "├", sectionColorKey, sectionDepth));
+    children.forEach((child, i) => addSpace(child, depth + 1, i === children.length - 1 ? "└" : "├", sectionColorKey, sectionDepth, next));
   };
   names.forEach(name => {
     const data = machines.find(m => (m.name ?? null) === name) ?? { name, layout: "ready" };
@@ -174,7 +184,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
           data: panes.find(p => p.terminal === head.address) ?? {}, status: hubRowStatus(head, panes),
           foldable: false, active: !!hub.active && hub.terminal === head.address, sectionColorKey: "hub", sectionDepth: 1 });
       }
-      entries.filter(s => (s.machine ?? null) === name && !s.parentId).forEach(s => addSpace(s, 1));
+      entries.filter(s => (s.machine ?? null) === name && !s.parentId && visible(s)).forEach(s => addSpace(s, 1));
     }
   });
   return result;

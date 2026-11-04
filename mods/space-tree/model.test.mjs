@@ -271,3 +271,23 @@ test("hub row status aggregates only panes in the Head tab", () => {
   const rows = buildTree({ panes: [headPane, worker, other], hub: { heads: [head] } });
   assert.equal(rows.find(row => row.key === "hub-head:head").status, "working");
 });
+
+test("settled remote spaces disappear unless they contain visible descendants", () => {
+  const hidden = id => ({ ...tab(id), settled: true });
+  const spaces = [sp("local", [hidden("lt")]),
+    sp("gone", [hidden("gt")], { machine: "remote" }),
+    sp("parent", [hidden("pt")], { machine: "remote" }),
+    sp("hidden-child", [hidden("hc")], { machine: "remote", parentId: "parent" }),
+    sp("visible-child", [tab("vc")], { machine: "remote", parentId: "parent" }),
+    sp("empty", [], { machine: "remote" }),
+    sp("mixed", [hidden("mt1"), tab("mt2")], { machine: "remote" })];
+  const input = { machines: [{ name: "remote" }, { name: "other" }], spaces };
+  let rows = buildTree(input);
+  assert.deepEqual(rows.map(r => r.id), [null, "local", "lt", "other", "remote", "parent", "visible-child", "vc", "empty", "mixed", "mt2"]);
+  assert.equal(rows.find(r => r.id === "visible-child").guide, "└");
+  spaces[1].tabs[0].settled = false;
+  rows = buildTree(input);
+  assert.ok(rows.find(r => r.id === "gone"));
+  assert.ok(rows.find(r => r.id === "gt"));
+  assert.deepEqual(spaces.at(-1).tabs.map(t => t.id), ["mt1", "mt2"]);
+});

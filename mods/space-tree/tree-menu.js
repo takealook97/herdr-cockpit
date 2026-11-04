@@ -1,6 +1,6 @@
 import { div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { props, theme, closeOverlay, openOverlay } from "herdr";
+import { props, theme, closeOverlay, openOverlay, spaces, run } from "herdr";
 import { startRename, nameElement, finishRename } from "./rename.js";
 
 // Alias controls supplement the shipped pane menu without changing that mod.
@@ -10,6 +10,8 @@ export function menuView(view) {
     terminal: p.target?.terminal, key: "menu-name", name: p.current };
   const button = (id, label, action) => h_flex().id(id).h(30).px(8).items_center().rounded(5)
     .hover(s => s.bg(t.hover)).on_click(action).child(label);
+  const hiddenTabs = () => spaces().filter(s => s.machine === p.id).flatMap(s => (s.tabs ?? []).filter(tab => tab.settled));
+  const hiddenCount = p.kind === "machine" && p.id != null && p.id !== "local" ? hiddenTabs().length : 0;
   return v_flex().id("tree-alias-menu").track_focus(view.handle).p(5).gap(3)
     .bg(t.popover).text_color(t.foreground).text_size(12)
     .on_key_down((e, cx) => {
@@ -22,6 +24,10 @@ export function menuView(view) {
     .child(view.editing ? nameElement(view, row, t) : button("rename-alias", "Rename", (_e, cx) => {
       if (p.id != null) startRename(view, p.kind, p.id, p.current, cx);
     }))
+    .when(hiddenCount > 0, el => el.child(button("show-hidden-tabs", `Show hidden tabs (${hiddenCount})`, () => {
+      for (const tab of hiddenTabs()) run("tab.unsettle", { id: tab.id });
+      closeOverlay(p.overlay);
+    })))
     .when(p.kind === "pane", el => el.child(button("pane-actions", "Pane actions…", () => {
       closeOverlay(p.overlay);
       openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "pane", target: p.target } });
