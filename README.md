@@ -43,7 +43,7 @@ Herdr renders the original interactive terminals in native-style cards, with a p
 
 **Cmd-Alt-arrow** moves between neighboring hub cells; **Cmd-Shift-Enter** toggles the focused cell to a full hub view and back. Outside hub these shortcuts call the original `pane.go` and `pane.zoom` commands. **Cmd-[ / Cmd-]** retain their built-in agent navigation. The installer adds missing bindings and rewrites only exact built-in values, preserving custom shortcuts and backing up keys first.
 
-Heads are local and remote agent terminals excluding orch workers and legacy observers. Space-tree polls each machine's helper every three seconds and rebuilds changed grid membership after a 500 ms debounce. Failed polls retain the last known metadata. Install `herdr-hud` on remote machines for their Heads to appear. Hub requires cockpit's `work-stack` layout and uses the Herdr CLI to write the grid, avoiding the mod host's argument nesting limit.
+Hub shows eligible Heads across all spaces and tabs on the current PC. Remote Heads never appear, even when a remote space is selected. Heads exclude orch workers and legacy observers. Space-tree polls each machine's helper every three seconds for sidebar metadata and rebuilds changed grid membership after a 500 ms debounce. Failed polls retain the last known metadata. Hub requires cockpit's `work-stack` layout and uses the Herdr CLI to write the grid, avoiding the mod host's argument nesting limit.
 
 ## Themes
 

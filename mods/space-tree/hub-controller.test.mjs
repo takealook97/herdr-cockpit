@@ -130,3 +130,54 @@ test('render debounces focus writes, cancels superseded focus, and retains ring 
   h.focus = 't2'; h.view.render(); h.view.hide(h.cx); await h.flush();
   const hidden = h.writes.length; h.tick(30); await h.flush(); assert.equal(h.writes.length, hidden);
 });
+
+test('hub includes all local spaces and tabs regardless of selection and excludes remote heads', async () => {
+  const h = setup(); await h.flush();
+  h.spaces = [
+    { id: 's', name: 'Local', active: true, tabs: [{ id: 'tb', name: 'One', active: true }, { id: 'tb2', name: 'Two', active: false }] },
+    { id: 's2', name: 'Local 2', machine: null, active: false, tabs: [{ id: 'tb3', name: 'Three' }] },
+    { id: 'remote/s', machine: 'remote', active: false, tabs: [{ id: 'remote/tb' }] },
+    { id: 'remote/s2', machine: 'remote', active: false, tabs: [{ id: 'remote/tb2' }] },
+  ];
+  h.panes = [
+    { tab: 'tb', terminal: 't1' }, { tab: 'tb2', terminal: 't2' }, { tab: 'tb3', terminal: 't3' },
+    { tab: 'tb2', terminal: 'worker' }, { tab: 'tb2', terminal: 'observer' },
+    { tab: 'remote/tb', terminal: 'remote/t1' }, { tab: 'remote/tb2', terminal: 'remote/t2' },
+    { tab: 'tb3', terminal: 'remote/t1' },
+  ];
+  h.terminals.push({ address: 'observer', labels: { 'hub.observer': 't1' } });
+  h.view.snapshots = new Map([
+    ['local', { data: { terminals: ['t1', 't2', 't3', 'worker', 'observer'].map(address => ({ address })), runs: [{ workers: [{ terminal: 'worker' }] }] } }],
+    ['remote', { machine: 'remote', data: { terminals: [{ address: 't1' }, { address: 't2' }], runs: [] } }],
+  ]);
+  const expected = ['t1', 't2', 't3'];
+  h.view.open(h.cx, 'remote/t1'); await h.flush();
+  assert.deepEqual(h.shared.get('hub.heads').map(x => x.address), expected);
+  assert.deepEqual(terminals(model.findNode(h.writes.at(-1), 'hub-grid')), expected);
+  assert.ok(!runs(h).some(([cmd, args]) => cmd === 'pane.focus' && args.terminal === 'remote/t1'));
+  h.spaces[0].active = false; h.spaces[2].active = true;
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.deepEqual(h.shared.get('hub.heads').map(x => x.address), expected);
+  h.spaces[2].active = false;
+  h.view.snapshots.set('remote', { machine: 'remote', data: { terminals: [{ address: 't1' }, { address: 't2' }, { address: 't3' }], runs: [] } });
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.deepEqual(h.shared.get('hub.heads').map(x => x.address), expected);
+  assert.deepEqual(terminals(model.findNode(h.writes.at(-1), 'hub-grid')), expected);
+});
+
+test('losing all local heads during a pending write cannot focus an old head and renders empty', async () => {
+  const h = setup(); await h.flush(); let release;
+  h.spaces.push({ id: 'remote/s', machine: 'remote', active: true, tabs: [{ id: 'remote/tb' }] });
+  h.panes.push({ tab: 'remote/tb', terminal: 'remote/t1' });
+  h.view.snapshots.set('remote', { machine: 'remote', data: { terminals: [{ address: 't1' }], runs: [] } });
+  h.waitWrite = new Promise(r => { release = r; });
+  h.view.open(h.cx, 't1');
+  h.spaces = h.spaces.filter(space => space.machine != null); h.view.sync(h.cx);
+  release(); await h.flush();
+  assert.deepEqual(h.shared.get('hub.heads'), []);
+  assert.deepEqual(terminals(model.findNode(h.writes.at(-1), 'hub-grid')), []);
+  assert.ok(model.findNode(h.writes.at(-1), 'hub-empty'));
+  assert.ok(!runs(h).some(([cmd]) => cmd === 'pane.focus'));
+  h.view.open(h.cx, 'remote/t1'); await h.flush();
+  assert.ok(!runs(h).some(([cmd]) => cmd === 'pane.focus'));
+});

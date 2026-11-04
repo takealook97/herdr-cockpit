@@ -52,10 +52,19 @@ export default class Hub {
     const hud = mergeHuds([...this.snapshots.values()]);
     const core = new Map(terminals().map(t => [t.address, t]));
     hud.terminals = hud.terminals.map(t => ({ ...core.get(t.address), ...t }));
-    this.heads = headsFrom(hud, panes(), spaces());
+    const localSpaces = spaces().filter(space => space.machine == null);
+    this.heads = headsFrom(hud, panes(), localSpaces).filter(head => !head.address.includes('/'));
     const serialized = JSON.stringify(this.heads);
     if (serialized !== this.headsSerialized) { this.headsSerialized = serialized; setShared('hub.heads', this.heads); }
-    if (this.zoomed && !this.heads.some(h => h.address === this.zoomed)) this.zoomed = null;
+    const eligible = address => this.heads.some(h => h.address === address);
+    if (this.zoomed && !eligible(this.zoomed)) this.zoomed = null;
+    if (this.focusedAddress && !eligible(this.focusedAddress)) this.focusedAddress = null;
+    if (this.focusAfter && !eligible(this.focusAfter)) this.focusAfter = null;
+    if (this.pendingFocus && !eligible(this.pendingFocus)) {
+      this.focusTimer?.cancel(); this.pendingFocus = null;
+    }
+    // An in-flight write must re-read membership before selecting or focusing.
+    if (this.writing && this.gridSignature() !== this.writingSignature) this.request++;
     if (!this.active()) return;
     const signature = this.gridSignature();
     if (signature === this.signature) {
@@ -82,6 +91,7 @@ export default class Hub {
           const open = this.active(), tree = plainLayout();
           if (!findNode(tree, 'work-stack') || !findNode(tree, 'hub-grid')) throw new Error('Hub requires the cockpit work-stack layout.');
           const signature = this.gridSignature(), focusedAddress = this.focusedAddress;
+          this.writingSignature = signature;
           const next = withStackActive(replaceNode(tree, 'hub-grid', gridFor(this.heads, this.zoomed, focusedAddress)), 'work-stack', open ? 'hub-view' : 'work-normal');
           await setLayout(next);
           if (this.closed) break;
@@ -104,9 +114,12 @@ export default class Hub {
   }
   open(cx, address) {
     if (this.closed) return;
-    if (address && this.zoomed && address !== this.zoomed) this.zoomed = null;
     setShared('hub.open', true); this.sync(cx);
-    this.apply(cx, address ?? this.heads.find(h => h.address === focused()?.terminal)?.address ?? this.heads[0]?.address);
+    const target = this.heads.find(h => h.address === address)?.address
+      ?? this.heads.find(h => h.address === focused()?.terminal)?.address ?? this.heads[0]?.address;
+    if (target && this.zoomed && target !== this.zoomed) this.zoomed = null;
+    if (!target) { this.focusAfter = null; this.focusedAddress = null; }
+    this.apply(cx, target);
   }
   hide(cx) {
     if (!this.active()) return;
