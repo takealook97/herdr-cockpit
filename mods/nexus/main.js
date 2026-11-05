@@ -1,7 +1,7 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, TextareaState, Textarea } from "gpui-base";
 import { exec, panes, terminals, shared, setShared, theme, props, closeOverlay, notify, run } from "herdr";
-import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
+import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs, logLine, logArgs, DOT_COUNT } from "./model.js";
 
 const QUESTION_MAX_W = 160, CHIP_MAX_W = 140, MAX_CHIPS = 4;
 const POLL_MS = 120, COUNTDOWN_MS = 1000, WARNING_MS = 6000, STARTUP_MS = 3000;
@@ -9,11 +9,14 @@ const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니
 const NO_SPEECH_TEXT = "말을 알아듣지 못했습니다";
 const IGNORED_TEXT = "명령으로 들리지 않아 넘겼습니다";
 const INPUT_MAX_ROWS = 3;
+const LOG_POLL_MS = 1000;
+const HEADER_HINT = "· Space를 누른 채 말하기 · ⌘⇧N 닫기";
 const PLACEHOLDER = "Head에게 보낼 말 · ⌘⇧Space 말하기";
 
 export default class Nexus extends View {
   init(_p, cx) {
     setShared("nexus.open", true);
+    if (props()?.header) { this.initHeader(cx); return; }
     this.handle = cx.focus_handle();
     this.cx = cx; this.seenListenToggle = Number(shared("nexus.listenToggle")) || 0;
     this.reply = null; this.pending = false; this.micHidden = false;
@@ -41,6 +44,37 @@ export default class Nexus extends View {
       if (gen !== this.listenGen || this.userTouched || this.closed) return;
       if (props()?.listen && !this.micHidden) this.startListening(cx);
     });
+  }
+
+  // Header mode: the voice terminal fills the dialog below; this row only shows the latest routing result.
+  initHeader(cx) {
+    this.header = true; this.closed = false; this.logEntry = null; this.logPolling = false;
+    this.pollLog(cx);
+    this.logTimer = cx.timer.every(LOG_POLL_MS, cx => this.pollLog(cx));
+  }
+
+  pollLog(cx) {
+    if (this.logPolling || this.closed) return;
+    this.logPolling = true;
+    cx.spawn(async cx => {
+      const reply = await exec("sh", logArgs()).then(r => parseReply(r.stdout)).catch(() => ({}));
+      this.logPolling = false;
+      if (this.closed) return;
+      const latest = Array.isArray(reply.entries) ? reply.entries.at(-1) ?? null : null;
+      if (JSON.stringify(latest) !== JSON.stringify(this.logEntry)) { this.logEntry = latest; cx.notify(); }
+    });
+  }
+
+  headerView(t) {
+    const line = logLine(this.logEntry);
+    const row = h_flex().id("nexus-header").size_full().min_w(0).overflow_hidden().items_center().gap(6).px(12)
+      .bg(t.background).text_size(11.5).text_color(t.dim)
+      .child(div().flex_none().font_bold().text_color(t.accent).child("NEXUS"))
+      .child(div().id("nexus-header-hint").flex_none().child(HEADER_HINT));
+    if (!line) return row;
+    return row.child(div().flex_1().min_w(0))
+      .child(div().id("nexus-header-log").min_w(0).truncate().text_color(this.statusColor(line.kind, t))
+        .tooltip(line.text).child(line.text));
   }
 
   helper(sub, opts) {
@@ -208,6 +242,7 @@ export default class Nexus extends View {
 
   close() {
     setShared("nexus.open", false);
+    if (this.header) { this.closed = true; this.logTimer?.cancel?.(); this.logTimer = null; return; }
     this.closed = true; this.listenGen++;
     this.cancelCountdown();
     const wasListening = this.listening;
@@ -265,8 +300,9 @@ export default class Nexus extends View {
   }
 
   render() {
-    this.checkListenToggle();
     const t = theme();
+    if (this.header) return this.headerView(t);
+    this.checkListenToggle();
     return v_flex().id("nexus").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .size_full().min_h(0).bg(t.background).p(12).gap(6).text_size(12)
       .child(h_flex().flex_1().min_h(0).gap(8).items_start()

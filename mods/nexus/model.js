@@ -55,3 +55,21 @@ export function helperArgs(sub, opts = {}) {
   }
   throw new Error(`unknown nexus subcommand: ${sub}`);
 }
+
+// Header mode: one dim line for the latest routed utterance (`nexus log --limit 1` entry).
+export function logLine(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const flat = value => String(value ?? "").replace(/\s+/g, " ").trim();
+  const pick = (...values) => values.map(flat).find(Boolean) ?? "";
+  switch (entry.action) {
+    case "send": return { kind: "send", text: `→ ${pick(entry.label, entry.target)}` };
+    case "ask": return { kind: "?", text: `? ${pick(entry.question)}` };
+    case "ignore": return { kind: "ignore", text: "· 넘김" };
+    case "error": return { kind: "!", text: `! ${pick(entry.error)}` };
+    default: return null;
+  }
+}
+
+export function logArgs() {
+  return ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "nexus", "log", "--limit", "1"];
+}

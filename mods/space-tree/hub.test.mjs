@@ -96,3 +96,12 @@ test('hub names put space first and never include model text', () => {
   const row = rows.find(r => r.terminal === 't1');
   assert.equal(row.name, 'Work · Tab 0'); assert.equal(row.sub, '');
 });
+
+test('the nexus voice terminal never becomes a Head', () => {
+  const hud = { runs: [], terminals: [{ address: 'head' }, { address: 'voice', labels: { 'nexus.voice': '1' } }] };
+  const ps = [{ pane: 'p1', terminal: 'head', tab: 'tb1' }, { pane: 'p2', terminal: 'voice', tab: 'tb1' }];
+  const spaces = [{ id: 's1', name: 'a', tabs: [{ id: 'tb1', name: 'x' }] }];
+  assert.deepEqual(headsFrom(hud, ps, spaces).map(h => h.address), ['head']);
+  const labelledPane = [{ pane: 'p1', terminal: 'head', tab: 'tb1' }, { pane: 'p2', terminal: 'v2', tab: 'tb1', labels: { 'nexus.voice': '1' } }];
+  assert.deepEqual(headsFrom({ runs: [], terminals: [{ address: 'head' }, { address: 'v2' }] }, labelledPane, spaces).map(h => h.address), ['head']);
+});
