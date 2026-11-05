@@ -68,6 +68,107 @@ private func enterResponsibleProcess() -> Bool {
     exit(terminatingSignal == 0 ? (status >> 8) & 0xff : 128 + terminatingSignal)
 }
 
+private func listenCacheDirectory() -> URL {
+    let environment = ProcessInfo.processInfo.environment
+    let cache = environment["XDG_CACHE_HOME"].flatMap { $0.isEmpty ? nil : $0 }
+        ?? ((environment["HOME"] ?? NSHomeDirectory()) + "/.cache")
+    return URL(fileURLWithPath: cache).appendingPathComponent("herdr-hud", isDirectory: true)
+}
+
+private func preparationRunning() -> Bool {
+    let path = listenCacheDirectory().appendingPathComponent("listen-prepare.pid")
+    guard let text = try? String(contentsOf: path, encoding: .utf8),
+          let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return false }
+    return kill(pid, 0) == 0 || errno == EPERM
+}
+
+// Detached warm-up owns no microphone or session state. Disclaim here too,
+// rather than inheriting the live listener's responsibility/proxy environment.
+private func warmAssetsInBackground(locale: String) {
+    guard !preparationRunning(),
+          let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return }
+    typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+    let setDisclaim = unsafeBitCast(symbol, to: SetDisclaim.self)
+    var attributes: posix_spawnattr_t?
+    guard posix_spawnattr_init(&attributes) == 0 else { return }
+    defer { posix_spawnattr_destroy(&attributes) }
+    guard setDisclaim(&attributes, 1) == 0,
+          posix_spawnattr_setpgroup(&attributes, 0) == 0,
+          posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP)) == 0 else { return }
+    var actions: posix_spawn_file_actions_t?
+    guard posix_spawn_file_actions_init(&actions) == 0 else { return }
+    defer { posix_spawn_file_actions_destroy(&actions) }
+    for descriptor: Int32 in 0...2 {
+        guard posix_spawn_file_actions_addopen(&actions, descriptor, "/dev/null", O_RDWR, 0) == 0 else { return }
+    }
+    var size: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &size)
+    var path = [CChar](repeating: 0, count: Int(size))
+    guard _NSGetExecutablePath(&path, &size) == 0 else { return }
+    var environment = ProcessInfo.processInfo.environment
+    environment["HERDR_LISTEN_DISCLAIMED"] = "1"
+    environment.removeValue(forKey: "HERDR_LISTEN_PROXY_PID")
+    let arguments: [String] = [String(cString: path), "--prepare", "--locale", locale]
+    var argv = arguments.map { strdup($0) } + [nil]
+    var envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+    defer {
+        for pointer in argv { free(pointer) }
+        for pointer in envp { free(pointer) }
+    }
+    var child: pid_t = 0
+    if posix_spawn(&child, path, &actions, &attributes, &argv, &envp) == 0 {
+        // Reap while this listener lives; warm-up survives this session's exit.
+        let spawned = child
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            while waitpid(spawned, &status, 0) < 0 && errno == EINTR {}
+        }
+    }
+}
+
+private func prepareAssets(_ options: Options) throws {
+    guard #available(macOS 26, *) else { exit(2) }
+    let directory = listenCacheDirectory()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                           attributes: [.posixPermissions: 0o700])
+    let lockFD = open(directory.appendingPathComponent("listen-prepare.lock").path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
+    guard lockFD >= 0 else { throw ListenError.message("cannot lock asset preparation") }
+    // Keep the descriptor alive until exit; only one download may run at once.
+    guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else { close(lockFD); exit(0) }
+    let pidURL = directory.appendingPathComponent("listen-prepare.pid")
+    let pid = ProcessInfo.processInfo.environment["HERDR_LISTEN_PROXY_PID"] ?? String(getpid())
+    try Data((pid + "\n").utf8).write(to: pidURL, options: .atomic)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pidURL.path)
+    func end(_ code: Int32) -> Never {
+        try? FileManager.default.removeItem(at: pidURL)
+        close(lockFD)
+        exit(code)
+    }
+    // A dispatch deadline also bounds cancellation-insensitive framework work.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+        fputs("herdr-listen: asset preparation timed out\n", stderr)
+        end(1)
+    }
+    Task { @MainActor in
+        do {
+            guard try await AnalyzerSpeech.installAssets(locale: options.locale) else { end(2) }
+            let safeLocale = options.locale.addingPercentEncoding(withAllowedCharacters: .alphanumerics.union(CharacterSet(charactersIn: "-_"))) ?? "unknown"
+            let marker = directory.appendingPathComponent("listen-assets-\(safeLocale).ok")
+            let temporary = directory.appendingPathComponent(".assets-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            guard fd >= 0 else { throw ListenError.message("cannot create asset marker") }
+            close(fd)
+            guard rename(temporary.path, marker.path) == 0 else { throw ListenError.message("cannot publish asset marker") }
+            end(0)
+        } catch {
+            fputs("herdr-listen: asset preparation failed: \(error)\n", stderr)
+            end(1)
+        }
+    }
+    RunLoop.main.run()
+}
+
 struct Options {
     var statePath: String
     var locale = "ko-KR"
@@ -82,6 +183,7 @@ struct Options {
     var hints: [String] = []
     var speechEngine = "auto"
     var server = false
+    var prepare = false
 
     init() throws {
         let env = ProcessInfo.processInfo.environment
@@ -91,9 +193,10 @@ struct Options {
         var args = CommandLine.arguments.dropFirst().makeIterator()
         while let flag = args.next() {
             if flag == "--help" || flag == "-h" {
-                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--hints a,b,c] [--engine auto|analyzer|legacy] [--server] [--no-disclaim]")
+                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--hints a,b,c] [--engine auto|analyzer|legacy] [--server] [--prepare] [--no-disclaim]")
                 exit(0)
             }
+            if flag == "--prepare" { prepare = true; continue }
             if flag == "--server" { server = true; continue }
             if flag == "--no-disclaim" { continue }
             if flag == "--debug-json" { debugJSON = true; continue }
@@ -352,10 +455,25 @@ final class Listener {
                 // Capture (and laughter classification) must precede model work.
                 if options.file == nil { startCapture() }
                 guard !finishing, !completed else { return }
+                let preparationStarted = ProcessInfo.processInfo.systemUptime
                 speechPreparation = Task { @MainActor in
                     var driver: AnalyzerSpeech?
-                    do { driver = try await AnalyzerSpeech.prepare(locale: options.locale, hints: options.hints) }
-                    catch { /* Unsupported locale/assets: this session uses legacy. */ }
+                    var installed = false
+                    do {
+                        if let status = await AnalyzerSpeech.assetStatus(locale: options.locale) {
+                            installed = status.installed
+                            if installed {
+                                driver = try await AnalyzerSpeech.prepare(transcriber: status.module, hints: options.hints)
+                            } else {
+                                warmAssetsInBackground(locale: options.locale)
+                            }
+                        }
+                    } catch { /* Unsupported locale/assets: this session uses legacy. */ }
+                    let elapsed = ProcessInfo.processInfo.systemUptime - preparationStarted
+                    if selectedSpeechEngine(assetsInstalled: installed, preparationSeconds: driver == nil ? nil : elapsed) != "analyzer" {
+                        driver?.cancel()
+                        driver = nil
+                    }
                     let prepared = driver
                     guard self.preparingSpeech, !self.finishing, !self.completed else { prepared?.cancel(); return }
                     self.preparingSpeech = false
@@ -376,9 +494,9 @@ final class Listener {
                     }
                     self.startAudio()
                 }
-                // Do not await a cancellation-insensitive asset download. The
-                // deadline independently starts legacy; late results are retired.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                // Bound status + preparation too, even if framework cancellation stalls.
+                // Late drivers are retired; the buffered pre-roll is replayed once.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     guard self.preparingSpeech, !self.finishing, !self.completed else { return }
                     self.preparingSpeech = false
                     self.speechPreparation?.cancel()
@@ -392,6 +510,8 @@ final class Listener {
     }
 
     func startLegacyAudio() {
+        state.engine = "legacy"
+        write(immediate: true)
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: options.locale)),
               recognizer.isAvailable else {
             fail("음성 인식을 사용할 수 없습니다 (\(options.locale))")
@@ -910,9 +1030,10 @@ let responsible = enterResponsibleProcess()
 do {
     let options = try Options()
     guard responsible else {
-        try reportResponsibilityFailure(options)
+        if !options.prepare { try reportResponsibilityFailure(options) }
         exit(1)
     }
+    if options.prepare { try prepareAssets(options); exit(1) }
     let listener = try Listener(options)
     listener.start()
     RunLoop.main.run()

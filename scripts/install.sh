@@ -157,6 +157,7 @@ if "$dry_run"; then
     echo "Install helper: $HOME/.local/bin/herdr-hud"
     if [ "$goos" = darwin ] && command -v swiftc >/dev/null; then
         echo "Build herdr-listen"
+        echo "nohup \"$HOME/.local/bin/herdr-listen\" --prepare --locale ko-KR >/dev/null 2>&1 &"
     else
         echo "Skip herdr-listen (needs macOS swiftc)"
     fi
@@ -204,6 +205,7 @@ if [ "$goos" = darwin ] && command -v swiftc >/dev/null; then
             cp "$scratch/herdr-listen" "$listen_tmp" && chmod 755 "$listen_tmp" && \
             mv -f "$listen_tmp" "$HOME/.local/bin/herdr-listen"; then
             echo "Install helper: $HOME/.local/bin/herdr-listen"
+            nohup "$HOME/.local/bin/herdr-listen" --prepare --locale ko-KR >/dev/null 2>&1 &
         else
             echo "Warning: could not install herdr-listen; continuing" >&2
         fi

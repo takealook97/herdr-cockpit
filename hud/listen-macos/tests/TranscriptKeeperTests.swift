@@ -3,6 +3,14 @@ import Foundation
 @main
 struct TranscriptKeeperTests {
     static func main() {
+        assert(selectedSpeechEngine(assetsInstalled: true, preparationSeconds: 0) == "analyzer")
+        assert(selectedSpeechEngine(assetsInstalled: true, preparationSeconds: 1.5) == "analyzer")
+        for seconds: Double? in [nil, -1, 1.5001, .infinity, .nan] {
+            assert(selectedSpeechEngine(assetsInstalled: true, preparationSeconds: seconds) == "legacy")
+        }
+        for seconds: Double? in [nil, 0, 1, 20] {
+            assert(selectedSpeechEngine(assetsInstalled: false, preparationSeconds: seconds) == "legacy")
+        }
         var keeper = TranscriptKeeper()
         keeper.observe(text: "위키 아일랜드 지금", segments: [("위키", 0, 0.5), ("아일랜드 지금", 0.5, 1)])
         keeper.observe(text: "", segments: [])

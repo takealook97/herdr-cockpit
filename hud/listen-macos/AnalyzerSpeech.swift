@@ -32,24 +32,43 @@ final class AnalyzerSpeech: @unchecked Sendable {
         self.continuation = continuation
     }
 
-    static func prepare(locale: String, hints: [String]) async throws -> AnalyzerSpeech? {
+    // Status inspection never requests or downloads assets on the session path.
+    static func assetStatus(locale: String) async -> (module: SpeechTranscriber, installed: Bool)? {
         guard SpeechTranscriber.isAvailable,
               let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale)) else { return nil }
-        let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
-                                           reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
-        if await AssetInventory.status(forModules: [transcriber]) != .installed,
-           let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+        let module = SpeechTranscriber(locale: locale, transcriptionOptions: [],
+                                       reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
+        return (module, await AssetInventory.status(forModules: [module]) == .installed)
+    }
+
+    static func installAssets(locale: String) async throws -> Bool {
+        guard let status = await assetStatus(locale: locale) else { return false }
+        if !status.installed,
+           let request = try await AssetInventory.assetInstallationRequest(supporting: [status.module]) {
             try await request.downloadAndInstall()
         }
         try Task.checkCancellation()
-        guard await AssetInventory.status(forModules: [transcriber]) == .installed,
-              let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { return nil }
+        guard await AssetInventory.status(forModules: [status.module]) == .installed else {
+            throw ListenError.message("SpeechTranscriber assets are not installed")
+        }
+        return true
+    }
+
+    static func prepare(transcriber: SpeechTranscriber, hints: [String]) async throws -> AnalyzerSpeech? {
+        try Task.checkCancellation()
+        guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else { return nil }
         let driver = AnalyzerSpeech(transcriber: transcriber, format: format)
-        let context = AnalysisContext()
-        context.contextualStrings[.general] = hints
-        try await driver.analyzer.setContext(context)
-        try await driver.analyzer.prepareToAnalyze(in: format)
-        return driver
+        do {
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = hints
+            try await driver.analyzer.setContext(context)
+            try await driver.analyzer.prepareToAnalyze(in: format)
+            try Task.checkCancellation()
+            return driver
+        } catch {
+            driver.cancel()
+            throw error
+        }
     }
 
     func start() {

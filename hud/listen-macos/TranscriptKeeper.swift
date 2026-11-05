@@ -59,3 +59,10 @@ func contextualHints(_ value: String) -> [String] {
     }
     return result
 }
+
+// Pure policy shared by startup and tests; nil means preparation failed.
+func selectedSpeechEngine(assetsInstalled: Bool, preparationSeconds: Double?) -> String {
+    guard assetsInstalled, let seconds = preparationSeconds,
+          seconds.isFinite, seconds >= 0, seconds <= 1.5 else { return "legacy" }
+    return "analyzer"
+}
