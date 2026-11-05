@@ -181,7 +181,7 @@ test('closing the dialog cancels pending focus and recording callbacks', async (
 test('header close then immediate reopen opens a new dialog', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(false); await settle();
-  h.shared.set('nexus.heartbeat', 0); h.shared.set('nexus.overlayId', null); h.shared.set('nexus.closedAt', Date.now());
+  h.shared.set('nexus.heartbeat', 0); h.shared.set('nexus.overlayId', null); h.shared.set('nexus.closedOverlay', 'ov1');
   h.tree.toggleNexus(false); await settle();
   assert.equal(h.overlays.filter(x => x[0] === 'open').length, 2);
 });
@@ -190,7 +190,7 @@ test('header close cancels pending callbacks of that dialog', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   const execs = []; h.tree.voiceRecord = () => execs.push('record');
   h.tree.toggleNexus(true); await settle();
-  h.shared.set('nexus.closedAt', Date.now() + 1);
+  h.shared.set('nexus.closedOverlay', 'ov1');
   h.tick(120); h.tick(400);
   assert.deepEqual(h.calls.filter(c => c.run), []);
   assert.deepEqual(execs, []);
@@ -209,4 +209,28 @@ test('second press before the first heartbeat closes the apple bar', async () =>
   h.tree.toggleNexus(false); await settle();
   h.tree.toggleNexus(false); await settle();
   assert.deepEqual(h.overlays.map(x => x[0]), ['open', 'close']);
+});
+
+test('second listen press while the initial record is pending cancels it without recording', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  const execs = []; h.tree.voiceRecord = () => execs.push('record');
+  h.tree.toggleNexus(true); await settle();
+  h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.mode', 'claude');
+  h.tree.toggleNexus(true);
+  h.tick(120); h.tick(400);
+  assert.deepEqual(execs, []);
+});
+
+test('close then same-millisecond reopen is not treated as closed', async () => {
+  const realNow = Date.now; Date.now = () => 10000;
+  try {
+    const h = setupVoice({ mode: 'claude', terminal: 't9' });
+    const execs = []; h.tree.voiceRecord = () => execs.push('record');
+    h.shared.set('nexus.closedOverlay', 'ov0');
+    h.tree.toggleNexus(true); await settle();
+    h.tick(120); h.tick(400);
+    assert.deepEqual(execs, ['record']);
+    h.tree.toggleNexus(false); await settle();
+    assert.deepEqual(h.overlays.map(x => x[0]), ['open', 'close']);
+  } finally { Date.now = realNow; }
 });
