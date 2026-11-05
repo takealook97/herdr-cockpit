@@ -362,6 +362,7 @@ test('header mode marks the dialog open, skips the input and polls the latest lo
   assert.equal(byId(h.view.render(), 'nexus-header-log').nodes[0], '→ tool · wiki');
   h.view.close();
   assert.equal(h.shared.get('nexus.open'), false);
+  assert.deepEqual(h.execs.at(-1), ['voice', 'cancel']);
   assert.equal(h.intervals[1].canceled, true);
   assert.equal(h.intervals[0].canceled, true);
 });

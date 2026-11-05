@@ -18,6 +18,7 @@ type nexusVoiceReply struct {
 	OK        bool   `json:"ok,omitempty"`
 	Recording *bool  `json:"recording,omitempty"`
 	Submitted *bool  `json:"submitted,omitempty"`
+	Cancelled *bool  `json:"cancelled,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	Terminal  string `json:"terminal,omitempty"`
 	Action    string `json:"action,omitempty"`
@@ -243,19 +244,58 @@ func nexusVoiceOwned(ctx context.Context, hc nexusHCRunner) (string, error) {
 		err = errors.New("실행 중인 음성 터미널이 없습니다")
 	}
 	if err == nil {
-		var raw []byte
-		raw, err = hc(ctx, "get", address, "--json")
-		var terminal struct {
-			Labels map[string]string `json:"labels"`
-		}
-		if err == nil {
-			err = json.Unmarshal(raw, &terminal)
-		}
-		if err == nil && terminal.Labels["nexus.voice"] != "1" {
-			err = errors.New("음성 터미널 소유 라벨을 확인하지 못했습니다")
-		}
+		err = nexusVoiceCheckOwner(ctx, address, hc)
 	}
 	return address, err
+}
+
+func nexusVoiceCheckOwner(ctx context.Context, address string, hc nexusHCRunner) error {
+	raw, err := hc(ctx, "get", address, "--json")
+	if err != nil {
+		return err
+	}
+	var terminal struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.Unmarshal(raw, &terminal); err != nil {
+		return err
+	}
+	if terminal.Labels["nexus.voice"] != "1" {
+		return errors.New("음성 터미널 소유 라벨을 확인하지 못했습니다")
+	}
+	return nil
+}
+
+// Closing an idle dialog must not alter its prompt or start a recording.
+func nexusVoiceCancel(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
+	cancelled := false
+	fail := func(err error) nexusVoiceReply {
+		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	}
+	address, err := nexusVoiceLive(ctx, hc)
+	if err != nil {
+		return fail(err)
+	}
+	if address == "" {
+		return nexusVoiceReply{OK: true, Cancelled: &cancelled}
+	}
+	if err := nexusVoiceCheckOwner(ctx, address, hc); err != nil {
+		return fail(err)
+	}
+	raw, err := hc(ctx, "read", address, "--lines", "0")
+	if err != nil {
+		return fail(err)
+	}
+	if strings.Contains(string(raw), "REC") {
+		if _, err := hc(ctx, "keys", address, "esc"); err != nil {
+			return fail(err)
+		}
+		if _, err := hc(ctx, "keys", address, "ctrl+e", "ctrl+u"); err != nil {
+			return fail(err)
+		}
+		cancelled = true
+	}
+	return nexusVoiceReply{OK: true, Cancelled: &cancelled}
 }
 
 func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {

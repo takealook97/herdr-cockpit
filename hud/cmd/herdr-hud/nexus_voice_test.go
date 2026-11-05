@@ -778,3 +778,79 @@ func TestNexusVoiceRecordStopSubmission(t *testing.T) {
 		})
 	}
 }
+
+func TestNexusVoiceCancel(t *testing.T) {
+	for _, scenario := range []string{"recording", "idle", "missing", "exited", "remote", "unlabelled", "list failure", "read failure", "esc failure", "clear failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			var calls [][]string
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, append([]string(nil), args...))
+				switch args[0] {
+				case "ls":
+					switch scenario {
+					case "list failure":
+						return nil, errors.New("list failed")
+					case "missing":
+						return []byte(`{"terminals":[]}`), nil
+					case "exited":
+						return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice","exited":true}]}`), nil
+					case "remote":
+						return []byte(`{"terminals":[{"address":"remote/t1","name":"nexus-voice"}]}`), nil
+					}
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					if scenario == "unlabelled" {
+						return []byte(`{"labels":{}}`), nil
+					}
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					if scenario == "read failure" {
+						return nil, errors.New("read failed")
+					}
+					if scenario == "idle" {
+						return []byte("❯ leftover text"), nil
+					}
+					return []byte("● REC 00:03\n❯ "), nil
+				case "keys":
+					if scenario == "esc failure" && args[2] == "esc" || scenario == "clear failure" && args[2] == "ctrl+e" {
+						return nil, errors.New("keys failed")
+					}
+					return nil, nil
+				default:
+					t.Fatalf("unexpected hc call: %v", args)
+					return nil, nil
+				}
+			}
+			r := nexusVoiceCancel(context.Background(), hc)
+			want := [][]string{{"ls", "--json"}}
+			absent := scenario == "missing" || scenario == "exited" || scenario == "remote"
+			if !absent && scenario != "list failure" {
+				want = append(want, []string{"get", "t1", "--json"})
+				if scenario != "unlabelled" {
+					want = append(want, []string{"read", "t1", "--lines", "0"})
+					if scenario != "idle" && scenario != "read failure" {
+						want = append(want, []string{"keys", "t1", "esc"})
+						if scenario != "esc failure" {
+							want = append(want, []string{"keys", "t1", "ctrl+e", "ctrl+u"})
+						}
+					}
+				}
+			}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls = %v, want %v", calls, want)
+			}
+			if scenario == "recording" || scenario == "idle" || absent {
+				wantJSON := `{"ok":true,"cancelled":false}`
+				if scenario == "recording" {
+					wantJSON = `{"ok":true,"cancelled":true}`
+				}
+				raw, err := json.Marshal(r)
+				if err != nil || string(raw) != wantJSON {
+					t.Fatalf("reply = %s, err = %v; want %s", raw, err, wantJSON)
+				}
+			} else if r.OK || r.Action != "error" || r.Error == "" {
+				t.Fatalf("expected error: %+v", r)
+			}
+		})
+	}
+}
