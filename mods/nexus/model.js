@@ -55,6 +55,6 @@ export function helperArgs(sub, opts = {}) {
   if (sub === "route") return [...head, "route", "--text", opts.text, "--roster", roster];
   if (sub === "send") return [...head, "send", "--to", opts.to, "--text", opts.text, "--roster", roster];
   if (sub === "log") return [...head, "log", "--limit", String(opts.limit ?? 6)];
-  if (sub === "listen") return [...head, "listen", opts.action];
+  if (sub === "listen") return [...head, "listen", opts.action, ...(opts.pid ? ["--pid", String(opts.pid)] : [])];
   throw new Error(`unknown nexus subcommand: ${sub}`);
 }
