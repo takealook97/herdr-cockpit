@@ -27,11 +27,24 @@ test('nexus command opens a dialog overlay and a second one closes it while open
   h.tree.toggleNexus(false);
   assert.deepEqual(h.overlays[0], ['open', { mod: 'nexus', kind: 'dialog', width: 560, height: 120, props: { listen: false } }]);
   h.shared.set('nexus.open', true);
-  h.tree.toggleNexus(true);
+  h.tree.toggleNexus(false);
   assert.deepEqual(h.overlays[1], ['close', 'ov1']);
   h.shared.set('nexus.open', false);
   h.tree.toggleNexus(true);
   assert.equal(h.overlays[2][1].props.listen, true);
+});
+
+test('nexus-listen while open keeps the dialog and bumps nexus.listenToggle', () => {
+  const h = setup();
+  h.tree.toggleNexus(false);
+  h.shared.set('nexus.open', true);
+  h.tree.toggleNexus(true);
+  assert.equal(h.overlays.length, 1);
+  assert.equal(typeof h.shared.get('nexus.listenToggle'), 'number');
+  const first = h.shared.get('nexus.listenToggle');
+  const real = Date.now; Date.now = () => first + 5;
+  try { h.tree.toggleNexus(true); } finally { Date.now = real; }
+  assert.equal(h.shared.get('nexus.listenToggle'), first + 5);
 });
 
 test('init clears a stale nexus.open flag', () => {

@@ -157,6 +157,8 @@ export default class SpaceTree extends Plumbing {
   // The dialog is global: the same command (or row click) closes it while it is open.
   toggleNexus(listen) {
     if (shared("nexus.open") && this.nexusOverlay) {
+      // Cmd-Shift-Space inside an open dialog toggles its voice input instead of closing it.
+      if (listen) { setShared("nexus.listenToggle", Date.now()); return; }
       closeOverlay(this.nexusOverlay); this.nexusOverlay = null; return;
     }
     this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 120, props: { listen: !!listen } });

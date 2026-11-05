@@ -14,6 +14,7 @@ export default class Nexus extends View {
   init(_p, cx) {
     setShared("nexus.open", true);
     this.handle = cx.focus_handle();
+    this.cx = cx; this.seenListenToggle = shared("nexus.listenToggle") ?? 0;
     this.reply = null; this.pending = false; this.micHidden = false;
     this.listening = false; this.laughing = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
     this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
@@ -250,7 +251,16 @@ export default class Nexus extends View {
       div().id(`nexus-dot-${i}`).w(4).h(h).rounded(2).bg(color)));
   }
 
+  // space-tree bumps nexus.listenToggle when the listen command arrives while the dialog is open.
+  checkListenToggle() {
+    const stamp = shared("nexus.listenToggle") ?? 0;
+    if (stamp <= this.seenListenToggle) return;
+    this.seenListenToggle = stamp;
+    if (!this.closed && !this.micHidden) this.toggleMic(this.cx);
+  }
+
   render() {
+    this.checkListenToggle();
     const t = theme();
     return v_flex().id("nexus").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .size_full().min_h(0).bg(t.background).p(12).gap(6).text_size(12)

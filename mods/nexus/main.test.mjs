@@ -311,3 +311,17 @@ test('status row is one line: no wrap, truncated question and chips, at most 4 c
   const err = byId(h.view.statusView({ dim: 'dim' }), 'nexus-status-text');
   assert.ok('truncate' in err.style && err.style.tooltip.includes('e'.repeat(300)));
 });
+
+test('a newer nexus.listenToggle toggles the mic; the init value is ignored', async () => {
+  const h = voice(async a => a[1] === 'start' ? { state: 'listening', pid: 7 } : { state: 'idle' }, {});
+  h.shared.set('nexus.listenToggle', 500);
+  h.view.seenListenToggle = 500;
+  await h.flush(); h.view.render();
+  assert.equal(h.view.listening, false);
+  h.shared.set('nexus.listenToggle', 600); h.view.render(); await h.flush();
+  assert.equal(h.view.listening, true);
+  h.view.render(); assert.equal(h.view.listening, true);
+  h.shared.set('nexus.listenToggle', 700); h.view.render(); await h.flush();
+  assert.equal(h.view.listening, false);
+  assert.ok(h.execs.some(a => a[1] === 'stop' && a.includes('7') || JSON.stringify(a).includes('7')));
+});
