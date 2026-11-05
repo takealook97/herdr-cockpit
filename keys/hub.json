@@ -6,5 +6,8 @@
     "cmd-alt-up": "space-tree.go-up",
     "cmd-alt-down": "space-tree.go-down",
     "cmd-shift-enter": "space-tree.zoom"
+  },
+  "terminal": {
+    "cmd-shift-h": "space-tree.hub"
   }
 }

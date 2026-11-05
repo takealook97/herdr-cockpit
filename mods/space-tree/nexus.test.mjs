@@ -28,7 +28,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 function setupVoice(reply, existing) {
   const h = existing ?? host(); h.overlays = [];
   const deps = { ...h.deps, ...model, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
-    focused: () => ({}), layout: () => ({}), nextCommand: () => new Promise(resolve => { h.command = resolve; }), ...ensure(reply),
+    focused: () => ({ terminal: h.focusedTerminal }), layout: () => ({}), nextCommand: () => new Promise(resolve => { h.command = resolve; }), ...ensure(reply),
     openOverlay: spec => { h.overlays.push(['open', spec]); return 'ov1'; },
     closeOverlay: id => { h.overlays.push(['close', id]); return null; } };
   const Hub = class { init() {} close() {} snapshots = new Map(); sync() {} hide() {} toggle() {} };
@@ -44,20 +44,71 @@ test('claude mode opens a layout dialog with the header mod and the voice termin
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(false); await settle();
   assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure']);
-  assert.deepEqual(h.overlays[0], ['open', { kind: 'dialog', width: 640, height: 300, layout: { type: 'column', children: [
+  assert.deepEqual(h.overlays[0], ['open', { kind: 'dialog', width: 640, height: 420, layout: { type: 'column', children: [
     { type: 'block', size: { px: 26 }, content: { mod: 'nexus', props: { header: true } } },
     { type: 'block', content: { terminal: 't9' } }] } }]);
+  assert.deepEqual(h.calls.filter(c => c.run), []);
+  h.tick(120);
   assert.deepEqual(h.calls.filter(c => c.run).map(c => c.run), [['pane.focus', { terminal: 't9' }]]);
+  h.tick(400);
+  assert.equal(h.calls.filter(c => c.run).length, 2, 'retries once when the voice terminal is not focused');
+  assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure'], 'plain open does not record');
 });
 
-test('either nexus command closes the open dialog without running ensure again', async () => {
-  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+test('the 400 ms focus retry is skipped when the voice terminal already has focus', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' }); h.focusedTerminal = 't9';
   h.tree.toggleNexus(false); await settle();
-  h.shared.set('nexus.open', true); ensure.args = null;
-  h.tree.toggleNexus(true);
-  assert.deepEqual(h.overlays[1], ['close', 'ov1']);
+  h.tick(120); h.tick(400);
+  assert.equal(h.calls.filter(c => c.run).length, 1);
+});
+
+test('nexus-listen when closed opens, focuses, then sends one space key through the helper', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.tree.toggleNexus(true); await settle();
+  assert.equal(h.overlays.filter(o => o[0] === 'open').length, 1);
+  assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure']);
+  h.tick(120); h.tick(400); await settle();
+  assert.deepEqual(ensure.args.slice(-5), ['nexus', 'voice', 'key', '--key', 'space']);
+});
+
+test('nexus-listen when open in claude mode sends the key instead of closing', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.overlayId', 'ov1'); h.shared.set('nexus.mode', 'claude');
+  h.tree.toggleNexus(true); await settle();
+  assert.deepEqual(ensure.args.slice(-5), ['nexus', 'voice', 'key', '--key', 'space']);
+  assert.equal(h.overlays.length, 0);
+});
+
+test('a failed voice key reports an error toast', async () => {
+  const h = setupVoice({ action: 'error', error: 'no terminal' });
+  h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.mode', 'claude');
+  h.tree.toggleNexus(true); await settle();
+  assert.match(h.calls.find(c => c.notify).notify.body, /no terminal/);
+});
+
+test('nexus when open closes the dialog by overlayId and does not run ensure', () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' }); ensure.args = null;
+  h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.overlayId', 'ovX'); h.shared.set('nexus.mode', 'claude');
+  h.tree.toggleNexus(false);
+  assert.deepEqual(h.overlays, [['close', 'ovX']]);
   assert.equal(ensure.args, null);
-  assert.equal(h.shared.get('nexus.listenToggle'), undefined);
+});
+
+test('a stale heartbeat counts as closed: nexus opens instead of closing', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.shared.set('nexus.heartbeat', Date.now() - 2600); h.shared.set('nexus.overlayId', 'old');
+  h.tree.toggleNexus(false); await settle();
+  assert.deepEqual(h.overlays.map(o => o[0]), ['open']);
+});
+
+test('nexus-listen in apple mode toggles the mic while the bar is open; nexus closes it', () => {
+  const h = setupVoice({ mode: 'apple' });
+  h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.overlayId', 'ovA'); h.shared.set('nexus.mode', 'apple');
+  h.tree.toggleNexus(true); h.tree.toggleNexus(true);
+  assert.equal(h.shared.get('nexus.listenToggle'), 2);
+  assert.deepEqual(h.overlays, []);
+  h.tree.toggleNexus(false);
+  assert.deepEqual(h.overlays, [['close', 'ovA']]);
 });
 
 test('a second press while ensure is pending opens only one dialog', async () => {
@@ -83,6 +134,7 @@ test('a newer toggle supersedes an older pending ensure', async () => {
   const opened = h.overlays.filter(o => o[0] === 'open');
   assert.equal(opened.length, 1);
   assert.deepEqual(opened[0][1].layout.children[1].content, { terminal: 't2' });
+  h.tick(120);
   assert.deepEqual(h.calls.filter(c => c.run).map(c => c.run), [['pane.focus', { terminal: 't2' }]]);
 });
 
@@ -101,11 +153,11 @@ test('ensure errors notify instead of opening a dialog, and a later press retrie
   assert.equal(h.calls.filter(c => c.notify).length, 2);
 });
 
-test('init clears a stale nexus.open flag', () => {
-  const h = host({ 'nexus.open': true });
-  assert.equal(h.shared.get('nexus.open'), true);
+test('init leaves the shared nexus state alone', () => {
+  const h = host({ 'nexus.open': true, 'nexus.heartbeat': 123 });
   const s = setup(h);
-  assert.equal(s.shared.get('nexus.open'), false);
+  assert.equal(s.shared.get('nexus.open'), true);
+  assert.equal(s.shared.get('nexus.heartbeat'), 123);
 });
 
 test('selecting the nexus row toggles the dialog instead of the hub', () => {

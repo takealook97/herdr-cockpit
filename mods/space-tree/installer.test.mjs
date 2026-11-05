@@ -8,6 +8,7 @@ import { join } from 'node:path';
 
 const hubKeys = JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global;
 const nexusKeys = { 'cmd-shift-n': 'space-tree.nexus', 'cmd-shift-space': 'space-tree.nexus-listen' };
+const terminalKeys = { 'cmd-shift-h': 'space-tree.hub', ...nexusKeys };
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function sandbox(fn) {
   const folder = mkdtempSync(join(root, '.test-install-'));
@@ -38,13 +39,20 @@ test('installer backs up keys and adds only missing bindings, idempotently', () 
   writeFileSync(keys, original, { mode: 0o640 });
   let result = run(); assert.equal(result.status, 0, result.stderr);
   const data = JSON.parse(readFileSync(keys, 'utf8'));
-  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', ...hubKeys, ...nexusKeys }, terminal: { 'ctrl-a': 'home' } });
+  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', ...hubKeys, ...nexusKeys }, terminal: { 'ctrl-a': 'home', ...terminalKeys } });
   const backups = readdirSync(join(folder, 'app')).filter(n => n.startsWith('keys.json.bak-'));
   assert.equal(backups.length, 1);
   assert.equal(readFileSync(join(folder, 'app', backups[0]), 'utf8'), original);
   assert.equal(statSync(keys).mode & 0o777, 0o640);
   result = run(); assert.equal(result.status, 0, result.stderr);
   assert.equal(readdirSync(join(folder, 'app')).filter(n => n.startsWith('keys.json.bak-')).length, 1);
+}));
+test('installer merges missing keys into the terminal section and preserves user values', () => sandbox(({ keys, run }) => {
+  writeFileSync(keys, JSON.stringify({ terminal: { 'cmd-shift-n': 'custom.action' } }));
+  const result = run(); assert.equal(result.status, 0, result.stderr);
+  const data = JSON.parse(readFileSync(keys, 'utf8'));
+  assert.deepEqual(data.terminal, { ...terminalKeys, 'cmd-shift-n': 'custom.action' });
+  assert.deepEqual(data.global, { ...hubKeys, ...nexusKeys });
 }));
 test('installer preserves an existing shortcut and dry-run makes no writes', () => sandbox(({ folder, keys, run }) => {
   const original = '{"global":{"ctrl-shift-h":"app.help"}}';
