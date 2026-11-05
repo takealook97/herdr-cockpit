@@ -304,3 +304,16 @@ test("current terminal model and effort override stale worker launch metadata", 
   idx.lastModel.agent = { model: "resolved", effort: "max" };
   assert.equal(paneSub(p, idx), "resolved-max");
 });
+
+test("nexus row sits directly before hub-entry, only under This computer", () => {
+  const input = { machines: [{ name: "box", layout: "ready" }], spaces: [{ id: "s", name: "P", tabs: [] }],
+    hub: { heads: [] }, nexus: { open: true, last: { label: "a · b", at: 5 } } };
+  const rows = buildTree(input), at = rows.findIndex(r => r.key === "nexus-entry");
+  assert.equal(rows[at + 1].key, "hub-entry");
+  assert.equal(rows.filter(r => r.nexus).length, 1);
+  const row = rows[at];
+  assert.equal(row.hub, true); assert.equal(row.nexus, true); assert.equal(row.foldable, false);
+  assert.equal(row.active, true); assert.deepEqual(row.last, { label: "a · b", at: 5 });
+  assert.equal(buildTree({ ...input, nexus: undefined }).find(r => r.nexus).active, false);
+  assert.equal(buildTree({ ...input, hub: undefined }).some(r => r.nexus), false);
+});

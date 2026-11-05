@@ -1,0 +1,48 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { load, host, element } from './host.test.mjs';
+import * as model from './hub-model.js';
+import { buildTree, assignSectionColors, machineId, rowId } from './model.js';
+
+function setup() {
+  const h = host(); h.overlays = [];
+  const deps = { ...h.deps, ...model, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
+    focused: () => ({}), layout: () => ({}), nextCommand: () => new Promise(resolve => { h.command = resolve; }),
+    exec: async () => ({ code: 0, stdout: '{"runs":[],"terminals":[]}' }),
+    openOverlay: spec => { h.overlays.push(['open', spec]); return 'ov1'; },
+    closeOverlay: id => { h.overlays.push(['close', id]); return null; },
+  };
+  const Hub = class { init() {} close() {} snapshots = new Map(); sync() {} hide() {} toggle() {} };
+  const Tree = load(new URL('./main.js', import.meta.url), 'SpaceTree', { ...deps, Hub,
+    Plumbing: class { init() {} }, initRename() {}, props: () => ({}), localStorage: { getItem() { return null; } },
+    v_flex: element, svg: element, buildTree, assignSectionColors, machineId, rowId, nexusRow() {}, treeRow() {}, hubRow() {},
+    mergeHuds: () => ({ runs: [], terminals: [] }) });
+  h.tree = new Tree(); h.tree.init({}, h.cx);
+  return h;
+}
+
+test('nexus command opens a dialog overlay and a second one closes it while open', () => {
+  const h = setup();
+  h.tree.toggleNexus(false);
+  assert.deepEqual(h.overlays[0], ['open', { mod: 'nexus', kind: 'dialog', width: 560, height: 420, props: { listen: false } }]);
+  h.shared.set('nexus.open', true);
+  h.tree.toggleNexus(true);
+  assert.deepEqual(h.overlays[1], ['close', 'ov1']);
+  h.shared.set('nexus.open', false);
+  h.tree.toggleNexus(true);
+  assert.equal(h.overlays[2][1].props.listen, true);
+});
+
+test('selecting the nexus row toggles the dialog instead of the hub', () => {
+  const h = setup(); let hubOpened = false; h.tree.hub.open = () => { hubOpened = true; };
+  h.tree.select({ nexus: true, hub: true, key: 'nexus-entry' }, h.cx);
+  assert.equal(h.overlays[0][0], 'open'); assert.equal(hubOpened, false);
+});
+
+test('main.js wires commands and live keys', () => {
+  const main = readFileSync(new URL('./main.js', import.meta.url), 'utf8');
+  assert.match(main, /command === "nexus"\) this\.toggleNexus\(false\)/);
+  assert.match(main, /command === "nexus-listen"\) this\.toggleNexus\(true\)/);
+  assert.match(main, /return \["hub-entry", "nexus-entry"/);
+});

@@ -59,13 +59,14 @@ test('heads exclude orch workers and legacy observers, preserving remote address
 test('hub section is locked, directly lists heads, and retains ordinary spaces named hub', () => {
   const hs = heads(2), rows = buildTree({ spaces: [{ id: 's', name: 'Work' }, { id: 'user-hub', name: 'hub' }], hub: { heads: hs, active: true, terminal: 't2' } });
   assert.equal(rows[0].name, 'This computer');
-  assert.equal(rows[1].name, 'hub · 2'); assert.equal(rows[1].key, 'hub-entry');
-  assert.equal(rows[1].active, true); assert.equal(rows[1].foldable, false);
-  assert.deepEqual(rows.slice(2, 4).map(r => [r.kind, r.terminal, r.hub]), [['pane', 't1', true], ['pane', 't2', true]]);
-  assert.equal(rows[3].active, true);
+  assert.equal(rows[1].key, 'nexus-entry'); assert.equal(rows[1].foldable, false);
+  assert.equal(rows[2].name, 'hub · 2'); assert.equal(rows[2].key, 'hub-entry');
+  assert.equal(rows[2].active, true); assert.equal(rows[2].foldable, false);
+  assert.deepEqual(rows.slice(3, 5).map(r => [r.kind, r.terminal, r.hub]), [['pane', 't1', true], ['pane', 't2', true]]);
+  assert.equal(rows[4].active, true);
   assert.equal(new Set(rows.map(r => r.key)).size, rows.length);
   assert.ok(rows.find(r => r.id === 'user-hub' && !r.hub));
-  assert.equal(buildTree({ hub: {}, folded: { 'hub-entry': true } })[1].foldable, false);
+  assert.equal(buildTree({ hub: {}, folded: { 'hub-entry': true } })[2].foldable, false);
 });
 test('remote helper snapshots qualify worker and terminal addresses once', () => {
   const result = mergeHuds([{ machine: 'remote/host', data: { terminals: [{ address: 't1' }], runs: [{ workers: [{ terminal: 't2' }] }] } }]);

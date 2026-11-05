@@ -1,12 +1,12 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, nextCommand, props, notify } from "herdr";
+import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, closeOverlay, nextCommand, props, notify } from "herdr";
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
 import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
-import { treeRow, hubRow } from "./rows.js";
+import { treeRow, hubRow, nexusRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
 import { menuView } from "./tree-menu.js";
 
@@ -38,6 +38,8 @@ export default class SpaceTree extends Plumbing {
           else if (["go-left", "go-right", "go-up", "go-down"].includes(command)) this.hub.go(command.slice(3));
           else if (command === "zoom") this.hub.zoom(cx);
           else if (command === "source") this.hub.source(cx);
+          else if (command === "nexus") this.toggleNexus(false);
+          else if (command === "nexus-listen") this.toggleNexus(true);
         } catch (error) { notify({ title: "hub", body: String(error), level: "error" }); }
         cx.notify();
       }
@@ -93,11 +95,12 @@ export default class SpaceTree extends Plumbing {
     const orch = { ...this.orch, terminals: (this.orch.terminals ?? []).map(t => ({ ...core.get(t.address), ...t })) };
     return { machines: ms, spaces: sp, panes: ps, orch, aliases,
       hub: { heads: this.hub.heads, active: this.hubActive(), terminal: this.hub.focusedTerminal() },
+      nexus: { open: !!shared("nexus.open"), last: shared("nexus.last") ?? null },
       activeSpaceId: spaces().find(s => s.active)?.id };
   }
 
   liveKeys(input) {
-    return ["hub-entry", machineId(null), ...input.machines.map(m => machineId(m.name)),
+    return ["hub-entry", "nexus-entry", machineId(null), ...input.machines.map(m => machineId(m.name)),
       ...input.spaces.flatMap(e => [rowId("space", e.w.id), ...(e.w.tabs ?? []).map(t => rowId("tab", t.id))]),
       ...input.panes.map(p => rowId("pane", p.pane))];
   }
@@ -150,8 +153,16 @@ export default class SpaceTree extends Plumbing {
   close() { this.closed = true; this.hub?.close(); this.input?.release(); }
 
   hubActive() { return this.hub?.active() ?? false; }
+  // The dialog is global: the same command (or row click) closes it while it is open.
+  toggleNexus(listen) {
+    if (shared("nexus.open") && this.nexusOverlay) {
+      closeOverlay(this.nexusOverlay); this.nexusOverlay = null; return;
+    }
+    this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 420, props: { listen: !!listen } });
+  }
   select(row, cx) {
     if (this.editing || this.movingTab) return;
+    if (row.nexus) { this.toggleNexus(false); return; }
     if (row.hub) { this.hub.open(cx, row.terminal); return; }
     if (["space", "tab", "pane"].includes(row.kind)) this.hub.hide(cx);
     this.highlight = row.key; this.handle.focus();
@@ -234,10 +245,11 @@ export default class SpaceTree extends Plumbing {
         .children(this.treeChildren(t)));
   }
 
-  // Hub rows sit directly in the list, followed by a hairline divider.
+  // Nexus and hub rows sit directly in the list, followed by a hairline divider.
   treeChildren(t) {
     const out = [];
     this.visible.forEach((row, i) => {
+      if (row.nexus) { out.push(nexusRow(this, row, t)); return; }
       if (row.hub) {
         out.push(hubRow(this, row, t));
         if (!this.visible[i + 1]?.hub) out.push(div().id("hub-divider").mx(12).my(6).h(1).bg(t.border));

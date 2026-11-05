@@ -116,3 +116,26 @@ export function hubRow(view, row, t) {
       .child(div().flex_none().text_color(t.dim).child(`${row.spaceName} · `))
       .child(div().min_w(0).truncate().text_color(t.foreground).child(row.tabName)));
 }
+
+export function ageLabel(ms, now = Date.now()) {
+  const seconds = Math.max(0, Math.floor((now - ms) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  return `${Math.floor(seconds / 3600)}h`;
+}
+
+export const nexusHint = (last, now = Date.now()) =>
+  last?.label && Number.isFinite(last.at) ? `→ ${last.label} · ${ageLabel(last.at, now)}` : "⌃⇧N";
+
+// Global command line to the Heads: opens the nexus dialog.
+export function nexusRow(view, row, t) {
+  return h_flex().id(row.key).relative().h(30).flex_none().mx(6).px(8).items_center().gap(8).rounded(7)
+    .tooltip("Nexus · Ctrl-Shift-N")
+    .when(row.active, e => e.bg(t.background).border(1).border_color(t.border))
+    .hover(s => s.bg(t.hover))
+    .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })
+    .child(div().absolute().left(0).top(6).bottom(6).w(2).bg(t.accent))
+    .child(div().text_size(11.5).font_bold().text_color(t.accent).child("NEXUS"))
+    .child(div().flex_1())
+    .child(div().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(nexusHint(row.last)));
+}

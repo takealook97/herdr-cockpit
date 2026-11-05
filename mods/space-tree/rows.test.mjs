@@ -188,3 +188,28 @@ test("only the active tab paints a selection, regardless of keyboard highlight",
     if (kind === "pane") assert.ok(!walk(row).some(n => n?.style?.absolute));
   }
 });
+
+test("ageLabel and nexus hint selection", () => {
+  const { ageLabel, nexusHint } = loadRows(["ageLabel", "nexusHint"]);
+  assert.equal(ageLabel(0, 12_000), "12s"); assert.equal(ageLabel(0, 180_000), "3m");
+  assert.equal(ageLabel(0, 7_200_000), "2h"); assert.equal(ageLabel(10_000, 0), "0s");
+  assert.equal(nexusHint(null), "⌃⇧N");
+  assert.equal(nexusHint({ label: "tool · x", at: 0 }, 180_000), "→ tool · x · 3m");
+});
+
+test("nexusRow renders the label, hint and selects on click", () => {
+  const h = host(), { nexusRow } = loadRows(["nexusRow"]);
+  const selected = [], row = { key: "nexus-entry", nexus: true, hub: true, name: "NEXUS", active: true, last: null };
+  const el = nexusRow({ select: r => selected.push(r) }, row, h.deps.theme());
+  assert.equal(el.style.h, 30); assert.equal(el.style.tooltip, "Nexus · Ctrl-Shift-N");
+  assert.ok(walk(el).includes("NEXUS")); assert.ok(walk(el).includes("⌃⇧N"));
+  el.handlers.click({}, {}); assert.deepEqual(selected, [row]);
+});
+
+function loadRows(names) {
+  const h = host();
+  const source = readFileSync(new URL("./rows.js", import.meta.url), "utf8");
+  const deps = { ...h.deps, svg: retainedElement, image: retainedElement, nameElement: () => {}, tabIconColor, machineConnected, rowDisplay };
+  const body = source.replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
+  return new Function(...Object.keys(deps), `${body}; return { ${names.join(", ")} };`)(...Object.values(deps));
+}

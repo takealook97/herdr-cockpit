@@ -1,0 +1,6 @@
+{
+  "global": {
+    "ctrl-shift-n": "space-tree.nexus",
+    "ctrl-shift-space": "space-tree.nexus-listen"
+  }
+}
