@@ -40,11 +40,9 @@ test('nexus-listen while open keeps the dialog and bumps nexus.listenToggle', ()
   h.shared.set('nexus.open', true);
   h.tree.toggleNexus(true);
   assert.equal(h.overlays.length, 1);
-  assert.equal(typeof h.shared.get('nexus.listenToggle'), 'number');
-  const first = h.shared.get('nexus.listenToggle');
-  const real = Date.now; Date.now = () => first + 5;
-  try { h.tree.toggleNexus(true); } finally { Date.now = real; }
-  assert.equal(h.shared.get('nexus.listenToggle'), first + 5);
+  assert.equal(h.shared.get('nexus.listenToggle'), 1);
+  h.tree.toggleNexus(true);
+  assert.equal(h.shared.get('nexus.listenToggle'), 2);
 });
 
 test('init clears a stale nexus.open flag', () => {
