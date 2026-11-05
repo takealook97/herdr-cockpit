@@ -55,7 +55,7 @@ export default class Nexus extends View {
       const reply = await this.helper("route", { text, roster: this.roster() });
       this.pending = false;
       this.handleReply(reply, cx);
-      if (reply.action !== "error") this.clearInput();
+      if (reply.action !== "error" && (reply.action !== "ignore" || reply.local)) this.clearInput();
       this.loadLog(cx);
       cx.notify();
     });
@@ -76,7 +76,7 @@ export default class Nexus extends View {
 
   handleReply(reply, cx) {
     this.reply = reply;
-    if (reply.action === "ignore") this.clearInput();
+    if (reply.action === "ignore" && reply.local) this.clearInput();
     if (reply.action === "send" && reply.sent !== false) {
       this.afterSend(reply);
       if (reply.warning) notify({ title: "Nexus", body: reply.warning, level: "warning", timeout: WARNING_MS });

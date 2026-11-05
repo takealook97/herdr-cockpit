@@ -365,8 +365,25 @@ func TestNexusPrefilter(t *testing.T) {
 		{"(웃음) 빌드 봐줘", "빌드 봐줘", false},
 		{"저기 그 음… 빌드 어어 봐줘", "빌드 봐줘", false},
 		{"푸하하 으흐흐 헤헤 히히 크크 킥킥 허허 [웃음] LOL haha hehe", "", true},
-		{"아!?", "아!?", true},
+		{"아!?", "아!?", false},
 		{"a1", "a1", false},
+		{"하하호호 프로젝트 테스트 돌려", "하하호호 프로젝트 테스트 돌려", false},
+		{"lollipop 앱 빌드", "lollipop 앱 빌드", false},
+		{"허허벌판 앱 배포", "허허벌판 앱 배포", false},
+		{"흐흐 흐름도 그려줘", "흐름도 그려줘", false},
+		{"크크크 게임 서버", "게임 서버", false},
+		{"아하하 그렇구나", "그렇구나", false},
+		{"test haha 서버", "test 서버", false},
+		{"ha ha ha", "", true},
+		{"하 하 하", "", true},
+		{"ha ha", "ha ha", false},
+		{"하 헤 하", "하 헤 하", false},
+		{"~하하! …LOL?, [웃음]! 호호", "", true},
+		{"2", "2", false},
+		{"네", "네", false},
+		{"y", "y", false},
+		{"응", "응", false},
+		{"!?", "!?", true},
 		{"빌드 그 저기 확인", "빌드 그 저기 확인", false},
 	} {
 		t.Run(tc.text, func(t *testing.T) {
@@ -398,7 +415,7 @@ func TestNexusIgnore(t *testing.T) {
 			}
 			d.hc = func(context.Context, ...string) ([]byte, error) { hc++; return nil, nil }
 			reply := nexusRoute(context.Background(), d, tc.text, nexusRoster())
-			if reply.Action != "ignore" || reply.Sent || reply.Summary != tc.summary || reply.Target != "" || reply.Message != "" {
+			if reply.Local != (tc.modelCalls == 0) || reply.Action != "ignore" || reply.Sent || reply.Summary != tc.summary || reply.Target != "" || reply.Message != "" {
 				t.Fatalf("%+v", reply)
 			}
 			if models != tc.modelCalls || hc != 0 || (models == 0 && panes != 0) {
@@ -424,5 +441,20 @@ func TestNexusModelReceivesCleanedSpeech(t *testing.T) {
 	}
 	if r := nexusRoute(context.Background(), d, "음 어 ontology에 테스트 돌려 ㅋㅋ", nexusRoster()); !r.Sent {
 		t.Fatal(r)
+	}
+}
+
+func TestNexusIgnoreSummaryBound(t *testing.T) {
+	d := nexusFixture(t)
+	d.model = func(context.Context, string, string, []byte) ([]byte, error) {
+		return json.Marshal(map[string]string{"action": "ignore", "summary": strings.Repeat("긴", 250)})
+	}
+	reply := nexusRoute(context.Background(), d, "잠깐만", nexusRoster())
+	if reply.Action != "ignore" || reply.Local || reply.Summary != strings.Repeat("긴", 200) {
+		t.Fatalf("%+v", reply)
+	}
+	raw, err := json.Marshal(reply)
+	if err != nil || strings.Contains(string(raw), `"local"`) {
+		t.Fatalf("model reply local marker: %s, %v", raw, err)
 	}
 }

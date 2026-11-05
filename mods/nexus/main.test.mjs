@@ -147,9 +147,9 @@ test('init probe resolving after the user started and stopped does not auto-star
   assert.equal(h.live().length, 0); assert.equal(h.view.listening, false);
 });
 
-test('ignore clears input, keeps the dialog open and renders a dim reason', async () => {
+test('local ignore clears input, keeps the dialog open and renders a dim reason', async () => {
   for (const summary of [undefined, '다른 사람에게 한 말입니다']) {
-    const h = setup({ action: 'ignore', sent: false, summary });
+    const h = setup({ action: 'ignore', local: true, sent: false, summary });
     h.view.input.set_value('ㅋㅋㅋ'); h.view.submit(h.cx); await h.flush();
     assert.equal(h.view.input.value(), '');
     assert.equal(h.view.pending, false);
@@ -163,7 +163,7 @@ test('ignore clears input, keeps the dialog open and renders a dim reason', asyn
 
 test('voice auto-send ignore leaves the dialog idle without an error', async () => {
   const h = voice(async a => a[0] === 'log' ? { entries: [] }
-    : a[0] === 'route' ? { action: 'ignore', sent: false }
+    : a[0] === 'route' ? { action: 'ignore', local: true, sent: false }
     : { state: 'idle' }, {});
   await h.flush();
   h.view.finishListening('하하하', h.cx);
@@ -175,4 +175,13 @@ test('voice auto-send ignore leaves the dialog idle without an error', async () 
   assert.equal(h.view.input.value(), '');
   assert.equal(h.view.reply.action, 'ignore');
   assert.deepEqual(h.closed, []);
+});
+
+test('model ignore keeps the original input available for editing and resending', async () => {
+  const h = setup({ action: 'ignore', sent: false, summary: '잠시 기다리는 말입니다' });
+  h.view.input.set_value('  네  '); h.view.submit(h.cx); await h.flush();
+  assert.equal(h.view.input.value(), '  네  ');
+  assert.equal(h.view.pending, false);
+  assert.deepEqual(h.closed, []);
+  assert.equal(h.calls.filter(c => c.notify || c.run).length, 0);
 });

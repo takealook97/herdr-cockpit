@@ -34,6 +34,7 @@ type nexusCandidate struct {
 // D3: route/send replies omit empty fields, always include sent, and may include warning.
 type nexusReply struct {
 	Action     string           `json:"action,omitempty"`
+	Local      bool             `json:"local,omitempty"`
 	Target     string           `json:"target,omitempty"`
 	Label      string           `json:"label,omitempty"`
 	Message    string           `json:"message,omitempty"`
@@ -106,17 +107,41 @@ func nexusSanitize(s string) string {
 	return string(r)
 }
 
-var nexusLaugh = regexp.MustCompile(`(?i)[ㅋㅎㅠㅜ]{2,}|(?:푸|으)?(?:하{2,}|헤{2,}|히{2,}|크{2,}|(?:킥){2,}|허{2,}|흐{2,})|\(웃음\)|\[웃음\]|lol|(?:ha){2,}|(?:he){2,}`)
+var nexusLaugh = regexp.MustCompile(`(?i)^(?:[ㅋㅎㅠㅜ]+|(?:푸|으|아)?(?:하{2,}|헤{2,}|히{2,}|호{2,}|크{2,}|(?:킥){2,}|허{2,}|흐{2,}|ㅎ{2,})|\(웃음\)|\[웃음\]|(?:lol)+|(?:ha){2,}|(?:he){2,})$`)
+var nexusSingleLaugh = regexp.MustCompile(`(?i)^(?:ha|he|하|헤|히|호|크|킥|허|흐|ㅎ)$`)
+
+// Preserve bracketed laughter markers while stripping surrounding punctuation.
+func nexusLaughToken(token string) string {
+	return strings.ToLower(strings.TrimFunc(token, func(r rune) bool {
+		return (unicode.IsPunct(r) || r == '~') && !strings.ContainsRune("()[]", r)
+	}))
+}
+
 var nexusFiller = regexp.MustCompile(`^[음어아으흠엄]+[~. …]*$`)
 
 const nexusIgnoreSummary = "명령으로 들리지 않아 넘겼습니다"
 
 // Remove speech noise without matching filler syllables inside ordinary words.
 func nexusPrefilter(text string) (cleaned string, ignore bool) {
-	tokens := strings.Fields(nexusLaugh.ReplaceAllString(text, ""))
+	tokens := strings.Fields(text)
 	kept := make([]string, 0, len(tokens))
 	leading := true
-	for _, token := range tokens {
+	for i := 0; i < len(tokens); i++ {
+		token := tokens[i]
+		laugh := nexusLaughToken(token)
+		if nexusSingleLaugh.MatchString(laugh) {
+			end := i + 1
+			for end < len(tokens) && nexusLaughToken(tokens[end]) == laugh {
+				end++
+			}
+			if end-i >= 3 {
+				i = end - 1
+				continue
+			}
+		}
+		if nexusLaugh.MatchString(laugh) {
+			continue
+		}
 		if nexusFiller.MatchString(token) || (leading && (token == "저기" || token == "그")) {
 			continue
 		}
@@ -130,7 +155,7 @@ func nexusPrefilter(text string) (cleaned string, ignore bool) {
 			count++
 		}
 	}
-	return cleaned, count < 2
+	return cleaned, count == 0
 }
 func nexusIgnore(summary string) nexusReply {
 	if summary == "" {
@@ -236,7 +261,9 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 	var ignore bool
 	text, ignore = nexusPrefilter(text)
 	if ignore {
-		return nexusIgnore("")
+		reply = nexusIgnore("")
+		reply.Local = true
+		return reply
 	}
 	defer func() {
 		if reply.Action != "ignore" {
@@ -280,7 +307,7 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 		return nexusError(errors.New("모델 응답이 올바르지 않습니다"))
 	}
 	if dec.Action == "ignore" {
-		return nexusIgnore(nexusSanitize(dec.Summary))
+		return nexusIgnore(nexusBound(nexusSanitize(dec.Summary), 200))
 	}
 	r, ok := valid[dec.Target]
 	reply = nexusReply{Action: dec.Action, Target: dec.Target, Message: nexusSanitize(dec.Message), Question: nexusSanitize(dec.Question)}
