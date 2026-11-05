@@ -3,6 +3,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, panes, terminals, shared, setShared, theme, props, closeOverlay, notify, run } from "herdr";
 import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
 
+const QUESTION_MAX_W = 220, CHIP_MAX_W = 140, MAX_CHIPS = 4;
 const POLL_MS = 120, COUNTDOWN_MS = 1000, WARNING_MS = 6000, STARTUP_MS = 3000;
 const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니다";
 const NO_SPEECH_TEXT = "말을 알아듣지 못했습니다";
@@ -47,6 +48,7 @@ export default class Nexus extends View {
     const text = this.input.value().trim();
     if (!text || this.pending) return;
     this.cancelCountdown(cx);
+    this.endVoiceSession();
     this.pending = true; this.reply = null; cx.notify();
     cx.spawn(async cx => {
       const reply = await this.helper("route", { text, roster: this.roster() });
@@ -103,7 +105,7 @@ export default class Nexus extends View {
 
   startListening(cx) {
     if (this.listening || this.micHidden || this.closed) return;
-    this.userTouched = true; this.typedSinceListen = false;
+    this.userTouched = true; this.typedSinceListen = false; this.reply = null;
     const gen = ++this.listenGen;
     this.listening = true; this.laughing = false; this.levels = []; this.sawActive = false; this.startIdle = false;
     this.startedAt = Date.now(); this.cancelCountdown(cx); cx.notify();
@@ -152,6 +154,7 @@ export default class Nexus extends View {
   idleSettled() { return this.startIdle || this.sawActive || Date.now() - this.startedAt >= STARTUP_MS; }
 
   finishListening(text, cx) {
+    if (!this.listening) return;
     this.stopPolling(cx);
     if (this.typedSinceListen) return;
     if (!text.trim()) { if (this.voiceValue !== null) this.clearInput(); this.noSpeech(cx); return; }
@@ -183,6 +186,12 @@ export default class Nexus extends View {
     this.userTouched = true; this.listenGen++;
     const stop = this.stopSession(); this.stopPolling(cx); cx.notify(); return stop;
   }
+  // An explicit submit ends the voice session so a later final cannot resubmit.
+  endVoiceSession() {
+    this.userTouched = true; this.listenGen++;
+    if (this.listening) this.stopSession();
+    this.stopPolling();
+  }
   toggleMic(cx) { if (this.listening) this.stopListening(cx); else this.startListening(cx); }
 
   key(e, cx) {
@@ -209,23 +218,29 @@ export default class Nexus extends View {
   // Row 2: one dim status line; ask adds candidate chips inline.
   statusView(t) {
     const reply = this.reply;
-    const row = h_flex().id("nexus-status").flex_none().items_center().gap(6).flex_wrap().text_size(11.5).text_color(t.dim)
-      .child(div().text_size(11.5).font_bold().text_color(t.accent).child("NEXUS"));
-    const text = (kind, value) => row.child(div().text_color(this.statusColor(kind, t)).child(value));
+    const row = h_flex().id("nexus-status").flex_none().h(22).min_w(0).overflow_hidden().items_center().gap(6).text_size(11.5).text_color(t.dim)
+      .child(div().flex_none().text_size(11.5).font_bold().text_color(t.accent).child("NEXUS"));
+    const text = (kind, value) => row.child(div().id("nexus-status-text").flex_1().min_w(0).truncate()
+      .text_color(this.statusColor(kind, t)).tooltip(value).child(value));
     if (this.pending) return row.child(div().text_color(t.dim).child("· 판단 중"))
       .child(div().loop("opacity", { from: 0.2, to: 1, period: 900 }).text_color(t.dim).child("···"));
     if (this.countdown) return text("", "· 1초 뒤 보냄 · Esc 취소");
-    if (this.listening) return text("listen", "· 듣는 중");
     if (reply?.action === "ask") {
-      text("?", `? ${reply.question ?? ""}`);
-      return row.children((reply.candidates ?? []).map(c =>
-        div().id(`nexus-chip-${c.address}`).h(22).px(8).rounded(6).border(1).border_color(t.border)
-          .flex().items_center().text_size(11.5).text_color(t.foreground).hover(s => s.bg(t.hover))
-          .on_click((_e, cx) => this.chooseCandidate(c, cx)).child(c.label || c.address)));
+      const question = `? ${reply.question ?? ""}`;
+      row.child(div().id("nexus-question").flex_none().max_w(QUESTION_MAX_W).truncate()
+        .text_color(this.statusColor("?", t)).tooltip(question).child(question));
+      return row.child(h_flex().id("nexus-chips").flex_1().min_w(0).overflow_hidden().gap(6).items_center()
+        .children((reply.candidates ?? []).slice(0, MAX_CHIPS).map(c => {
+          const label = c.label || c.address;
+          return div().id(`nexus-chip-${c.address}`).flex_none().max_w(CHIP_MAX_W).h(22).px(8).rounded(6).border(1).border_color(t.border)
+            .flex().items_center().truncate().text_size(11.5).text_color(t.foreground).hover(s => s.bg(t.hover))
+            .tooltip(label).on_click((_e, cx) => this.chooseCandidate(c, cx)).child(label);
+        })));
     }
-    if (reply?.action === "info") return text("", `· ${reply.info ?? ""}`);
     if (reply?.action === "ignore") return text("", `· ${reply.summary || IGNORED_TEXT}`);
     if (reply?.action === "error") return text("!", `! ${reply.error ?? ""}`);
+    if (this.listening) return text("listen", "· 듣는 중");
+    if (reply?.action === "info") return text("", `· ${reply.info ?? ""}`);
     return text("", "· 대기");
   }
 

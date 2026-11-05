@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { load, host, element, byId } from '../space-tree/host.test.mjs';
+import { load, host, element, byId, walk } from '../space-tree/host.test.mjs';
 import * as model from './model.js';
 
 function setup(reply, props = {}) {
@@ -214,6 +214,7 @@ test('voice auto-send ignore leaves the dialog idle without an error', async () 
   const h = voice(async a => a[0] === 'route' ? { action: 'ignore', local: true, sent: false }
     : { state: 'idle' }, {});
   await h.flush();
+  h.view.listening = true;
   h.view.finishListening('하하하', h.cx);
   h.view.countdown.fn(h.cx);
   await h.flush();
@@ -279,4 +280,34 @@ test('typing during auto-listen survives empty and non-empty partials and the fi
     assert.equal(h.view.countdown, null);
     assert.ok(!h.execs.some(a => a[0] === 'route'));
   }
+});
+
+test('submitting while listening ends the session: one route call even after the old final, ask stays visible', async () => {
+  const h = voice(async a => a[0] === 'route' ? { action: 'ask', question: '어느 Head?', message: 'm', candidates: [{ address: 't1', label: 'x' }] }
+    : a[1] === 'start' ? { state: 'listening', pid: 123 } : { state: 'idle' });
+  await h.flush(); h.view.startListening(h.cx); await h.flush();
+  h.view.setVoiceText('작업 상태'); h.view.submit(h.cx); await h.flush();
+  assert.equal(h.view.listening, false);
+  assert.ok(h.execs.some(a => a[0] === 'listen' && a[1] === 'stop' && a.includes('123')));
+  h.view.finishListening('작업 상태', h.cx); h.tick(1000); await h.flush();
+  assert.equal(h.execs.filter(a => a[0] === 'route').length, 1);
+  const view = JSON.stringify(h.view.statusView({ dim: 'dim' }));
+  assert.ok(view.includes('어느 Head?')); assert.ok(view.includes('nexus-chip-t1')); assert.ok(!view.includes('듣는 중'));
+});
+
+test('status row is one line: no wrap, truncated question and chips, at most 4 chips with tooltips', () => {
+  const h = setup({ action: 'error', error: 'x' });
+  h.view.reply = { action: 'ask', question: 'q'.repeat(200), message: 'm',
+    candidates: Array.from({ length: 6 }, (_, i) => ({ address: `t${i}`, label: '가'.repeat(60) })) };
+  const row = h.view.statusView({ dim: 'dim' });
+  const nodes = walk(row);
+  assert.ok(!nodes.some(n => n?.style && 'flex_wrap' in n.style));
+  const chips = nodes.filter(n => String(n?.style?.id ?? '').startsWith('nexus-chip-'));
+  assert.equal(chips.length, 4);
+  assert.ok(chips.every(c => 'truncate' in c.style && c.style.max_w === 140 && c.style.tooltip));
+  const question = byId(row, 'nexus-question');
+  assert.ok('truncate' in question.style && question.style.max_w > 0 && question.style.tooltip.length > 200);
+  h.view.reply = { action: 'error', error: 'e'.repeat(300) };
+  const err = byId(h.view.statusView({ dim: 'dim' }), 'nexus-status-text');
+  assert.ok('truncate' in err.style && err.style.tooltip.includes('e'.repeat(300)));
 });
