@@ -12,7 +12,7 @@ export default class Nexus extends View {
     setShared("nexus.open", true);
     this.handle = cx.focus_handle();
     this.entries = []; this.reply = null; this.pending = false; this.micHidden = false;
-    this.listening = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
+    this.listening = false; this.laughing = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
     this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
     this.listenPid = null; this.userTouched = false;
     this.input = InputState.new({ placeholder: PLACEHOLDER });
@@ -107,7 +107,7 @@ export default class Nexus extends View {
     if (this.listening || this.micHidden || this.closed) return;
     this.userTouched = true;
     const gen = ++this.listenGen;
-    this.listening = true; this.levels = []; this.sawActive = false; this.startIdle = false;
+    this.listening = true; this.laughing = false; this.levels = []; this.sawActive = false; this.startIdle = false;
     this.startedAt = Date.now(); this.cancelCountdown(cx); cx.notify();
     cx.spawn(async cx => {
       const started = await this.helper("listen", { action: "start" });
@@ -134,13 +134,17 @@ export default class Nexus extends View {
       if (gen !== this.listenGen || !this.listening) return;
       this.polling = false;
       const level = Number(status.level) || 0;
+      this.laughing = status.laughing === true;
       if (status.state === "listening" && (status.pid || status.partial || level > 0)) this.sawActive = true;
       this.levels = [...this.levels, level].slice(-DOT_COUNT);
-      if (status.partial && status.state === "listening") this.setVoiceText(status.partial);
+      if (typeof status.partial === "string" && status.state === "listening") this.setVoiceText(status.partial);
       if (status.state === "unavailable") return this.hideMic(cx);
       if (status.state === "final") this.finishListening(status.final || status.partial || "", cx);
       else if (status.state === "error" || status.action === "error") this.failListening(status, cx);
-      else if (status.state === "idle" && this.idleSettled()) this.stopPolling(cx);
+      else if (status.state === "idle" && this.idleSettled()) {
+        if (this.voiceValue !== null) this.clearInput();
+        this.stopPolling(cx);
+      }
       cx.notify();
     });
   }
@@ -164,7 +168,7 @@ export default class Nexus extends View {
     this.reply = { action: "error", error: status.error || "음성 인식 오류" };
     cx.notify();
   }
-  stopPolling() { this.listenPid = null; this.listening = false; this.polling = false; this.poll?.cancel?.(); this.poll = null; this.levels = []; }
+  stopPolling() { this.listenPid = null; this.listening = false; this.laughing = false; this.polling = false; this.poll?.cancel?.(); this.poll = null; this.levels = []; }
   cancelCountdown(cx) { if (this.countdown) { this.countdown.cancel(); this.countdown = null; cx?.notify(); } }
   stopSession() {
     const pid = this.listenPid;
@@ -220,7 +224,7 @@ export default class Nexus extends View {
   }
 
   dots(t) {
-    const color = this.listening ? t.accent : t.dim;
+    const color = this.listening && !this.laughing ? t.accent : t.dim;
     return h_flex().flex_none().h(18).gap(3).items_center().children(dotHeights(this.levels).map((h, i) =>
       div().id(`nexus-dot-${i}`).w(4).h(h).rounded(2).bg(color)));
   }

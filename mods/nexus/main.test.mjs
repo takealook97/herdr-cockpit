@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { load, host, element } from '../space-tree/host.test.mjs';
+import { load, host, element, byId } from '../space-tree/host.test.mjs';
 import * as model from './model.js';
 
 function setup(reply, props = {}) {
@@ -184,4 +184,23 @@ test('model ignore keeps the original input available for editing and resending'
   assert.equal(h.view.pending, false);
   assert.deepEqual(h.closed, []);
   assert.equal(h.calls.filter(c => c.notify || c.run).length, 0);
+});
+
+test('laughing status dims dots and retracted laughter text never routes', async () => {
+  let status = { state: 'listening', partial: '하하하', level: 0.8, laughing: false };
+  const h = voice(async a => a[0] === 'log' ? { entries: [] }
+    : a[1] === 'start' ? { state: 'listening', pid: 123 } : status, {});
+  await h.flush(); h.view.startListening(h.cx); await h.flush();
+  h.view.pollStatus(h.cx); await h.flush();
+  assert.equal(h.view.input.value(), '하하하');
+  assert.equal(byId(h.view.dots({ accent: 'accent', dim: 'dim' }), 'nexus-dot-0').style.bg, 'accent');
+  status = { state: 'listening', partial: '', level: 0.8, laughing: true, trimmed: 1 };
+  h.view.pollStatus(h.cx); await h.flush();
+  assert.equal(h.view.input.value(), '');
+  assert.equal(byId(h.view.dots({ accent: 'accent', dim: 'dim' }), 'nexus-dot-0').style.bg, 'dim');
+  status = { state: 'idle', final: '', trimmed: 1 };
+  h.view.pollStatus(h.cx); await h.flush();
+  assert.equal(h.view.listening, false);
+  assert.equal(h.view.countdown, null);
+  assert.ok(!h.execs.some(a => a[0] === 'route'));
 });

@@ -183,7 +183,7 @@ mv -f "$helper_tmp" "$HOME/.local/bin/herdr-hud"
 if [ "$goos" = darwin ]; then xattr -d com.apple.quarantine "$HOME/.local/bin/herdr-hud" 2>/dev/null || true; fi
 if [ "$goos" = darwin ] && command -v swiftc >/dev/null; then
     echo "Build herdr-listen"
-    if swiftc -O "$root/hud/listen-macos/main.swift" -o "$scratch/herdr-listen" \
+    if swiftc -O "$root/hud/listen-macos/main.swift" "$root/hud/listen-macos/LaughFilter.swift" -o "$scratch/herdr-listen" \
         -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
         -Xlinker "$root/hud/listen-macos/Info.plist"; then
         listen_tmp=

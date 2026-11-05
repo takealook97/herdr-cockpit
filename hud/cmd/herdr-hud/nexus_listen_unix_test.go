@@ -211,3 +211,33 @@ func TestNexusListenStatusKnownPID(t *testing.T) {
 		})
 	}
 }
+
+func TestNexusListenLaughStatus(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "herdr-listen")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "listen.json"), []byte(`{"state":"final","final":"테스트","laughing":true,"trimmed":2}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := nexusListenWith(context.Background(), "status", "darwin", binary, dir)
+	if !got.Laughing || got.Trimmed != 2 || got.Final != "테스트" {
+		t.Fatal(got)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["laughing"] != true || fields["trimmed"] != float64(2) {
+		t.Fatal(string(raw))
+	}
+	raw, _ = json.Marshal(nexusListenState{State: "idle"})
+	if strings.Contains(string(raw), "laughing") || strings.Contains(string(raw), "trimmed") {
+		t.Fatal(string(raw))
+	}
+}

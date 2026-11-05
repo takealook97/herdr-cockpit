@@ -9,6 +9,11 @@ build:
 test:
 	go -C hud test ./...
 	node --test mods/*/*.test.mjs
+	@if [ "$$(uname -s)" = Darwin ] && command -v swiftc >/dev/null 2>&1; then \
+		bin=$$(mktemp /tmp/herdr-laugh-tests.XXXXXX) && \
+		trap 'rm -f "$$bin"' EXIT && \
+		swiftc hud/listen-macos/LaughFilter.swift hud/listen-macos/tests/LaughFilterTests.swift -o "$$bin" && "$$bin"; \
+	fi
 
 install:
 	./scripts/install.sh $(ARGS)

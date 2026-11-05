@@ -16,12 +16,14 @@ import (
 )
 
 type nexusListenState struct {
-	State   string  `json:"state"`
-	Level   float64 `json:"level"`
-	Partial string  `json:"partial"`
-	Final   string  `json:"final"`
-	Error   string  `json:"error"`
-	PID     int     `json:"pid,omitempty"`
+	Laughing bool    `json:"laughing,omitempty"`
+	Trimmed  int     `json:"trimmed,omitempty"`
+	State    string  `json:"state"`
+	Level    float64 `json:"level"`
+	Partial  string  `json:"partial"`
+	Final    string  `json:"final"`
+	Error    string  `json:"error"`
+	PID      int     `json:"pid,omitempty"`
 }
 
 func nexusListen(ctx context.Context, sub string, expectedPID ...int) any {
