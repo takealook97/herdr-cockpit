@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 const hubKeys = JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global;
+const nexusKeys = JSON.parse(readFileSync(new URL('../../keys/nexus.json', import.meta.url))).global;
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function sandbox(fn) {
   const folder = mkdtempSync(join(root, '.test-install-'));
@@ -28,7 +29,7 @@ test('installer backs up keys and adds only missing bindings, idempotently', () 
   writeFileSync(keys, original, { mode: 0o640 });
   let result = run(); assert.equal(result.status, 0, result.stderr);
   const data = JSON.parse(readFileSync(keys, 'utf8'));
-  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', ...hubKeys }, terminal: { 'ctrl-a': 'home' } });
+  assert.deepEqual(data, { global: { 'ctrl-x': 'app.help', ...hubKeys, ...nexusKeys }, terminal: { 'ctrl-a': 'home' } });
   const backups = readdirSync(join(folder, 'app')).filter(n => n.startsWith('keys.json.bak-'));
   assert.equal(backups.length, 1);
   assert.equal(readFileSync(join(folder, 'app', backups[0]), 'utf8'), original);

@@ -118,7 +118,7 @@ export function pruneFolded(folded = {}, liveIds) {
 }
 
 export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, aliases = {},
-  folded = {}, activeSpaceId, hub } = {}) {
+  folded = {}, activeSpaceId, hub, nexus } = {}) {
   activeSpaceId ??= spaces.map(e => e.w ?? e).find(s => s.active)?.id;
   const index = orchIndexes(orch), result = [];
   // Accept shipped ordered() entries ({w,i,g,tree}) or explicit {parentId}.
@@ -176,6 +176,8 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
     const row = emit("machine", name, 0, { name: aliases[aliasKey("machine", name ?? "local")] || name || "This computer", data });
     if (row.open) {
       if (name === null && hub) {
+        emit("space", "nexus-entry", 1, { hub: true, nexus: true, key: "nexus-entry", name: "NEXUS", data: {},
+          foldable: false, active: !!nexus?.open, last: nexus?.last ?? null, sectionColorKey: "nexus", sectionDepth: 1 });
         emit("space", "hub-entry", 1, { hub: true, name: `hub · ${hub.heads?.length ?? 0}`, count: hub.heads?.length ?? 0, data: {}, foldable: false,
           active: !!hub.active, sectionColorKey: "hub", sectionDepth: 1 });
         for (const head of hub.heads ?? []) emit("pane", `hub:${head.address}`, 2, { hub: true,
