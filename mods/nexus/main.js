@@ -14,6 +14,7 @@ export default class Nexus extends View {
     this.entries = []; this.reply = null; this.pending = false; this.micHidden = false;
     this.listening = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
     this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
+    this.listenPid = null; this.userTouched = false;
     this.input = InputState.new({ placeholder: PLACEHOLDER });
     this.input.focus();
     this.input.on("submit", () => this.submit(cx));
@@ -21,11 +22,13 @@ export default class Nexus extends View {
       if (this.countdown && this.input.value() !== this.voiceValue) this.cancelCountdown(cx);
     });
     this.loadLog(cx);
+    const gen = this.listenGen;
     cx.spawn(async cx => {
       const status = await this.helper("listen", { action: "status" });
       if (status.state === "unavailable") return this.hideMic(cx);
       cx.notify();
-      if (props()?.listen && !this.micHidden && !this.closed) this.startListening(cx);
+      if (gen !== this.listenGen || this.userTouched || this.closed) return;
+      if (props()?.listen && !this.micHidden) this.startListening(cx);
     });
   }
 
@@ -101,15 +104,19 @@ export default class Nexus extends View {
 
   startListening(cx) {
     if (this.listening || this.micHidden || this.closed) return;
+    this.userTouched = true;
     const gen = ++this.listenGen;
     this.listening = true; this.levels = []; this.sawActive = false; this.startIdle = false;
     this.startedAt = Date.now(); this.cancelCountdown(cx); cx.notify();
     cx.spawn(async cx => {
       const started = await this.helper("listen", { action: "start" });
       if (gen !== this.listenGen || !this.listening || this.closed) {
-        if (started.state === "listening") this.helper("listen", { action: "stop" });
+        if (started.state === "listening" && Number.isInteger(started.pid) && started.pid > 0) {
+          this.helper("listen", { action: "stop", pid: started.pid });
+        }
         return;
       }
+      this.listenPid = Number.isInteger(started.pid) && started.pid > 0 ? started.pid : null;
       if (started.state === "unavailable") return this.hideMic(cx);
       if (started.state === "error" || started.action === "error") return this.failListening(started, cx);
       this.startIdle = started.state === "idle";
@@ -156,10 +163,15 @@ export default class Nexus extends View {
     this.reply = { action: "error", error: status.error || "음성 인식 오류" };
     cx.notify();
   }
-  stopPolling() { this.listening = false; this.polling = false; this.poll?.cancel?.(); this.poll = null; this.levels = []; }
+  stopPolling() { this.listenPid = null; this.listening = false; this.polling = false; this.poll?.cancel?.(); this.poll = null; this.levels = []; }
   cancelCountdown(cx) { if (this.countdown) { this.countdown.cancel(); this.countdown = null; cx?.notify(); } }
+  stopSession() {
+    const pid = this.listenPid;
+    return this.helper("listen", pid ? { action: "stop", pid } : { action: "stop" });
+  }
   stopListening(cx) {
-    this.listenGen++; this.stopPolling(cx); this.helper("listen", { action: "stop" }); cx.notify();
+    this.userTouched = true; this.listenGen++;
+    const stop = this.stopSession(); this.stopPolling(cx); cx.notify(); return stop;
   }
   toggleMic(cx) { if (this.listening) this.stopListening(cx); else this.startListening(cx); }
 
@@ -175,8 +187,8 @@ export default class Nexus extends View {
     this.closed = true; this.listenGen++;
     this.cancelCountdown();
     const wasListening = this.listening;
+    if (wasListening) this.stopSession();
     this.stopPolling();
-    if (wasListening) this.helper("listen", { action: "stop" });
     this.input?.release();
   }
 

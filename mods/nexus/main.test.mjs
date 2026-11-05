@@ -55,6 +55,7 @@ function voice(handler, props = { listen: true }) {
   h.live = () => h.intervals.filter(t => !t.canceled);
   h.view = new Nexus(); h.view.init({}, h.cx); return h;
 }
+const settle = () => new Promise(r => setImmediate(r));
 const withClock = async (fn) => {
   const real = Date.now; let now = 1000; Date.now = () => now;
   try { await fn(ms => { now += ms; }); } finally { Date.now = real; }
@@ -84,7 +85,7 @@ test('stop during a pending start leaves no live timers and stops the helper', a
   await h.flush(); h.view.startListening(h.cx);
   h.view.stopListening(h.cx); resolve({ state: 'listening' }); await h.flush();
   assert.equal(h.view.listening, false); assert.equal(h.live().length, 0);
-  assert.equal(h.execs.filter(a => a[1] === 'stop').length, 2);
+  assert.equal(h.execs.filter(a => a[1] === 'stop').length, 1);
 });
 
 test('early idle is ignored during startup so later partials reach the input; persistent idle stops', async () => {
@@ -110,4 +111,38 @@ test('a send reply with a warning still succeeds and warns', async () => {
   assert.deepEqual(h.closed, ['ov']);
   const w = h.calls.map(c => c.notify).filter(Boolean).find(n => n.level === 'warning');
   assert.deepEqual(w, { title: 'Nexus', body: '확인 필요', level: 'warning', timeout: 6000 });
+});
+
+test('stale start continuation stops only its own pid and leaves the newer session alive', async () => {
+  const held = []; let starts = 0;
+  const h = voice(async a => {
+    if (a[0] === 'log') return { entries: [] };
+    if (a[1] === 'start') { if (++starts === 1) return new Promise(r => held.push(r)); return { state: 'listening', pid: 222 }; }
+    return { state: 'idle' };
+  }, {});
+  await h.flush(); h.view.startListening(h.cx);
+  h.view.stopListening(h.cx); h.view.startListening(h.cx); await settle();
+  const before = h.execs.filter(a => a[1] === 'stop').length;
+  held[0]({ state: 'listening', pid: 111 }); await h.flush();
+  const stops = h.execs.filter(a => a[1] === 'stop').slice(before);
+  assert.deepEqual(stops, [['listen', 'stop', '--pid', '111']]);
+  assert.equal(h.view.listening, true); assert.equal(h.view.listenPid, 222); assert.equal(h.live().length, 1);
+  h.view.stopListening(h.cx); await h.flush();
+  assert.deepEqual(h.execs.filter(a => a[1] === 'stop').pop(), ['listen', 'stop', '--pid', '222']);
+});
+
+test('init probe resolving after the user started and stopped does not auto-start', async () => {
+  let release; const probe = new Promise(r => { release = r; });
+  let statuses = 0;
+  const h = voice(async a => {
+    if (a[0] === 'log') return { entries: [] };
+    if (a[1] === 'status' && ++statuses === 1) return probe;
+    return a[1] === 'start' ? { state: 'listening', pid: 5 } : { state: 'idle' };
+  });
+  h.view.startListening(h.cx); await settle();
+  h.view.stopListening(h.cx); await settle();
+  const starts = h.execs.filter(a => a[1] === 'start').length;
+  release({ state: 'idle' }); await h.flush();
+  assert.equal(h.execs.filter(a => a[1] === 'start').length, starts);
+  assert.equal(h.live().length, 0); assert.equal(h.view.listening, false);
 });
