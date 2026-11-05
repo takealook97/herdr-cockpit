@@ -51,7 +51,7 @@ export function treeRow(view, row, t) {
     .text_color(row.kind === "machine" ? t.muted : row.orch && view.orchStale ? t.dim : t.foreground)
     .bg(row.kind === "tab" && row.active ? t.selected : t.chrome)
     .hover(s => s.bg(t.hover))
-    .when(row.hub, e => e.tooltip("Head hub · Ctrl-Shift-H"))
+    .when(row.hub, e => e.tooltip("Head hub · Cmd-Shift-H"))
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })
     .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); if (!row.hub) view.contextMenu(row); })
     .when(row.sectionColorKey != null, e => e.child(div().absolute().left(2 + row.sectionDepth * 12).top(0).bottom(0).w(2)
@@ -92,7 +92,7 @@ export function treeRow(view, row, t) {
 export function hubRow(view, row, t) {
   const header = row.kind === "space";
   const el = h_flex().id(row.key).h(26).flex_none().items_center().gap(8)
-    .tooltip(header ? "Head hub · Ctrl-Shift-H" : "Show in hub")
+    .tooltip(header ? "Head hub · Cmd-Shift-H" : "Show in hub")
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); });
   if (header) {
     return el.mx(10)

@@ -1,7 +1,1 @@
-{
-  "global": {
-    "cmd-shift-n": "space-tree.nexus",
-    "ctrl-shift-n": "space-tree.nexus",
-    "ctrl-shift-space": "space-tree.nexus-listen"
-  }
-}
+{"global":{"cmd-shift-n":"space-tree.nexus","cmd-shift-space":"space-tree.nexus-listen"}}

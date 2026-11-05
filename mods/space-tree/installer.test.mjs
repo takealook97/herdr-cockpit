@@ -1,5 +1,5 @@
 import test from 'node:test';
-import legacyAssets from './legacy-install.test.mjs';
+import legacyAssets, { legacyShortcutDefaults } from './legacy-install.test.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, chmodSync, statSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 const hubKeys = JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global;
-const nexusKeys = { 'cmd-shift-n': 'space-tree.nexus', 'ctrl-shift-n': 'space-tree.nexus', 'ctrl-shift-space': 'space-tree.nexus-listen' };
+const nexusKeys = { 'cmd-shift-n': 'space-tree.nexus', 'cmd-shift-space': 'space-tree.nexus-listen' };
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function sandbox(fn) {
   const folder = mkdtempSync(join(root, '.test-install-'));
@@ -48,7 +48,7 @@ test('installer preserves an existing shortcut and dry-run makes no writes', () 
 }));
 test('empty-home dry-run previews the key and malformed configs fail before installs', () => sandbox(({ folder, keys, run }) => {
   let result = run(['--dry-run']); assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Merge missing keys: global:ctrl-shift-h/);
+  assert.match(result.stdout, /Merge missing keys: global:cmd-shift-h/);
   assert.deepEqual(readdirSync(join(folder, 'app')), []);
   writeFileSync(keys, '{"global":[]}');
   result = run(); assert.notEqual(result.status, 0);
@@ -68,7 +68,8 @@ for (const previous of ['cerberus.toggle', 'hub.toggle']) test(`installer migrat
   assert.ok(result.stdout.includes('migrate ' + previous));
   assert.equal(readFileSync(keys, 'utf8'), original);
   result = run(); assert.equal(result.status, 0, result.stderr);
-  assert.equal(JSON.parse(readFileSync(keys)).global['ctrl-shift-h'], 'space-tree.hub');
+  assert.equal(JSON.parse(readFileSync(keys)).global['cmd-shift-h'], 'space-tree.hub');
+  assert.equal(JSON.parse(readFileSync(keys)).global['ctrl-shift-h'], undefined);
   const backup = readdirSync(join(folder, 'app')).find(n => n.startsWith('keys.json.bak-'));
   assert.equal(readFileSync(join(folder, 'app', backup), 'utf8'), original);
 }));
@@ -138,5 +139,33 @@ for (const [key, builtin] of Object.entries({ 'cmd-alt-left': 'pane.go:left', 'c
     global[key] = 'custom.action'; writeFileSync(keys, JSON.stringify({ global }));
     result = run(); assert.equal(result.status, 0, result.stderr);
     assert.equal(JSON.parse(readFileSync(keys)).global[key], 'custom.action');
+  }));
+}
+
+for (const [oldKey, action] of Object.entries(legacyShortcutDefaults)) {
+  const suffix = oldKey.slice('ctrl-shift-'.length);
+  test(`installer removes exact Ctrl default ${suffix}, previews removal and backs up`, () => sandbox(({ folder, keys, run }) => {
+    const old = `ctrl-shift-${suffix}`, replacement = `cmd-shift-${suffix}`;
+    const original = JSON.stringify({ global: { [old]: action } });
+    writeFileSync(keys, original);
+    let result = run(['--dry-run']); assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stdout.includes(`global:${old} (remove ${action})`));
+    assert.equal(readFileSync(keys, 'utf8'), original);
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    const bindings = JSON.parse(readFileSync(keys)).global;
+    assert.equal(bindings[old], undefined);
+    assert.equal(bindings[replacement], action);
+    const backup = readdirSync(join(folder, 'app')).find(n => n.startsWith('keys.json.bak-'));
+    assert.equal(readFileSync(join(folder, 'app', backup), 'utf8'), original);
+  }));
+  test(`installer keeps Ctrl default ${suffix} when Cmd is customized`, () => sandbox(({ keys, run }) => {
+    const old = `ctrl-shift-${suffix}`, replacement = `cmd-shift-${suffix}`;
+    writeFileSync(keys, JSON.stringify({ global: { [old]: action, [replacement]: 'app.help' } }));
+    let result = run(['--dry-run']); assert.equal(result.status, 0, result.stderr);
+    assert.ok(!result.stdout.includes(`global:${old} (remove`));
+    result = run(); assert.equal(result.status, 0, result.stderr);
+    const bindings = JSON.parse(readFileSync(keys)).global;
+    assert.equal(bindings[old], action);
+    assert.equal(bindings[replacement], 'app.help');
   }));
 }

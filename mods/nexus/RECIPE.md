@@ -1,6 +1,6 @@
 # Nexus
 
-An overlay-only dialog (`place: none`) that sends one typed or spoken line to a Head. Space tree opens it from the NEXUS row, Cmd-Shift-N (`space-tree.nexus`) or Ctrl-Shift-Space (`space-tree.nexus-listen`, starts listening); the same command closes it. It sets `shared("nexus.open")` while open and `shared("nexus.last")` = `{label, at}` after a send.
+An overlay-only dialog (`place: none`) that sends one typed or spoken line to a Head. Space tree opens it from the NEXUS row, Cmd-Shift-N (`space-tree.nexus`) or Cmd-Shift-Space (`space-tree.nexus-listen`, starts listening); the same command closes it. It sets `shared("nexus.open")` while open and `shared("nexus.last")` = `{label, at}` after a send.
 
 The dialog shows the last 6 log entries (`> text`, `→ Head`, `? question`, `· summary`, `! error`), ask-candidate chips, five level dots and a mic button (hidden when listening is unavailable). Enter sends. A spoken final text waits 1.5 s before sending; typing or Esc cancels it, and Esc also stops listening without closing the dialog. After a send the dialog closes and focuses the Head (hub open) or toasts with a focus action.
 

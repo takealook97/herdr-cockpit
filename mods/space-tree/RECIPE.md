@@ -2,7 +2,7 @@
 
 A machine/space/tab/pane tree with persistent folds, section rails, aliases, inline rename, keyboard navigation and guarded tab moves. The Spaces header offers expand/collapse and new-space controls.
 
-The locked hub section is first under This computer, has its own background and rail, and directly lists Heads under `hub · N`. It cannot be renamed, reordered or used as a drag source/target. Clicking the header opens hub; clicking a Head opens and focuses its interactive terminal block. Ctrl-Shift-H toggles hub. Selecting an ordinary tree space/tab/pane hides it. The tab bar is hidden while hub is shown.
+The locked hub section is first under This computer, has its own background and rail, and directly lists Heads under `hub · N`. It cannot be renamed, reordered or used as a drag source/target. Clicking the header opens hub; clicking a Head opens and focuses its interactive terminal block. Cmd-Shift-H toggles hub. Selecting an ordinary tree space/tab/pane hides it. The tab bar is hidden while hub is shown.
 
 `hub.js` shows eligible Heads across all spaces and tabs on the current PC. Remote Heads never appear, even when a remote space is selected. Per-machine helper metadata polling remains available for the sidebar; failed polls keep the latest successful snapshot. It excludes orch workers and legacy observers (labels or old attach/--observe argv) and renders original terminals via layout blocks without creating spaces, tabs, observers or terminal processes. Grid membership/title changes and zoom are signature checked; membership changes debounce 500 ms. CLI layout writes are serialized, with shared hub.open as source of truth. A late write never selects an obsolete view.
 

@@ -5,7 +5,7 @@ import { buildRoster, logLines, parseReply, dotHeights, helperArgs, DOT_COUNT } 
 
 const POLL_MS = 120, COUNTDOWN_MS = 1500, LOG_LIMIT = 6, NOTIFY_MS = 5000, WARNING_MS = 6000, STARTUP_MS = 3000;
 const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니다";
-const PLACEHOLDER = "Head에게 보낼 말 · ⌃Space 말하기";
+const PLACEHOLDER = "Head에게 보낼 말 · ⌘⇧Space 말하기";
 
 export default class Nexus extends View {
   init(_p, cx) {

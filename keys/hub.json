@@ -1,6 +1,6 @@
 {
   "global": {
-    "ctrl-shift-h": "space-tree.hub",
+    "cmd-shift-h": "space-tree.hub",
     "cmd-alt-left": "space-tree.go-left",
     "cmd-alt-right": "space-tree.go-right",
     "cmd-alt-up": "space-tree.go-up",

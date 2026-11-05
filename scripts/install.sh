@@ -45,23 +45,33 @@ data = object_json(destination) if existing else {}
 changes = []
 builtins = {"cmd-alt-" + direction: "pane.go:" + direction for direction in ("left", "right", "up", "down")}
 builtins["cmd-shift-enter"] = "pane.zoom"
+# Normalize the older hub action before moving its exact default shortcut.
+if isinstance(data.get("global"), dict):
+    target = data["global"]
+    if target.get("ctrl-shift-h") in ("cerberus.toggle", "hub.toggle"):
+        previous = target["ctrl-shift-h"]
+        target["ctrl-shift-h"] = "space-tree.hub"
+        changes.append("global:ctrl-shift-h (migrate " + previous + ")")
 for path in sorted(glob.glob(os.path.join(snippets, "*.json"))):
     for section, bindings in object_json(path).items():
         if not isinstance(bindings, dict) or not isinstance(data.get(section, {}), dict):
             raise ValueError("Key section must be an object: " + section)
         target = data.setdefault(section, {})
         for key, action in bindings.items():
-            if section == "global" and key == "ctrl-shift-h" and target.get(key) in ("cerberus.toggle", "hub.toggle"):
-                previous = target[key]
-                target[key] = action
-                changes.append(section + ":" + key + " (migrate " + previous + ")")
-            elif section == "global" and key in builtins and target.get(key) == builtins[key]:
+            if section == "global" and key in builtins and target.get(key) == builtins[key]:
                 previous = target[key]
                 target[key] = action
                 changes.append(section + ":" + key + " (migrate " + previous + ")")
             elif key not in target:
                 target[key] = action
                 changes.append(section + ":" + key)
+# Remove only shipped Ctrl defaults once the replacement action is available.
+target = data.get("global", {})
+for suffix, action in (("h", "space-tree.hub"), ("n", "space-tree.nexus"), ("space", "space-tree.nexus-listen")):
+    old, new = "ctrl-shift-" + suffix, "cmd-shift-" + suffix
+    if target.get(old) == action and target.get(new) == action:
+        del target[old]
+        changes.append("global:" + old + " (remove " + action + ")")
 if mode == "validate":
     sys.exit(0)
 if not changes:

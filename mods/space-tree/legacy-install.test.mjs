@@ -1,3 +1,10 @@
+// Previous shipped Ctrl defaults used to verify migration to Cmd shortcuts.
+export const legacyShortcutDefaults = {
+  'ctrl-shift-h': 'space-tree.hub',
+  'ctrl-shift-n': 'space-tree.nexus',
+  'ctrl-shift-space': 'space-tree.nexus-listen',
+};
+
 // Exact assets from the previous installer; excluded from installed mods.
 export default {
   "hub-bar": {
