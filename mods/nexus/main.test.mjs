@@ -103,7 +103,7 @@ function voice(handler, props = { listen: true }) {
     InputState: { new: opts => ({ ...h.deps.InputState.new(opts), focus() {} }) },
     exec: async (_c, args) => { h.execs.push(args.slice(4)); return { code: 0, stdout: JSON.stringify(await handler(args.slice(4), h)) }; },
     panes: () => [], terminals: () => [], props: () => ({ overlay: 'ov', ...props }), closeOverlay: id => h.closed.push(id) });
-  h.live = () => h.intervals.filter(t => !t.canceled);
+  h.live = () => h.intervals.filter(t => !t.canceled && t.ms !== 1000); // the 1 s heartbeat is not a poll timer
   h.view = new Nexus(); h.view.init({}, h.cx); return h;
 }
 const settle = () => new Promise(r => setImmediate(r));
@@ -352,17 +352,55 @@ test('header mode marks the dialog open, skips the input and polls the latest lo
   const h = header(() => entries);
   assert.equal(h.shared.get('nexus.open'), true);
   assert.equal(h.view.input, undefined);
-  assert.equal(h.intervals[0].ms, 1000);
+  assert.equal(h.intervals[1].ms, 1000);
   await h.flush();
   assert.deepEqual(h.execs[0], ['log', '--limit', '1']);
-  assert.ok(JSON.stringify(h.view.render()).includes('Space를 누른 채 말하기'));
+  assert.ok(JSON.stringify(h.view.render()).includes('Space 녹음'));
   assert.equal(byId(h.view.render(), 'nexus-header-log'), undefined);
   entries = [{ action: 'send', label: 'tool · wiki', target: 't1' }];
-  h.intervals[0].fn(h.cx); await h.flush();
+  h.intervals[1].fn(h.cx); await h.flush();
   assert.equal(byId(h.view.render(), 'nexus-header-log').nodes[0], '→ tool · wiki');
   h.view.close();
   assert.equal(h.shared.get('nexus.open'), false);
+  assert.equal(h.intervals[1].canceled, true);
   assert.equal(h.intervals[0].canceled, true);
+});
+
+test('header writes overlayId and a 1 s heartbeat, and close() zeroes them', () => {
+  const h = header(() => []);
+  assert.equal(h.shared.get('nexus.overlayId'), 'ov');
+  assert.equal(h.shared.get('nexus.mode'), 'claude');
+  assert.ok(Date.now() - h.shared.get('nexus.heartbeat') < 1000);
+  assert.equal(h.intervals[0].ms, 1000);
+  h.shared.set('nexus.heartbeat', 1); h.intervals[0].fn(h.cx);
+  assert.ok(h.shared.get('nexus.heartbeat') > 1);
+  h.view.close();
+  assert.equal(h.shared.get('nexus.heartbeat'), 0);
+  assert.equal(h.shared.get('nexus.overlayId'), null);
+  h.intervals[0].fn(h.cx);
+  assert.equal(h.shared.get('nexus.heartbeat'), 0, 'no beat after close');
+});
+
+test('header × stops propagation and closes the overlay; hint explains the keys', () => {
+  const h = header(() => []); let stopped = 0;
+  const row = h.view.render();
+  const text = JSON.stringify(row);
+  assert.ok(text.includes('Space 녹음 · ⌘⇧Space 시작/끝 · × 또는 ⌘⇧N 닫기'));
+  const close = byId(row, 'nexus-header-close');
+  assert.equal(close.nodes[0], '×');
+  close.handlers.mouseDown({}, { stop_propagation() { stopped++; } });
+  assert.equal(stopped, 1);
+  assert.deepEqual(h.closed, ['ov']);
+});
+
+test('apple bar mode also writes heartbeat, overlayId and mode', () => {
+  const h = setup({}, {});
+  assert.equal(h.shared.get('nexus.overlayId'), 'ov');
+  assert.equal(h.shared.get('nexus.mode'), 'apple');
+  assert.ok(h.shared.get('nexus.heartbeat') > 0);
+  h.view.close();
+  assert.equal(h.shared.get('nexus.heartbeat'), 0);
+  assert.equal(h.shared.get('nexus.overlayId'), null);
 });
 
 test('logLine maps each action to one short line', () => {

@@ -9,6 +9,7 @@ export function element() {
       else if (key === 'children') node.nodes.push(...args[0]);
       else if (key === 'when' && args[0]) args[1](proxy);
       else if (key === 'on_click') node.handlers.click = args[0];
+      else if (key === 'on_mouse_down') node.handlers.mouseDown = args.at(-1);
       else if (key === 'on_key_down') node.handlers.key = args[0];
       else node.style[key] = args[0];
       return proxy;

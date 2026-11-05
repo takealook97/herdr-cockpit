@@ -10,12 +10,14 @@ const NO_SPEECH_TEXT = "말을 알아듣지 못했습니다";
 const IGNORED_TEXT = "명령으로 들리지 않아 넘겼습니다";
 const INPUT_MAX_ROWS = 3;
 const LOG_POLL_MS = 1000;
-const HEADER_HINT = "· Space를 누른 채 말하기 · ⌘⇧N 닫기";
+const HEARTBEAT_MS = 1000;
+const HEADER_HINT = "Space 녹음 · ⌘⇧Space 시작/끝 · × 또는 ⌘⇧N 닫기";
 const PLACEHOLDER = "Head에게 보낼 말 · ⌘⇧Space 말하기";
 
 export default class Nexus extends View {
   init(_p, cx) {
     setShared("nexus.open", true);
+    this.startHeartbeat(cx);
     if (props()?.header) { this.initHeader(cx); return; }
     this.handle = cx.focus_handle();
     this.cx = cx; this.seenListenToggle = Number(shared("nexus.listenToggle")) || 0;
@@ -46,6 +48,15 @@ export default class Nexus extends View {
     });
   }
 
+  // space-tree treats the dialog as open while the heartbeat is fresh (2.5 s); close() zeroes it.
+  startHeartbeat(cx) {
+    setShared("nexus.overlayId", props()?.overlay ?? null);
+    setShared("nexus.mode", props()?.header ? "claude" : "apple");
+    this.beat();
+    this.beatTimer = cx.timer.every(HEARTBEAT_MS, () => this.beat());
+  }
+  beat() { if (!this.closed) setShared("nexus.heartbeat", Date.now()); }
+
   // Header mode: the voice terminal fills the dialog below; this row only shows the latest routing result.
   initHeader(cx) {
     this.header = true; this.closed = false; this.logEntry = null; this.logPolling = false;
@@ -70,11 +81,13 @@ export default class Nexus extends View {
     const row = h_flex().id("nexus-header").size_full().min_w(0).overflow_hidden().items_center().gap(6).px(12)
       .bg(t.background).text_size(11.5).text_color(t.dim)
       .child(div().flex_none().font_bold().text_color(t.accent).child("NEXUS"))
-      .child(div().id("nexus-header-hint").flex_none().child(HEADER_HINT));
-    if (!line) return row;
-    return row.child(div().flex_1().min_w(0))
-      .child(div().id("nexus-header-log").min_w(0).truncate().text_color(this.statusColor(line.kind, t))
-        .tooltip(line.text).child(line.text));
+      .child(div().id("nexus-header-hint").flex_none().child(HEADER_HINT))
+      .child(div().flex_1().min_w(0));
+    if (line) row.child(div().id("nexus-header-log").min_w(0).truncate().text_color(this.statusColor(line.kind, t))
+      .tooltip(line.text).child(line.text));
+    return row.child(div().id("nexus-header-close").size(20).flex_none().flex().items_center().justify_center().rounded(4)
+      .text_size(14).tooltip("닫기").hover(s => s.bg(t.hover).text_color(t.foreground))
+      .on_mouse_down("left", (_e, cx) => { cx.stop_propagation(); closeOverlay(props().overlay); }).child("×"));
   }
 
   helper(sub, opts) {
@@ -242,6 +255,8 @@ export default class Nexus extends View {
 
   close() {
     setShared("nexus.open", false);
+    this.closed = true; this.beatTimer?.cancel?.();
+    setShared("nexus.heartbeat", 0); setShared("nexus.overlayId", null);
     if (this.header) { this.closed = true; this.logTimer?.cancel?.(); this.logTimer = null; return; }
     this.closed = true; this.listenGen++;
     this.cancelCountdown();

@@ -1,6 +1,6 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, closeOverlay, nextCommand, props, notify } from "herdr";
+import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, closeOverlay, nextCommand, props, notify, focused } from "herdr";
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
@@ -10,7 +10,9 @@ import { treeRow, hubRow, nexusRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
 import { menuView } from "./tree-menu.js";
 
-const NEXUS_DIALOG_W = 640, NEXUS_DIALOG_H = 300, NEXUS_HEADER_PX = 26;
+const NEXUS_DIALOG_W = 640, NEXUS_DIALOG_H = 420, NEXUS_HEADER_PX = 26;
+const NEXUS_HEARTBEAT_MS = 2500, NEXUS_OPEN_GRACE_MS = 1500, NEXUS_FOCUS_MS = 120, NEXUS_FOCUS_RETRY_MS = 400;
+const HUD = ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud"];
 
 export default class SpaceTree extends Plumbing {
   init(p, cx) {
@@ -18,7 +20,7 @@ export default class SpaceTree extends Plumbing {
     initRename(this);
     if (props()?.treeMenu) { this.handle.focus(); return; }
     super.init(p, cx);
-    setShared("nexus.open", false); // overlays never survive a restart, shared values do
+    this.cx = cx;
     try { this.treeFolded = JSON.parse(localStorage.getItem("tree.folded") ?? "{}"); } catch { this.treeFolded = {}; }
     this.orch = {};
     this.lastModel = {};
@@ -98,7 +100,7 @@ export default class SpaceTree extends Plumbing {
     const orch = { ...this.orch, terminals: (this.orch.terminals ?? []).map(t => ({ ...core.get(t.address), ...t })) };
     return { machines: ms, spaces: sp, panes: ps, orch, aliases,
       hub: { heads: this.hub.heads, active: this.hubActive(), terminal: this.hub.focusedTerminal() },
-      nexus: { open: !!shared("nexus.open"), last: shared("nexus.last") ?? null },
+      nexus: { open: this.nexusIsOpen(), last: shared("nexus.last") ?? null },
       activeSpaceId: spaces().find(s => s.active)?.id };
   }
 
@@ -156,29 +158,58 @@ export default class SpaceTree extends Plumbing {
   close() { this.closed = true; this.hub?.close(); this.input?.release(); }
 
   hubActive() { return this.hub?.active() ?? false; }
-  // The dialog is global: either command (or a row click) closes it while it is open.
-  // Claude voice mode embeds the dedicated voice terminal; Space-hold dictation lives inside it.
+  // Open means the dialog mod's heartbeat is fresh; shared values outlive overlays, so a flag alone is not trusted.
+  nexusIsOpen() {
+    const beat = Number(shared("nexus.heartbeat")) || 0;
+    return beat > 0 && Date.now() - beat < NEXUS_HEARTBEAT_MS;
+  }
+  // The dialog is global. Claude mode embeds the voice terminal: Cmd-Shift-Space starts/ends recording
+  // with one key press; Cmd-Shift-N only opens (no recording) or closes.
   toggleNexus(listen) {
-    if (shared("nexus.open") && this.nexusOverlay) {
-      closeOverlay(this.nexusOverlay); this.nexusOverlay = null; return;
+    if (this.nexusIsOpen()) {
+      const apple = shared("nexus.mode") === "apple";
+      if (listen && apple) { setShared("nexus.listenToggle", (Number(shared("nexus.listenToggle")) || 0) + 1); return; }
+      if (listen) { this.voiceKey(); return; }
+      const id = shared("nexus.overlayId") ?? this.nexusOverlay;
+      if (id) closeOverlay(id);
+      this.nexusOverlay = null; this.nexusOpenedAt = 0;
+      return;
     }
     const request = this.nexusRequest = (this.nexusRequest ?? 0) + 1;
-    exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "nexus", "voice", "ensure"])
+    exec("sh", [...HUD, "nexus", "voice", "ensure"])
       .then(r => JSON.parse(r.stdout))
       .catch(error => ({ action: "error", error: `음성 터미널을 준비하지 못했습니다: ${String(error?.message ?? error)}` }))
       .then(reply => {
         if (this.closed || request !== this.nexusRequest) return;
-        if (reply?.mode === "claude" && reply.terminal) this.openVoiceDialog(reply.terminal);
-        else if (reply?.mode === "apple") this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 150, props: { listen: !!listen } });
+        if (reply?.mode === "claude" && reply.terminal) this.openVoiceDialog(reply.terminal, !!listen);
+        else if (reply?.mode === "apple") this.openAppleBar(!!listen);
         else notify({ title: "Nexus", body: reply?.error || "음성 입력을 시작하지 못했습니다", level: "error" });
       });
   }
-  openVoiceDialog(terminal) {
-    if (shared("nexus.open") && this.nexusOverlay) return;
+  // Open overlays are keyed by id; a just-opened dialog has no heartbeat yet, so it counts as open briefly.
+  justOpened() { return !!this.nexusOverlay && Date.now() - (this.nexusOpenedAt ?? 0) < NEXUS_OPEN_GRACE_MS; }
+  openAppleBar(listen) {
+    if (this.nexusIsOpen() || this.justOpened()) return;
+    this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 150, props: { listen } });
+    this.nexusOpenedAt = Date.now();
+  }
+  voiceKey() {
+    return exec("sh", [...HUD, "nexus", "voice", "key", "--key", "space"])
+      .then(r => { const reply = JSON.parse(r.stdout); if (reply?.action === "error") throw new Error(reply.error); })
+      .catch(error => notify({ title: "Nexus", body: `녹음 키를 보내지 못했습니다: ${String(error?.message ?? error)}`, level: "error" }));
+  }
+  openVoiceDialog(terminal, record) {
+    if (this.nexusIsOpen() || this.justOpened()) return;
     this.nexusOverlay = openOverlay({ kind: "dialog", width: NEXUS_DIALOG_W, height: NEXUS_DIALOG_H, layout: { type: "column", children: [
       { type: "block", size: { px: NEXUS_HEADER_PX }, content: { mod: "nexus", props: { header: true } } },
       { type: "block", content: { terminal } }] } });
-    run("pane.focus", { terminal });
+    this.nexusOpenedAt = Date.now();
+    // The overlay mounts after openOverlay returns; focus the terminal once it is visible, then verify.
+    this.cx.timer.after(NEXUS_FOCUS_MS, () => run("pane.focus", { terminal }));
+    this.cx.timer.after(NEXUS_FOCUS_RETRY_MS, () => {
+      if (focused()?.terminal !== terminal) run("pane.focus", { terminal });
+      if (record) this.voiceKey();
+    });
   }
   select(row, cx) {
     if (this.editing || this.movingTab) return;
