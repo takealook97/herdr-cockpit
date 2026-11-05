@@ -172,3 +172,47 @@ test('main.js wires commands and live keys', () => {
   assert.match(main, /command === "nexus-listen"\) this\.toggleNexus\(true\)/);
   assert.match(main, /return \["hub-entry", "nexus-entry"/);
 });
+
+test('closing the dialog cancels pending focus and recording callbacks', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  const execs = []; h.tree.voiceKey = () => execs.push('record');
+  h.tree.toggleNexus(true); await settle();
+  h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.overlayId', 'ov1');
+  h.tree.toggleNexus(false);
+  h.tick(120); h.tick(400);
+  assert.deepEqual(h.calls.filter(c => c.run), []);
+  assert.deepEqual(execs, []);
+});
+
+test('header close then immediate reopen opens a new dialog', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.tree.toggleNexus(false); await settle();
+  h.shared.set('nexus.heartbeat', 0); h.shared.set('nexus.overlayId', null); h.shared.set('nexus.closedAt', Date.now());
+  h.tree.toggleNexus(false); await settle();
+  assert.equal(h.overlays.filter(x => x[0] === 'open').length, 2);
+});
+
+test('header close cancels pending callbacks of that dialog', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  const execs = []; h.tree.voiceKey = () => execs.push('record');
+  h.tree.toggleNexus(true); await settle();
+  h.shared.set('nexus.closedAt', Date.now() + 1);
+  h.tick(120); h.tick(400);
+  assert.deepEqual(h.calls.filter(c => c.run), []);
+  assert.deepEqual(execs, []);
+});
+
+test('second press before the first heartbeat closes the just-opened dialog', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.tree.toggleNexus(false); await settle();
+  h.tree.toggleNexus(false); await settle();
+  assert.deepEqual(h.overlays.map(x => x[0]), ['open', 'close']);
+  assert.equal(h.overlays[1][1], 'ov1');
+});
+
+test('second press before the first heartbeat closes the apple bar', async () => {
+  const h = setupVoice({ mode: 'apple' });
+  h.tree.toggleNexus(false); await settle();
+  h.tree.toggleNexus(false); await settle();
+  assert.deepEqual(h.overlays.map(x => x[0]), ['open', 'close']);
+});
