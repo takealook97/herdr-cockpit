@@ -468,6 +468,9 @@ func TestNexusAudioConfig(t *testing.T) {
 	}{
 		{`{}`, 0, 0, ""},
 		{`{"model":"codex-low-h","keepAudio":2,"laughThreshold":0.7}`, 2, 0.7, "codex-low-h"},
+		{`{"Model":"codex-low-h"}`, 0, 0, "codex-low-h"},
+		{`{"KEEPAUDIO":5}`, 5, 0, ""},
+		{`{"mOdEl":"codex-low-h","KEEPAUDIO":"bad","LAUGHTHRESHOLD":0.7}`, 0, 0.7, "codex-low-h"},
 		{`{"keepAudio":100,"laughThreshold":0.99}`, 100, 0.99, ""},
 		{`{"keepAudio":0,"laughThreshold":0.1}`, 0, 0.1, ""},
 		{`{"keepAudio":-1,"laughThreshold":0.09}`, 0, 0, ""},

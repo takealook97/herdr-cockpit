@@ -11,11 +11,12 @@ cache=${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud
 repo=$cache/laughter-detection
 venv=$cache/laugh-eval-venv
 revision=5d5e0327916959d832d95ffbef5f484efc93d799
+url=https://github.com/jrgillick/laughter-detection
 python=${LAUGH_EVAL_PYTHON:-python3}
 printf '%s\n' "Will download jrgillick/laughter-detection at $revision (including model checkpoints)" \
     "from https://github.com/jrgillick/laughter-detection into $repo" \
     "and Python packages from your pip index into $venv using $python." \
-    "No recordings are uploaded. Existing dirty or differently pinned checkouts are refused."
+    "No recordings are uploaded. Existing dirty checkouts or checkouts from a different remote are refused."
 if [ "$modern" = 1 ]; then
     printf '%s\n' 'Compatibility mode: Python 3.10, torch 2.2.2, numpy 1.23.5; all other upstream requirements retained.'
     "$python" -c 'import sys; assert sys.version_info[:2] == (3, 10), "--modern-deps requires Python 3.10 (set LAUGH_EVAL_PYTHON)"'
@@ -23,13 +24,27 @@ fi
 umask 077
 mkdir -p "$cache"
 if [ ! -e "$repo" ]; then
-    git clone https://github.com/jrgillick/laughter-detection "$repo"
+    git clone "$url" "$repo"
+fi
+if [ ! -d "$repo/.git" ]; then
+    echo "Refusing to alter directory without .git; delete this exact path manually to retry: $repo" >&2
+    exit 1
+fi
+if [ "$(git -C "$repo" config --get remote.origin.url || true)" != "$url" ]; then
+    echo "Refusing to alter $repo: remote.origin.url differs from $url." >&2
+    exit 1
+fi
+if ! worktree_status=$(git -C "$repo" status --porcelain --untracked-files=all); then
+    echo "Refusing to alter $repo: cannot verify working tree is clean." >&2
+    exit 1
+fi
+if [ -n "$worktree_status" ]; then
+    echo "Refusing to alter dirty checkout $repo; preserve your changes before retrying." >&2
+    exit 1
+fi
+if [ "$(git -C "$repo" rev-parse --verify HEAD 2>/dev/null || true)" != "$revision" ]; then
+    git -C "$repo" fetch origin "$revision"
     git -C "$repo" checkout --detach "$revision"
-else
-    if [ ! -d "$repo/.git" ] || [ "$(git -C "$repo" rev-parse HEAD)" != "$revision" ] || [ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then
-        echo "Refusing to alter $repo; use a fresh XDG_CACHE_HOME or preserve and move this checkout." >&2
-        exit 1
-    fi
 fi
 if [ ! -x "$venv/bin/python" ]; then "$python" -m venv "$venv"; fi
 if [ "$modern" = 1 ]; then

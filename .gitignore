@@ -2,3 +2,5 @@ gpui-kit.d.ts
 jsconfig.json
 bin/
 node_modules/
+__pycache__/
+*.pyc

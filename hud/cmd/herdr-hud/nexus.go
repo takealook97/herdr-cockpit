@@ -422,13 +422,25 @@ func nexusParseConfig(raw []byte) nexusConfig {
 	if json.Unmarshal(raw, &fields) != nil {
 		return cfg
 	}
-	_ = json.Unmarshal(fields["model"], &cfg.Model)
+	// Match encoding/json's case-insensitive struct field lookup.
+	field := func(name string) json.RawMessage {
+		if value, ok := fields[name]; ok {
+			return value
+		}
+		for key, value := range fields {
+			if strings.EqualFold(key, name) {
+				return value
+			}
+		}
+		return nil
+	}
+	_ = json.Unmarshal(field("model"), &cfg.Model)
 	var keep int
-	if json.Unmarshal(fields["keepAudio"], &keep) == nil && keep >= 0 && keep <= 100 {
+	if json.Unmarshal(field("keepAudio"), &keep) == nil && keep >= 0 && keep <= 100 {
 		cfg.KeepAudio = keep
 	}
 	var threshold float64
-	if json.Unmarshal(fields["laughThreshold"], &threshold) == nil && threshold >= 0.1 && threshold <= 0.99 {
+	if json.Unmarshal(field("laughThreshold"), &threshold) == nil && threshold >= 0.1 && threshold <= 0.99 {
 		cfg.LaughThreshold = threshold
 	}
 	return cfg

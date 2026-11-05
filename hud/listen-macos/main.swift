@@ -580,11 +580,16 @@ final class Listener {
             try handle.close()
             guard rename(tempURL.path, jsonURL.path) == 0 else { throw ListenError.message("cannot publish sample JSON") }
             // The UTC prefix sorts chronologically; suffixes prevent same-second collisions.
-            let pairs = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-                .filter { $0.pathExtension == "json" && fm.fileExists(atPath: $0.deletingPathExtension().appendingPathExtension("wav").path) }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            for old in pairs.prefix(max(0, pairs.count - options.keepAudio)) {
-                try fm.removeItem(at: old.deletingPathExtension().appendingPathExtension("wav"))
+            let samples = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isRegularFileKey])
+                .filter {
+                    let stem = $0.deletingPathExtension().lastPathComponent
+                    return ["wav", "json"].contains($0.pathExtension)
+                        && stem.range(of: #"^[0-9]{8}-[0-9]{6}(?:-[A-Za-z0-9-]+)?$"#, options: .regularExpression) != nil
+                        && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+                }
+            let stems = Set(samples.map { $0.deletingPathExtension().lastPathComponent }).sorted(by: >)
+            let expired = Set(stems.dropFirst(options.keepAudio))
+            for old in samples where expired.contains(old.deletingPathExtension().lastPathComponent) {
                 try fm.removeItem(at: old)
             }
         } catch {
