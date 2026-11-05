@@ -214,6 +214,7 @@ test('voice auto-send ignore leaves the dialog idle without an error', async () 
   const h = voice(async a => a[0] === 'route' ? { action: 'ignore', local: true, sent: false }
     : { state: 'idle' }, {});
   await h.flush();
+  h.view.listening = true;
   h.view.finishListening('하하하', h.cx);
   h.view.countdown.fn(h.cx);
   await h.flush();
