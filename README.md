@@ -22,7 +22,7 @@ make setup
 make install
 ```
 
-The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, and `mods/{usage-bar,space-tree,agent-list,hub-head,cockpit-tabs}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing custom bindings win, including a conflicting Ctrl-Shift-H; built-in Cmd-Alt-arrow and Cmd-Shift-Enter actions migrate to hub-aware space-tree wrappers; the previous `cerberus.toggle` and `hub.toggle` bindings migrate to `space-tree.hub`. Old `hub`, `hub-bar`, `hub-cell`, `cerberus`, `cerberus-bar`, and `cerberus-cell` directories are removed only when their complete file set and contents match the previous install; app-generated `gpui-kit.d.ts` and `jsconfig.json` are ignored during comparison, while modified directories and other extra files are preserved. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation. Different existing theme files are preserved unless `--force` is given.
+The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`. If Go is absent, it uses the matching prebuilt instead. It copies `layouts/cockpit.json`, `themes/{styx,asphodel,elysium}.json`, and `mods/{usage-bar,space-tree,agent-list,hub-head,cockpit-tabs,nexus}` into `${HERDR_APP_HOME:-$HOME/.config/herdr-app}`. On macOS with `swiftc` the installer also builds `herdr-listen` into `$HOME/.local/bin`; it is skipped otherwise and never fails the install. Tests, package metadata, and generated editor files are excluded. Shipped mod/layout names are reserved and rejected before any writes. Repeating the install updates only these custom assets and the helper, preserving excluded editor files; it preserves app state, settings, and the selected layout. It merges missing bindings from `keys/*.json` into `keys.json`, backing up an existing file first. Existing custom bindings win, including a conflicting Ctrl-Shift-H; built-in Cmd-Alt-arrow and Cmd-Shift-Enter actions migrate to hub-aware space-tree wrappers; the previous `cerberus.toggle` and `hub.toggle` bindings migrate to `space-tree.hub`. Old `hub`, `hub-bar`, `hub-cell`, `cerberus`, `cerberus-bar`, and `cerberus-cell` directories are removed only when their complete file set and contents match the previous install; app-generated `gpui-kit.d.ts` and `jsconfig.json` are ignored during comparison, while modified directories and other extra files are preserved. `--dry-run` previews this merge without writing. Malformed key files are rejected before installation. Different existing theme files are preserved unless `--force` is given.
 
 Select **cockpit** in Herdr's layout chooser (**Ctrl-Shift-L**), or invoke `layout.switch cockpit`. Keep the shipped layouts available as a fallback.
 
@@ -36,6 +36,16 @@ To install only the helper on connected Herdr machines:
 ```
 
 Omit machine names to target all connected machines. This explicitly writes to those machines. The script cross-builds for each detected Darwin/Linux arm64/amd64 platform, uploads in 7 MB parts with `hc file write`, verifies the joined SHA-256 before installation, and checks `sys`. It does not install remote mods or change layouts.
+
+## nexus
+
+NEXUS is the locked top row above hub under **This computer**. Click it, press **Ctrl-Shift-N**, or press **Ctrl-Shift-Space** (opens and starts listening) from any tab of the cockpit layout to open a dimmed, centered dialog. The same shortcut closes it. It works only in the cockpit layout, because the space-tree mod receives the bindings.
+
+Each command is routed by one stateless model call that sees only the local Head roster (space · tab, folder, status, model, last report line), the last 6 Nexus log entries and the command, so context never grows; the default key measured about 1.2k input tokens per call. Nexus sends with `hc send` only to a validated local Head (no remote Heads, workers or observers). When the target is ambiguous or confidence is below 0.6 it asks, with candidate chips. Status questions are answered by reading at most the last 40 screen lines of that Head, with one extra summary call. After a send the dialog closes; with hub open the target Head is focused, otherwise a toast links to it.
+
+Model: the `HERDR_NEXUS_MODEL` environment variable, or `${XDG_CONFIG_HOME:-~/.config}/herdr-hud/nexus.json` with `{"model":"<key>"}`; the default is `claude-medium-m`. It accepts orch catalog keys of the Claude or Codex families. The CLI runs without user settings, MCP servers, tools or slash commands. A failure or the 20 s timeout sends nothing.
+
+Voice is macOS only, with on-device ko-KR speech recognition through `herdr-listen`. Five dots follow the input level and partial text fills the input. 1.2 s of silence ends listening, and the text is sent after a 1.5 s countdown that Esc or editing cancels. It requires System Settings > Keyboard > Dictation to be enabled and microphone/speech permission for Herdr. Without `herdr-listen` the mic button is hidden.
 
 ## hub
 
@@ -61,7 +71,13 @@ herdr-hud panes
 herdr-hud usage --selected --max-age 120s
 herdr-hud usage --terminals t1,t2 --max-age 120s
 herdr-hud usage --refresh
+herdr-hud nexus route --text TEXT --roster ROSTER_JSON
+herdr-hud nexus send --to ADDRESS --text MESSAGE --roster ROSTER_JSON
+herdr-hud nexus log [--limit N]
+herdr-hud nexus listen start|stop|status
 ```
+
+The `nexus` subcommands back the Nexus dialog: `route` and `send` call the configured model and `hc send`, `log` reads the local command log, and `listen` controls `herdr-listen`.
 
 `sys` measures CPU tick deltas and memory using gopsutil plus `vm_stat` on macOS or `/proc/meminfo` on Linux. Cache files live only in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud`; cache directories/files use private permissions.
 
@@ -75,7 +91,7 @@ The usage bar polls system readings every second and selected-account usage ever
 
 ## Privacy
 
-There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude and Codex transcript inspection emits no message contents; Codex reads only `turn_context` model/effort metadata from its bounded tail. The hub renders interactive terminal content inside the local layout. Herdr persists the grid layout and Head metadata in shared mod state. The mod does not save terminal screens or message text. Review screenshots before sharing them.
+There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude and Codex transcript inspection emits no message contents; Codex reads only `turn_context` model/effort metadata from its bounded tail. The hub renders interactive terminal content inside the local layout. Herdr persists the grid layout and Head metadata in shared mod state. Hub does not save terminal screens or message text. Nexus sends the Head roster, the last 6 log entries and your command to the configured model provider through your own CLI login. It stores up to 50 command entries (text, target, reply) locally in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud/nexus-log.json` with private permissions. Voice audio is recognized on device and not stored. Review screenshots before sharing them.
 
 ## Develop
 
