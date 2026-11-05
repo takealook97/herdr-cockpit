@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.herdr-cockpit.listen</string>
+    <key>CFBundleName</key>
+    <string>herdr-listen</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Nexus 음성 명령을 위해 마이크를 사용합니다. Uses the microphone for Nexus voice commands.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Nexus 음성 명령을 기기에서 텍스트로 변환합니다. Transcribes Nexus voice commands on this device.</string>
+</dict>
+</plist>
