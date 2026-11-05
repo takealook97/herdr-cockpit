@@ -35,6 +35,7 @@ type HUDRun struct {
 	Workers      []HUDWorker `json:"workers"`
 }
 type HUDTerminal struct {
+	Cwd          string            `json:"cwd,omitempty"`
 	Address      string            `json:"address"`
 	Program      string            `json:"program"`
 	Model        string            `json:"model"`
@@ -318,10 +319,12 @@ func hudPanes(ctx context.Context) HUDPanes {
 					Argv   []string          `json:"argv"`
 					Labels map[string]string `json:"labels"`
 					PID    int               `json:"pid"`
+					Cwd    string            `json:"cwd"`
 				}
 				if json.Unmarshal(raw, &detail) == nil {
 					out.Terminals[i].Model, out.Terminals[i].Effort = hudArgvModel(detail.Argv)
 					out.Terminals[i].Labels = detail.Labels
+					out.Terminals[i].Cwd = detail.Cwd
 					out.Terminals[i].pid = detail.PID
 					out.Terminals[i].detailLoaded = true
 				}

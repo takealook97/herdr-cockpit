@@ -64,6 +64,7 @@ type nexusDeps struct {
 	panes   func(context.Context) HUDPanes
 	now     func() time.Time
 	logPath string
+	dryRun  bool
 }
 
 func nexusValidRoster(roster []nexusRosterEntry, panes HUDPanes) []nexusRosterEntry {
@@ -79,7 +80,8 @@ func nexusValidRoster(roster []nexusRosterEntry, panes HUDPanes) []nexusRosterEn
 	live := map[string]bool{}
 	for _, t := range panes.Terminals {
 		_, observer := t.Labels["hub.observer"]
-		if t.detailLoaded && !observer && hudIsAgent(t.Program) {
+		_, voice := t.Labels["nexus.voice"]
+		if t.detailLoaded && !observer && !voice && hudIsAgent(t.Program) {
 			live[t.Address] = true
 		}
 	}
@@ -268,7 +270,7 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 		return reply
 	}
 	defer func() {
-		if reply.Action != "ignore" {
+		if !d.dryRun && reply.Action != "ignore" {
 			reply = nexusRecord(d, text, reply)
 		}
 	}()
@@ -343,6 +345,9 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 	if reply.Message == "" {
 		return nexusError(errors.New("메시지가 비어 있습니다"))
 	}
+	if d.dryRun {
+		return reply
+	}
 	_, err = d.hc(ctx, "send", "--", reply.Target, nexusSubmitText(reply.Message))
 	if err != nil {
 		return nexusHCError(err)
@@ -387,6 +392,7 @@ func nexusCLIPath(name string) string {
 // Parse fields independently: a malformed optional audio setting must not hide
 // a valid model key (or the other valid audio setting).
 type nexusConfig struct {
+	VoiceInput     string
 	Model          string
 	KeepAudio      int
 	LaughThreshold float64
@@ -414,6 +420,7 @@ func nexusParseConfig(raw []byte) nexusConfig {
 		return nil
 	}
 	_ = json.Unmarshal(field("model"), &cfg.Model)
+	_ = json.Unmarshal(field("voiceInput"), &cfg.VoiceInput)
 	var keep int
 	if json.Unmarshal(field("keepAudio"), &keep) == nil && keep >= 0 && keep <= 100 {
 		cfg.KeepAudio = keep
@@ -452,18 +459,25 @@ func nexusCLIModel(key string) (nexusModelRunner, error) {
 		key = nexusLoadConfig().Model
 	}
 	if key == "" {
-		key = "claude-medium-m"
+		key = "claude-haiku"
 	}
 	switch key {
 	case "gemini-medium-m":
 		return nil, errors.New("nexus는 claude 또는 codex 키만 지원합니다")
-	case "claude-medium-m", "claude-high-m", "codex-low-h", "codex-medium-m", "codex-high-l", "codex-high-m":
+	case "claude-haiku", "haiku", "claude-medium-m", "claude-high-m", "codex-low-h", "codex-medium-m", "codex-high-l", "codex-high-m":
 	default:
 		return nil, fmt.Errorf("지원하지 않는 nexus 모델 키입니다: %s", key)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	m, ok := hudCatalog(ctx)[key]
+	var m hudCatalogModel
+	ok := false
+	if key == "claude-haiku" || key == "haiku" {
+		m.Model = "haiku"
+		ok = true
+	} else {
+		m, ok = hudCatalog(ctx)[key]
+	}
 	if !ok {
 		if strings.HasPrefix(key, "codex-") {
 			return nil, errors.New("orch 카탈로그가 없어 codex 키를 풀 수 없습니다")
@@ -493,7 +507,11 @@ func nexusCLIModel(key string) (nexusModelRunner, error) {
 		var args []string
 		last := filepath.Join(dir, "last.json")
 		if name == "claude" {
-			args = []string{"-p", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--model", m.Model, "--effort", m.Effort, "--output-format", "json", "--json-schema", string(schema), "--system-prompt", sys, prompt}
+			args = []string{"-p", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--model", m.Model, "--output-format", "json", "--json-schema", string(schema), "--system-prompt", sys}
+			if m.Effort != "" {
+				args = append(args, "--effort", m.Effort)
+			}
+			args = append(args, prompt)
 		} else {
 			sf := filepath.Join(dir, "schema.json")
 			if err = os.WriteFile(sf, schema, 0600); err != nil {
@@ -582,7 +600,7 @@ func nexusHC(ctx context.Context, args ...string) ([]byte, error) {
 }
 func cmdNexus(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: herdr-hud nexus route|send|log|listen start|status|stop|prepare [--hints a,b,c] [--pid N]")
+		fmt.Fprintln(stderr, "usage: herdr-hud nexus route [--dry-run]|send|log|voice ensure|hook-prompt|listen start|status|stop|prepare [--hints a,b,c] [--pid N]")
 		return 2
 	}
 	if len(args) == 0 {
@@ -592,30 +610,33 @@ func cmdNexus(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	var out any
 	switch args[0] {
+	case "hook-prompt":
+		return nexusHookPrompt(ctx, os.Stdin, stdout, nexusDefaultDeps(), nexusSharedPath(), nexusApp)
+	case "voice":
+		if len(args) != 2 || args[1] != "ensure" {
+			return usage()
+		}
+		out = nexusVoiceEnsure(ctx, nexusLoadConfig(), hudCacheDir(), nexusCLIPath, nexusHC)
 	case "route", "send":
 		fs := flag.NewFlagSet("nexus "+args[0], flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		text := fs.String("text", "", "command")
 		rosterJSON := fs.String("roster", "", "head roster")
 		to := fs.String("to", "", "target")
-		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 || nexusSanitize(*text) == "" || *rosterJSON == "" || (args[0] == "send" && *to == "") {
+		dryRun := fs.Bool("dry-run", false, "decide without sending or logging")
+		if fs.Parse(args[1:]) != nil || fs.NArg() != 0 || nexusSanitize(*text) == "" || *rosterJSON == "" || (args[0] == "send" && (*to == "" || *dryRun)) {
 			return usage()
 		}
 		var roster []nexusRosterEntry
 		if json.Unmarshal([]byte(*rosterJSON), &roster) != nil || roster == nil {
 			return usage()
 		}
-		d := nexusDeps{hc: nexusHC, panes: hudPanes, now: time.Now, logPath: filepath.Join(hudCacheDir(), "nexus-log.json")}
+		d := nexusDefaultDeps()
+		d.dryRun = *dryRun
 		if args[0] == "send" {
 			out = nexusSend(ctx, d, *to, *text, roster)
 		} else {
-			d.model = func(ctx context.Context, sys, p string, s []byte) ([]byte, error) {
-				runner, err := nexusCLIModel("")
-				if err != nil {
-					return nil, err
-				}
-				return runner(ctx, sys, p, s)
-			}
+
 			out = nexusRoute(ctx, d, *text, roster)
 		}
 	case "log":
