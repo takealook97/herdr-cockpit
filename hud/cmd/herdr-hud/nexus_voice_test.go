@@ -6,16 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNexusVoiceEnsure(t *testing.T) {
 	for _, reuse := range []bool{false, true} {
 		t.Run(map[bool]string{false: "create", true: "reuse"}[reuse], func(t *testing.T) {
-			home := t.TempDir()
+			home := filepath.Join(t.TempDir(), "space $HOME 'quote")
 			t.Setenv("HOME", home)
 			cache := t.TempDir()
 			var calls [][]string
@@ -62,15 +64,26 @@ func TestNexusVoiceEnsure(t *testing.T) {
 				t.Fatal(string(raw))
 			}
 			hook := settings.Hooks["UserPromptSubmit"][0].Hooks[0]
-			if hook.Command != "\""+filepath.Join(home, ".local/bin/herdr-hud")+"\" nexus hook-prompt" || hook.Type != "command" || hook.OnFailure != "block" || hook.Timeout != 45 {
+			if hook.Command != "'"+strings.ReplaceAll(filepath.Join(home, ".local/bin/herdr-hud"), "'", "'\"'\"'")+"' nexus hook-prompt" || hook.Type != "command" || hook.OnFailure != "block" || hook.Timeout != 60 {
 				t.Fatal(hook)
+			}
+			binary := filepath.Join(home, ".local/bin/herdr-hud")
+			if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			got, err := exec.Command("/bin/sh", "-c", hook.Command).CombinedOutput()
+			if err != nil || string(got) != "nexus\nhook-prompt\n" {
+				t.Fatalf("hook shell command: %q, %v", got, err)
 			}
 			if reuse {
 				if len(calls) != 1 {
 					t.Fatal(calls)
 				}
 			} else {
-				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "/fake/claude", "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
+				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", "/fake/claude", "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
 				if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
 					t.Fatal(calls)
 				}
@@ -296,5 +309,45 @@ func TestNexusVoiceEnsureErrors(t *testing.T) {
 				t.Fatal(r)
 			}
 		})
+	}
+}
+
+func TestNexusHookRefreshesNavigationState(t *testing.T) {
+	d := nexusFixture(t)
+	routed := false
+	d.model = func(ctx context.Context, _, _ string, _ []byte) ([]byte, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 40*time.Second {
+			t.Fatal("missing hook deadline")
+		}
+		routed = true
+		return []byte(`{"action":"send","target":"t1","message":"go","confidence":0.9}`), nil
+	}
+	reads := 0
+	read := func(string) ([]byte, error) {
+		reads++
+		if reads == 1 {
+			return []byte(`{"hub.heads":[{"address":"t1","space":"s1","tab":"tab1"}],"hub.open":true,"nexus.open":true}`), nil
+		}
+		if !routed {
+			t.Fatal("state refreshed before routing")
+		}
+		// Absent open keys also mean closed, not the previous snapshot's true.
+		return []byte(`{"hub.heads":[{"address":"t1","space":"s1","tab":"tab1"}]}`), nil
+	}
+	var calls [][]string
+	app := func(ctx context.Context, args ...string) error {
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 3*time.Second {
+			t.Fatal("missing navigation deadline")
+		}
+		calls = append(calls, args)
+		return nil
+	}
+	var out bytes.Buffer
+	nexusHookPromptRead(context.Background(), strings.NewReader(`{"prompt":"go"}`), &out, d, "shared.json", app, read)
+	want := [][]string{{"do", "space.select", `{"id":"s1"}`}, {"do", "tab.select", `{"id":"tab1"}`}, {"do", "pane.focus", `{"terminal":"t1"}`}}
+	if reads != 2 || !reflect.DeepEqual(calls, want) {
+		t.Fatal(reads, calls, out.String())
 	}
 }

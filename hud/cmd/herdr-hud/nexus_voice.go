@@ -33,11 +33,11 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	if err != nil {
 		return fail(err)
 	}
-	command := fmt.Sprintf("%q nexus hook-prompt", filepath.Join(home, ".local/bin/herdr-hud"))
+	command := "'" + strings.ReplaceAll(filepath.Join(home, ".local/bin/herdr-hud"), "'", "'\"'\"'") + "' nexus hook-prompt"
 	settings := map[string]any{
 		"voice":    map[string]any{"enabled": true, "mode": "hold", "autoSubmit": true},
 		"language": "ko", "spinnerTipsEnabled": false, "claudeMdExcludes": []string{"**"},
-		"hooks": map[string]any{"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command, "timeout": 45, "onFailure": "block"}}}}},
+		"hooks": map[string]any{"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command, "timeout": 60, "onFailure": "block"}}}}},
 	}
 	raw, err := json.Marshal(settings)
 	if err != nil {
@@ -89,7 +89,7 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 			return nexusVoiceReply{Mode: "claude", Terminal: named.Address}
 		}
 	}
-	raw, err = hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
+	raw, err = hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
 	if err != nil {
 		return fail(err)
 	}
@@ -151,6 +151,8 @@ func nexusApp(ctx context.Context, args ...string) error {
 }
 func nexusNavigate(ctx context.Context, s nexusShared, target string, app nexusAppRunner) error {
 	call := func(command string, args any) error {
+		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
 		if args == nil {
 			return app(ctx, "do", command)
 		}
@@ -206,6 +208,12 @@ type nexusHookSpecificOutput struct {
 
 // Always fail closed: even malformed input and recovered panics emit block JSON.
 func nexusHookPrompt(ctx context.Context, stdin io.Reader, stdout io.Writer, d nexusDeps, path string, app nexusAppRunner) (code int) {
+	return nexusHookPromptRead(ctx, stdin, stdout, d, path, app, os.ReadFile)
+}
+
+func nexusHookPromptRead(ctx context.Context, stdin io.Reader, stdout io.Writer, d nexusDeps, path string, app nexusAppRunner, read func(string) ([]byte, error)) (code int) {
+	ctx, cancel := context.WithTimeout(ctx, 40*time.Second)
+	defer cancel()
 	reason := "! 요청을 처리하지 못했습니다"
 	defer func() {
 		if v := recover(); v != nil {
@@ -234,7 +242,7 @@ func nexusHookPrompt(ctx context.Context, stdin io.Reader, stdout io.Writer, d n
 		reason = "! 프롬프트가 비어 있습니다"
 		return
 	}
-	raw, err := os.ReadFile(path)
+	raw, err := read(path)
 	if err != nil {
 		reason = "! Head 목록을 읽지 못했습니다"
 		return
@@ -260,6 +268,16 @@ func nexusHookPrompt(ctx context.Context, stdin io.Reader, stdout io.Writer, d n
 	reply := nexusRoute(ctx, d, input.Prompt, roster)
 	reason = nexusHookReason(reply)
 	if reply.Sent {
+		raw, err := read(path)
+		if err != nil {
+			reason = "! 전달했지만 화면 상태를 읽지 못했습니다"
+			return
+		}
+		shared = nexusShared{}
+		if json.Unmarshal(raw, &shared) != nil {
+			reason = "! 전달했지만 화면 상태가 올바르지 않습니다"
+			return
+		}
 		if err := nexusNavigate(ctx, shared, reply.Target, app); err != nil {
 			reason = "! 전달했지만 " + err.Error()
 		}
