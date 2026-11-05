@@ -258,3 +258,40 @@ func TestNexusListenAudioArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestNexusListenStatusUsesVerifiedProxyPID(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "herdr-listen")
+	build := exec.Command("cc", "-x", "c", "-", "-o", binary)
+	build.Stdin = strings.NewReader("#include <unistd.h>\nint main(void) { sleep(30); return 0; }\n")
+	if raw, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build listener: %v: %s", err, raw)
+	}
+	cmd := exec.Command(binary)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	pid := cmd.Process.Pid
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, err := exec.Command("ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+		if err == nil && filepath.Base(strings.TrimSpace(string(raw))) == "herdr-listen" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("listener identity not ready: %q (%v)", raw, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "listen.pid"), []byte(strconv.Itoa(pid)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "listen.json"), []byte(`{"state":"listening","pid":99999999,"partial":"hello"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := nexusListenWith(context.Background(), "status", "darwin", binary, dir)
+	if got.State != "listening" || got.PID != pid || got.Partial != "hello" {
+		t.Fatal(got)
+	}
+}

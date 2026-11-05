@@ -186,6 +186,9 @@ if [ "$goos" = darwin ] && command -v swiftc >/dev/null; then
     if swiftc -O "$root/hud/listen-macos/main.swift" "$root/hud/listen-macos/LaughFilter.swift" -o "$scratch/herdr-listen" \
         -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
         -Xlinker "$root/hud/listen-macos/Info.plist"; then
+        if ! codesign --force -s - --identifier dev.herdr-cockpit.listen "$scratch/herdr-listen"; then
+            echo "Warning: could not sign herdr-listen; continuing" >&2
+        fi
         listen_tmp=
         if listen_tmp=$(mktemp "$HOME/.local/bin/.herdr-listen.XXXXXX") && \
             cp "$scratch/herdr-listen" "$listen_tmp" && chmod 755 "$listen_tmp" && \

@@ -123,8 +123,9 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expecte
 		return fail(fmt.Errorf("음성 인식 상태가 올바르지 않습니다"))
 	}
 	pid := out.PID
-	if pid == 0 {
-		pid = readPID()
+	trackedPID := readPID()
+	if pid == 0 || (out.State == "listening" && trackedPID != pid && alive(trackedPID) && identity(trackedPID)) {
+		pid = trackedPID
 	}
 	out.PID = pid
 	if out.State == "listening" && (!alive(pid) || !identity(pid)) {

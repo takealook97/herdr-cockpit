@@ -4,6 +4,70 @@ import Speech
 import SoundAnalysis
 import Darwin
 
+// The proxy must never construct Listener (and thus AVAudioEngine). Disclaim
+// responsibility before any privacy API so TCC reads this executable's plist.
+private var proxyChild: pid_t = 0
+
+private func forwardProxySignal(_ number: Int32) {
+    let savedErrno = errno
+    if proxyChild > 0 { _ = kill(proxyChild, number) }
+    errno = savedErrno
+}
+
+private func enterResponsibleProcess() -> Bool {
+    if ProcessInfo.processInfo.environment["HERDR_LISTEN_DISCLAIMED"] == "1" { return true }
+    guard !CommandLine.arguments.contains("--no-disclaim"),
+          let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "responsibility_spawnattrs_setdisclaim") else { return false }
+    typealias SetDisclaim = @convention(c) (UnsafeMutablePointer<posix_spawnattr_t?>, Int32) -> Int32
+    let setDisclaim = unsafeBitCast(symbol, to: SetDisclaim.self)
+    var attributes: posix_spawnattr_t?
+    guard posix_spawnattr_init(&attributes) == 0 else { return false }
+    defer { posix_spawnattr_destroy(&attributes) }
+    guard setDisclaim(&attributes, 1) == 0 else { return false }
+
+    var size: UInt32 = 0
+    _ = _NSGetExecutablePath(nil, &size)
+    var path = [CChar](repeating: 0, count: Int(size))
+    guard _NSGetExecutablePath(&path, &size) == 0 else { return false }
+
+    // Block forwarding signals until the child PID and handlers are ready.
+    // The spawned child gets the original mask and default signal handlers.
+    var blocked = sigset_t(), original = sigset_t()
+    sigemptyset(&blocked)
+    sigaddset(&blocked, SIGTERM)
+    sigaddset(&blocked, SIGINT)
+    guard sigprocmask(SIG_BLOCK, &blocked, &original) == 0 else { return false }
+    defer { sigprocmask(SIG_SETMASK, &original, nil) }
+    guard posix_spawnattr_setsigmask(&attributes, &original) == 0,
+          posix_spawnattr_setsigdefault(&attributes, &blocked) == 0,
+          posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF)) == 0 else { return false }
+
+    var environment = ProcessInfo.processInfo.environment
+    environment["HERDR_LISTEN_DISCLAIMED"] = "1"
+    environment["HERDR_LISTEN_PROXY_PID"] = String(getpid())
+    var argv = CommandLine.arguments.map { strdup($0) } + [nil]
+    var envp = environment.map { strdup("\($0.key)=\($0.value)") } + [nil]
+    defer {
+        for pointer in argv { free(pointer) }
+        for pointer in envp { free(pointer) }
+    }
+    var child: pid_t = 0
+    guard posix_spawn(&child, path, nil, &attributes, &argv, &envp) == 0 else { return false }
+    proxyChild = child
+    signal(SIGTERM, forwardProxySignal)
+    signal(SIGINT, forwardProxySignal)
+    sigprocmask(SIG_SETMASK, &original, nil)
+    var status: Int32 = 0
+    var waited: pid_t
+    repeat { waited = waitpid(child, &status, 0) } while waited < 0 && errno == EINTR
+    // Block before retiring the PID so a late signal cannot target a reused PID.
+    sigprocmask(SIG_BLOCK, &blocked, nil)
+    proxyChild = 0
+    guard waited == child else { exit(1) }
+    let terminatingSignal = status & 0x7f
+    exit(terminatingSignal == 0 ? (status >> 8) & 0xff : 128 + terminatingSignal)
+}
+
 struct Options {
     var statePath: String
     var locale = "ko-KR"
@@ -24,9 +88,10 @@ struct Options {
         var args = CommandLine.arguments.dropFirst().makeIterator()
         while let flag = args.next() {
             if flag == "--help" || flag == "-h" {
-                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100]")
+                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--no-disclaim]")
                 exit(0)
             }
+            if flag == "--no-disclaim" { continue }
             if flag == "--debug-json" { debugJSON = true; continue }
             if flag == "--no-laugh-filter" { laughFilter = false; continue }
             guard ["--state", "--locale", "--max-seconds", "--silence", "--laugh-threshold", "--file", "--keep-audio"].contains(flag),
@@ -72,7 +137,40 @@ struct ListenState: Encodable {
     var error = ""
     var laughing = false
     var trimmed = 0
-    let pid = getpid()
+    let pid = ProcessInfo.processInfo.environment["HERDR_LISTEN_PROXY_PID"]
+        .flatMap { Int32($0) }.flatMap { $0 > 0 ? $0 : nil } ?? getpid()
+}
+
+// Used by the failure path too, without initializing any audio objects.
+private func writeListenState(_ state: ListenState, to stateURL: URL) throws {
+    let temporary = stateURL.deletingLastPathComponent()
+        .appendingPathComponent(".listen-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: temporary) }
+    let data = try JSONEncoder().encode(state)
+    let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+    guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    try file.write(contentsOf: data)
+    try file.close()
+    guard rename(temporary.path, stateURL.path) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+}
+
+private func reportResponsibilityFailure(_ options: Options) throws {
+    var state = ListenState()
+    state.state = "error"
+    state.error = "음성 인식 권한을 요청할 수 없습니다 (책임 프로세스 분리 실패)"
+    if options.file == nil || options.explicitState {
+        let url = URL(fileURLWithPath: options.statePath).standardizedFileURL
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                               attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try writeListenState(state, to: url)
+    }
+    if options.file != nil { print(String(decoding: try JSONEncoder().encode(state), as: UTF8.self)) }
+    fputs("herdr-listen: \(state.error)\n", stderr)
 }
 
 // SoundAnalysis may deliver callbacks off the caller's queue. Protect the pure
@@ -165,23 +263,11 @@ final class Listener {
         dirty = true
         let now = ProcessInfo.processInfo.systemUptime
         guard immediate || now - lastWrite >= 0.1 else { return }
-        let temporary = stateURL.deletingLastPathComponent()
-            .appendingPathComponent(".listen-\(UUID().uuidString)")
         do {
-            let data = try JSONEncoder().encode(state)
-            // Create exclusively with restrictive permissions before writing text.
-            let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
-            guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-            let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-            try file.write(contentsOf: data)
-            try file.close()
-            guard rename(temporary.path, stateURL.path) == 0 else {
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
+            try writeListenState(state, to: stateURL)
             dirty = false
             lastWrite = now
         } catch {
-            try? FileManager.default.removeItem(at: temporary)
             fputs("herdr-listen: state write failed: \(error)\n", stderr)
             exit(1)
         }
@@ -661,8 +747,14 @@ final class Listener {
     }
 }
 
+let responsible = enterResponsibleProcess()
 do {
-    let listener = try Listener(Options())
+    let options = try Options()
+    guard responsible else {
+        try reportResponsibilityFailure(options)
+        exit(1)
+    }
+    let listener = try Listener(options)
     listener.start()
     RunLoop.main.run()
 } catch {
