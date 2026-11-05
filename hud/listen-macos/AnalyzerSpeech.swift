@@ -19,7 +19,7 @@ final class AnalyzerSpeech: @unchecked Sendable {
     var closed = false
     var resultTask: Task<Void, Never>?
     var analysisTask: Task<Void, Never>?
-    var pieces: [(range: CMTimeRange, text: String, segments: [Segment])] = []
+    var pieces: [TranscriptPiece] = []
     var onResult: ((String, [Segment]) -> Void)?
     var onFinish: ((Error?) -> Void)?
 
@@ -62,10 +62,9 @@ final class AnalyzerSpeech: @unchecked Sendable {
                         let range = run.audioTimeRange ?? result.range
                         return (String(result.text[run.range].characters), CMTimeGetSeconds(range.start), CMTimeGetSeconds(range.duration))
                     }
-                    // A volatile result replaces its previous hypothesis. Finalized
-                    // earlier ranges remain when the next phrase arrives.
-                    pieces.removeAll { CMTimeCompare(CMTimeRangeGetEnd($0.range), result.range.start) > 0 }
-                    pieces.append((result.range, text, segments))
+                    pieces = mergingTranscriptPieces(pieces, with: TranscriptPiece(
+                        start: CMTimeGetSeconds(result.range.start),
+                        end: CMTimeGetSeconds(CMTimeRangeGetEnd(result.range)), text: text, segments: segments))
                     let combined = pieces.map(\.text).joined(separator: " ")
                     let allSegments = pieces.flatMap(\.segments)
                     DispatchQueue.main.async { self.onResult?(combined, allSegments) }
@@ -86,7 +85,7 @@ final class AnalyzerSpeech: @unchecked Sendable {
     }
 
     func append(_ buffer: AVAudioPCMBuffer) {
-        guard let copy = copyPCM(buffer) else { return }
+        guard let copy = Listener.copyBuffer(buffer) else { return }
         queue.async {
             guard !self.closed else { return }
             do {
@@ -137,15 +136,4 @@ final class AnalyzerSpeech: @unchecked Sendable {
         analysisTask?.cancel()
         Task { await analyzer.cancelAndFinishNow() }
     }
-}
-
-// Copies tap-owned memory before the callback returns.
-private func copyPCM(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-    guard let copy = AVAudioPCMBuffer(pcmFormat: buffer.format, frameCapacity: buffer.frameLength) else { return nil }
-    copy.frameLength = buffer.frameLength
-    for (src, dst) in zip(UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList),
-                          UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)) {
-        if let source = src.mData, let target = dst.mData { memcpy(target, source, Int(min(src.mDataByteSize, dst.mDataByteSize))) }
-    }
-    return copy
 }

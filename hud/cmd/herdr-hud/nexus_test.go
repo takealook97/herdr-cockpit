@@ -159,7 +159,7 @@ func TestNexusLog(t *testing.T) {
 }
 func TestCmdNexus(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	for _, args := range [][]string{nil, {"wat"}, {"route"}, {"send", "--text", "hi", "--roster", "[]"}, {"route", "--text", "hi", "--roster", "{"}, {"route", "--text", "hi", "--roster", "null"}, {"log", "--limit", "-1"}, {"listen"}, {"listen", "wat"}, {"listen", "stop", "--pid", "0"}, {"listen", "stop", "--pid", "bad"}, {"listen", "start", "--pid", "123"}, {"listen", "status", "--pid", "123"}, {"log", "extra"}} {
+	for _, args := range [][]string{nil, {"wat"}, {"route"}, {"send", "--text", "hi", "--roster", "[]"}, {"route", "--text", "hi", "--roster", "{"}, {"route", "--text", "hi", "--roster", "null"}, {"log", "--limit", "-1"}, {"listen"}, {"listen", "wat"}, {"listen", "status", "--hints", "head"}, {"listen", "stop", "--hints", "head"}, {"listen", "status", "extra"}, {"listen", "stop", "--pid", "0"}, {"listen", "stop", "--pid", "bad"}, {"listen", "start", "--pid", "123"}, {"listen", "status", "--pid", "123"}, {"log", "extra"}} {
 		var out, stderr bytes.Buffer
 		if code := cmdNexus(args, &out, &stderr); code != 2 {
 			t.Fatalf("%v: %d %s", args, code, out.String())

@@ -3,12 +3,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -335,5 +337,44 @@ func TestNexusListenEndReason(t *testing.T) {
 	raw, _ := json.Marshal(got)
 	if !strings.Contains(string(raw), `"end_reason":"silence"`) {
 		t.Fatal(string(raw))
+	}
+}
+
+// Exercise cmdNexus all the way through listener process creation, so a flag
+// accepted by the parser but dropped on the way to argv fails this test.
+func TestCmdNexusListenStartForwardsHints(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("listener launch is macOS-only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	argsPath := filepath.Join(home, "args")
+	t.Setenv("NEXUS_TEST_LISTENER_ARGS", argsPath)
+	binary := filepath.Join(home, ".local", "bin", "herdr-listen")
+	if err := os.MkdirAll(filepath.Dir(binary), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$NEXUS_TEST_LISTENER_ARGS\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var out, stderr bytes.Buffer
+	if code := cmdNexus([]string{"listen", "start", "--hints", "wiki-island,온톨로지"}, &out, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	var state nexusListenState
+	if err := json.Unmarshal(out.Bytes(), &state); err != nil || state.State != "listening" || state.PID <= 0 {
+		t.Fatalf("%s (%v)", out.String(), err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, err := os.ReadFile(argsPath)
+		if err == nil && strings.Contains(string(raw), "--hints\nwiki-island,온톨로지\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("hints were not forwarded: %q (%v)", raw, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

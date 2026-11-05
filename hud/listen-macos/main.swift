@@ -258,7 +258,14 @@ final class Listener {
     var completed = false
     var heardSpeech = false
     var lastActivity = ProcessInfo.processInfo.systemUptime
-    let started = ProcessInfo.processInfo.systemUptime
+    var started: Double?
+    // The tap and engine activation share this lock: replay is always enqueued
+    // before live audio. Retained preparation audio cannot exceed maxSeconds.
+    let speechLock = NSLock()
+    var pendingSpeech: [AVAudioPCMBuffer] = []
+    var pendingSeconds = 0.0
+    var speechInput: ((AVAudioPCMBuffer) -> Void)?
+    var speechInputClosed = false
     let speechThreshold = 0.15
     // Only opt-in sessions retain PCM. The tap owns insertion and stopAudio()
     // removes the tap before finalization consumes these copies.
@@ -308,10 +315,10 @@ final class Listener {
         timer.setEventHandler {
             guard !self.completed else { return }
             let now = ProcessInfo.processInfo.systemUptime
-            if now - self.started >= self.options.maxSeconds ||
+            if let started = self.started, now - started >= self.options.maxSeconds ||
                 (self.options.file == nil && self.heardSpeech &&
                  (self.observer == nil ? now - self.lastActivity : self.analyzedThrough - self.lastActivity) >= self.options.silence) {
-                self.finish(reason: now - self.started >= self.options.maxSeconds ? "max" : "silence")
+                self.finish(reason: now - started >= self.options.maxSeconds ? "max" : "silence")
             }
             if self.dirty { self.write() }
         }
@@ -342,6 +349,9 @@ final class Listener {
             attemptedAnalyzer = true
             if #available(macOS 26, *) {
                 preparingSpeech = true
+                // Capture (and laughter classification) must precede model work.
+                if options.file == nil { startCapture() }
+                guard !finishing, !completed else { return }
                 speechPreparation = Task { @MainActor in
                     var driver: AnalyzerSpeech?
                     do { driver = try await AnalyzerSpeech.prepare(locale: options.locale, hints: options.hints) }
@@ -362,6 +372,7 @@ final class Listener {
                         self.state.engine = "analyzer"
                         self.write(immediate: true)
                         prepared.start()
+                        self.activateSpeechInput { prepared.append($0) }
                     }
                     self.startAudio()
                 }
@@ -409,6 +420,7 @@ final class Listener {
                     }
                 } catch { /* Classification is optional; recognition still works. */ }
             }
+            started = ProcessInfo.processInfo.systemUptime
             startRecognition(recognizer, request)
             return
         }
@@ -416,10 +428,34 @@ final class Listener {
         configure(request)
         self.request = request
         startRecognition(recognizer, request)
+        activateSpeechInput { request.append($0) }
         startCapture()
     }
 
+    func activateSpeechInput(_ feed: @escaping (AVAudioPCMBuffer) -> Void) {
+        speechLock.lock()
+        defer { speechLock.unlock() }
+        for buffer in pendingSpeech { feed(buffer) }
+        pendingSpeech.removeAll()
+        pendingSeconds = 0
+        speechInput = feed
+    }
+
+    func acceptSpeechBuffer(_ buffer: AVAudioPCMBuffer) {
+        speechLock.lock()
+        defer { speechLock.unlock() }
+        guard !speechInputClosed else { return }
+        if let speechInput { speechInput(buffer); return }
+        let remaining = max(0, options.maxSeconds - pendingSeconds)
+        let frames = min(Double(buffer.frameLength), floor(remaining * buffer.format.sampleRate))
+        guard frames > 0 else { return }
+        buffer.frameLength = AVAudioFrameCount(frames)
+        pendingSpeech.append(buffer)
+        pendingSeconds += frames / buffer.format.sampleRate
+    }
+
     func startCapture() {
+        guard !tapped, !finishing, !completed else { return }
         if let path = options.file {
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.isReadableFile(atPath: path) else { fail("오디오 파일을 읽을 수 없습니다"); return }
@@ -433,6 +469,7 @@ final class Listener {
                     analysisQueue.async { analyzer.analyze(); DispatchQueue.main.async { self.analysisDidFinish() } }
                 } catch { /* Classification is optional. */ }
             }
+            started = ProcessInfo.processInfo.systemUptime
             let feed = feedSpeech
             let finish = finishSpeech
             DispatchQueue.global(qos: .userInitiated).async {
@@ -468,8 +505,9 @@ final class Listener {
         var framePosition: AVAudioFramePosition = 0
         let analyzer = self.analyzer
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            self.request?.append(buffer)
-            self.feedSpeech?(buffer)
+            // Own speech storage separately: bounding the pending buffer must
+            // never truncate the samples sent to the laughter classifier.
+            if let copy = Self.copyBuffer(buffer) { self.acceptSpeechBuffer(copy) }
             let position = framePosition
             framePosition += AVAudioFramePosition(buffer.frameLength)
             if analyzer != nil || self.options.keepAudio > 0, let copy = Self.copyBuffer(buffer) {
@@ -517,6 +555,8 @@ final class Listener {
         tapped = true
         do {
             engine.prepare()
+            started = ProcessInfo.processInfo.systemUptime
+            lastActivity = started!
             try engine.start()
         } catch { fail("마이크를 시작할 수 없습니다: \(error.localizedDescription)") }
     }
@@ -652,10 +692,16 @@ final class Listener {
         guard !finishing, !completed else { return }
         finishing = true
         state.endReason = reason
+        let wasPreparing = preparingSpeech
         preparingSpeech = false
         speechPreparation?.cancel()
-        beginFinalizationDeadline()
         stopAudio()
+        // A stop during preparation still recognizes everything captured so far.
+        if wasPreparing && options.file == nil { startLegacyAudio() }
+        speechLock.lock()
+        speechInputClosed = true
+        speechLock.unlock()
+        beginFinalizationDeadline()
         request?.endAudio()
         if let finishSpeech { finishSpeech(); return }
         // Give the on-device recognizer a bounded chance to deliver its final
@@ -686,8 +732,9 @@ final class Listener {
 
     func beginFinalizationDeadline() {
         guard finalizationDeadline == nil else { return }
-        finalizationDeadline = ProcessInfo.processInfo.systemUptime + 3
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.finalizeIfReady() }
+        let timeout = state.engine == "analyzer" ? 5.0 : 3.0
+        finalizationDeadline = ProcessInfo.processInfo.systemUptime + timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { self.finalizeIfReady() }
     }
 
     func finalizeIfReady() {
