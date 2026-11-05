@@ -60,7 +60,7 @@ func TestNexusVoiceEnsure(t *testing.T) {
 					}
 				}
 			}
-			if json.Unmarshal(raw, &settings) != nil || !settings.Voice.Enabled || !settings.Voice.AutoSubmit || settings.Voice.Mode != "hold" || settings.Language != "ko" {
+			if json.Unmarshal(raw, &settings) != nil || !settings.Voice.Enabled || !settings.Voice.AutoSubmit || settings.Voice.Mode != "tap" || settings.Language != "ko" {
 				t.Fatal(string(raw))
 			}
 			hook := settings.Hooks["UserPromptSubmit"][0].Hooks[0]
@@ -79,12 +79,12 @@ func TestNexusVoiceEnsure(t *testing.T) {
 				t.Fatalf("hook shell command: %q, %v", got, err)
 			}
 			if reuse {
-				if len(calls) != 1 {
+				if len(calls) != 3 {
 					t.Fatal(calls)
 				}
 			} else {
 				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", "/fake/claude", "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
-				if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
+				if len(calls) != 3 || !reflect.DeepEqual(calls[1], want) {
 					t.Fatal(calls)
 				}
 			}
@@ -142,7 +142,7 @@ func TestNexusHookPrompt(t *testing.T) {
 				return []byte(tc.model), nil
 			}
 			shared := filepath.Join(t.TempDir(), "shared.json")
-			os.WriteFile(shared, []byte(`{"hub.heads":[{"address":"t1","spaceName":"space","tabName":"tab","space":"s1","tab":"tab1"}],"hub.open":true,"nexus.open":true}`), 0600)
+			os.WriteFile(shared, []byte(`{"hub.heads":[{"address":"t1","spaceName":"space","tabName":"tab","space":"s1","tab":"tab1"}],"hub.open":true,"nexus.overlayId":"ov1","nexus.heartbeat":1793836800000}`), 0600)
 			var calls [][]string
 			app := func(_ context.Context, args ...string) error { calls = append(calls, args); return nil }
 			var out bytes.Buffer
@@ -163,7 +163,7 @@ func TestNexusHookPrompt(t *testing.T) {
 				t.Fatal(out.String())
 			}
 			if tc.name == "send" {
-				if !reflect.DeepEqual(calls, [][]string{{"do", "space-tree.nexus"}, {"do", "pane.focus", `{"terminal":"t1"}`}}) {
+				if !reflect.DeepEqual(calls, [][]string{{"do", "overlay.close", `{"id":"ov1"}`}, {"do", "pane.focus", `{"terminal":"t1"}`}}) {
 					t.Fatal(calls)
 				}
 			} else if len(calls) != 0 {
@@ -175,15 +175,18 @@ func TestNexusHookPrompt(t *testing.T) {
 func TestNexusNavigate(t *testing.T) {
 	for _, hub := range []bool{true, false} {
 		for _, open := range []bool{true, false} {
-			s := nexusShared{Heads: []nexusSharedHead{{Address: "t1", Space: "s1", Tab: "tab1"}}, HubOpen: hub, NexusOpen: open}
+			s := nexusShared{Heads: []nexusSharedHead{{Address: "t1", Space: "s1", Tab: "tab1"}}, HubOpen: hub, OverlayID: "ov1"}
+			if open {
+				s.Heartbeat = 10000
+			}
 			var calls [][]string
 			app := func(_ context.Context, args ...string) error { calls = append(calls, args); return nil }
-			if err := nexusNavigate(context.Background(), s, "t1", app); err != nil {
+			if err := nexusNavigate(context.Background(), s, "t1", app, time.UnixMilli(10000)); err != nil {
 				t.Fatal(err)
 			}
 			want := [][]string{}
 			if open {
-				want = append(want, []string{"do", "space-tree.nexus"})
+				want = append(want, []string{"do", "overlay.close", `{"id":"ov1"}`})
 			}
 			if !hub {
 				want = append(want, []string{"do", "space.select", `{"id":"s1"}`}, []string{"do", "tab.select", `{"id":"tab1"}`})
@@ -194,7 +197,7 @@ func TestNexusNavigate(t *testing.T) {
 			}
 		}
 	}
-	if err := nexusNavigate(context.Background(), nexusShared{NexusOpen: true}, "t1", func(context.Context, ...string) error { return errors.New("fixture") }); err == nil {
+	if err := nexusNavigate(context.Background(), nexusShared{}, "t1", func(context.Context, ...string) error { return errors.New("fixture") }, time.UnixMilli(10000)); err == nil {
 		t.Fatal("missing navigation error")
 	}
 }
@@ -213,7 +216,7 @@ func TestNexusVoiceResolveName(t *testing.T) {
 			return []byte(`{"terminals":[{"address":"t5x","state":"running"}]}`), nil
 		case "get":
 			return []byte(`{"address":"t5x","name":"nexus-voice","exit_code":null,"labels":{}}`), nil
-		case "label":
+		case "label", "read":
 			return []byte(`{}`), nil
 		default:
 			t.Fatal(args)
@@ -221,7 +224,7 @@ func TestNexusVoiceResolveName(t *testing.T) {
 		}
 	}
 	r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return "/fake/claude" }, hc)
-	if r.Terminal != "t5x" || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "nexus-voice", "--json"}, {"label", "t5x", "nexus.voice=1"}}) {
+	if r.Terminal != "t5x" || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "nexus-voice", "--json"}, {"label", "t5x", "nexus.voice=1"}, {"read", "t5x", "--lines", "40"}}) {
 		t.Fatal(r, calls)
 	}
 }
@@ -327,7 +330,7 @@ func TestNexusHookRefreshesNavigationState(t *testing.T) {
 	read := func(string) ([]byte, error) {
 		reads++
 		if reads == 1 {
-			return []byte(`{"hub.heads":[{"address":"t1","space":"s1","tab":"tab1"}],"hub.open":true,"nexus.open":true}`), nil
+			return []byte(`{"hub.heads":[{"address":"t1","space":"s1","tab":"tab1"}],"hub.open":true,"nexus.overlayId":"ov1","nexus.heartbeat":1793836800000}`), nil
 		}
 		if !routed {
 			t.Fatal("state refreshed before routing")
@@ -349,5 +352,115 @@ func TestNexusHookRefreshesNavigationState(t *testing.T) {
 	want := [][]string{{"do", "space.select", `{"id":"s1"}`}, {"do", "tab.select", `{"id":"tab1"}`}, {"do", "pane.focus", `{"terminal":"t1"}`}}
 	if reads != 2 || !reflect.DeepEqual(calls, want) {
 		t.Fatal(reads, calls, out.String())
+	}
+}
+
+func TestNexusNavigateHeartbeatAndFailures(t *testing.T) {
+	for _, age := range []int64{-1, 0, 2500, 2501} {
+		for _, hub := range []bool{false, true} {
+			s := nexusShared{Heads: []nexusSharedHead{{Address: "t1", Space: "s1", Tab: "tab1"}}, HubOpen: hub, OverlayID: "overlay-id", Heartbeat: 10000 - age}
+			var calls []string
+			err := nexusNavigate(context.Background(), s, "t1", func(ctx context.Context, args ...string) error {
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > 3*time.Second || ctx.Err() != nil {
+					t.Fatal("invalid per-call timeout")
+				}
+				calls = append(calls, args[1])
+				return errors.New("fixture failure")
+			}, time.UnixMilli(10000))
+			want := []string{}
+			if age >= 0 && age <= 2500 {
+				want = append(want, "overlay.close")
+			}
+			if !hub {
+				want = append(want, "space.select", "tab.select")
+			}
+			want = append(want, "pane.focus")
+			if err == nil || !reflect.DeepEqual(calls, want) {
+				t.Fatal(age, hub, calls, err)
+			}
+		}
+	}
+}
+
+func TestNexusVoiceKey(t *testing.T) {
+	for _, stage := range []string{"ok", "missing", "exited", "remote", "ls", "keys"} {
+		t.Run(stage, func(t *testing.T) {
+			var calls [][]string
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, args)
+				if args[0] == stage {
+					return nil, errors.New("fixture")
+				}
+				switch args[0] {
+				case "ls":
+					switch stage {
+					case "missing":
+						return []byte(`{"terminals":[]}`), nil
+					case "exited":
+						return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice","exited":true}]}`), nil
+					case "remote":
+						return []byte(`{"terminals":[{"address":"remote/t1","name":"nexus-voice"}]}`), nil
+					}
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "keys":
+					return nil, nil
+				default:
+					t.Fatal("unexpected command", args)
+					return nil, nil
+				}
+			}
+			r := nexusVoiceKey(context.Background(), "space", hc)
+			if stage == "ok" {
+				if !r.OK || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"keys", "t1", "space"}}) {
+					t.Fatal(r, calls)
+				}
+			} else if r.OK || r.Action != "error" || r.Error == "" {
+				t.Fatal(r, calls)
+			}
+		})
+	}
+}
+
+func TestNexusVoiceEnsureTrust(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		for _, screen := range []string{"Do you TRUST THIS FOLDER?", "Quick Safety Check", "ready"} {
+			var keys int
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				switch args[0] {
+				case "ls":
+					if reuse {
+						return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+					}
+					return []byte(`{"terminals":[]}`), nil
+				case "run":
+					return []byte(`{"address":"t1"}`), nil
+				case "label":
+					return nil, nil
+				case "read":
+					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "40"}) {
+						t.Fatal(args)
+					}
+					return []byte(screen), nil
+				case "keys":
+					keys++
+					if !reflect.DeepEqual(args, []string{"keys", "t1", "enter"}) {
+						t.Fatal(args)
+					}
+					return nil, nil
+				default:
+					t.Fatal(args)
+					return nil, nil
+				}
+			}
+			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return "/fake/claude" }, hc)
+			want := 1
+			if screen == "ready" {
+				want = 0
+			}
+			if r.Error != "" || r.Terminal != "t1" || keys != want {
+				t.Fatal(reuse, screen, r, keys)
+			}
+		}
 	}
 }

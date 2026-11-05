@@ -13,6 +13,7 @@ import (
 )
 
 type nexusVoiceReply struct {
+	OK       bool   `json:"ok,omitempty"`
 	Mode     string `json:"mode,omitempty"`
 	Terminal string `json:"terminal,omitempty"`
 	Action   string `json:"action,omitempty"`
@@ -35,7 +36,7 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	}
 	command := "'" + strings.ReplaceAll(filepath.Join(home, ".local/bin/herdr-hud"), "'", "'\"'\"'") + "' nexus hook-prompt"
 	settings := map[string]any{
-		"voice":    map[string]any{"enabled": true, "mode": "hold", "autoSubmit": true},
+		"voice":    map[string]any{"enabled": true, "mode": "tap", "autoSubmit": true},
 		"language": "ko", "spinnerTipsEnabled": false, "claudeMdExcludes": []string{"**"},
 		"hooks": map[string]any{"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{"type": "command", "command": command, "timeout": 60, "onFailure": "block"}}}}},
 	}
@@ -47,47 +48,15 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	if err = nexusAtomic(path, raw); err != nil {
 		return fail(err)
 	}
-	raw, err = hc(ctx, "ls", "--json")
+	address, err := nexusVoiceLive(ctx, hc)
 	if err != nil {
 		return fail(err)
 	}
-	type voiceTerminal struct {
-		Address, Name string
-		Labels        map[string]string
-		ExitCode      *int `json:"exit_code"`
-		Exited        bool `json:"exited"`
-	}
-	var list struct {
-		Terminals []voiceTerminal `json:"terminals"`
-	}
-	if err = json.Unmarshal(raw, &list); err != nil {
-		return fail(err)
-	}
-	// Current hc ls omits name and labels; resolve the unique name through get,
-	// then require its address to be present in the live list.
-	var named voiceTerminal
-	for _, t := range list.Terminals {
-		if t.Name == "nexus-voice" {
-			named = t
-			break
+	if address != "" {
+		if _, err := hc(ctx, "label", address, "nexus.voice=1"); err != nil {
+			return fail(err)
 		}
-	}
-	if named.Address == "" && len(list.Terminals) > 0 {
-		if detail, getErr := hc(ctx, "get", "nexus-voice", "--json"); getErr == nil {
-			if err := json.Unmarshal(detail, &named); err != nil {
-				return fail(err)
-			}
-		}
-	}
-	for _, t := range list.Terminals {
-		if t.Address == named.Address && named.Name == "nexus-voice" && named.Address != "" && !strings.Contains(named.Address, "/") && !named.Exited && named.ExitCode == nil {
-			if _, ok := named.Labels["nexus.voice"]; !ok {
-				if _, err := hc(ctx, "label", named.Address, "nexus.voice=1"); err != nil {
-					return fail(err)
-				}
-			}
-			return nexusVoiceReply{Mode: "claude", Terminal: named.Address}
-		}
+		return nexusVoiceReady(ctx, address, hc)
 	}
 	raw, err = hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
 	if err != nil {
@@ -102,7 +71,76 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	if created.Address == "" || strings.Contains(created.Address, "/") {
 		return fail(errors.New("음성 터미널 주소를 확인하지 못했습니다"))
 	}
-	return nexusVoiceReply{Mode: "claude", Terminal: created.Address}
+	return nexusVoiceReady(ctx, created.Address, hc)
+}
+
+func nexusVoiceLive(ctx context.Context, hc nexusHCRunner) (string, error) {
+	raw, err := hc(ctx, "ls", "--json")
+	if err != nil {
+		return "", err
+	}
+	type voiceTerminal struct {
+		Address, Name string
+		Labels        map[string]string
+		ExitCode      *int `json:"exit_code"`
+		Exited        bool `json:"exited"`
+	}
+	var list struct {
+		Terminals []voiceTerminal `json:"terminals"`
+	}
+	if err = json.Unmarshal(raw, &list); err != nil {
+		return "", err
+	}
+	// Current hc ls omits name and labels; resolve the unique name through get,
+	// then require its address to be present in the live list.
+	var named voiceTerminal
+	for _, t := range list.Terminals {
+		if t.Name == "nexus-voice" {
+			named = t
+			break
+		}
+	}
+	if named.Address == "" && len(list.Terminals) > 0 {
+		if detail, getErr := hc(ctx, "get", "nexus-voice", "--json"); getErr == nil {
+			if err := json.Unmarshal(detail, &named); err != nil {
+				return "", err
+			}
+		}
+	}
+	for _, t := range list.Terminals {
+		if t.Address == named.Address && named.Name == "nexus-voice" && named.Address != "" && !strings.Contains(named.Address, "/") && !named.Exited && named.ExitCode == nil && !t.Exited && t.ExitCode == nil {
+			return named.Address, nil
+		}
+	}
+	return "", nil
+}
+
+func nexusVoiceReady(ctx context.Context, address string, hc nexusHCRunner) nexusVoiceReply {
+	raw, err := hc(ctx, "read", address, "--lines", "40")
+	if err == nil {
+		text := strings.ToLower(string(raw))
+		if strings.Contains(text, "trust this folder") || strings.Contains(text, "quick safety check") {
+			_, err = hc(ctx, "keys", address, "enter")
+		}
+	}
+	if err != nil {
+		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	}
+	return nexusVoiceReply{Mode: "claude", Terminal: address}
+}
+
+func nexusVoiceKey(ctx context.Context, key string, hc nexusHCRunner) nexusVoiceReply {
+	address, err := nexusVoiceLive(ctx, hc)
+	if err == nil && address == "" {
+		err = errors.New("실행 중인 음성 터미널이 없습니다")
+	}
+	if err == nil {
+		_, err = hc(ctx, "keys", address, key)
+	}
+	if err != nil {
+		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	}
+	return nexusVoiceReply{OK: true}
 }
 
 func nexusDefaultDeps() nexusDeps {
@@ -135,7 +173,8 @@ type nexusSharedHead struct {
 type nexusShared struct {
 	Heads     []nexusSharedHead `json:"hub.heads"`
 	HubOpen   bool              `json:"hub.open"`
-	NexusOpen bool              `json:"nexus.open"`
+	OverlayID string            `json:"nexus.overlayId"`
+	Heartbeat int64             `json:"nexus.heartbeat"`
 }
 type nexusAppRunner func(context.Context, ...string) error
 
@@ -149,7 +188,7 @@ func nexusApp(ctx context.Context, args ...string) error {
 	}
 	return nil
 }
-func nexusNavigate(ctx context.Context, s nexusShared, target string, app nexusAppRunner) error {
+func nexusNavigate(ctx context.Context, s nexusShared, target string, app nexusAppRunner, now time.Time) error {
 	call := func(command string, args any) error {
 		ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
@@ -159,22 +198,24 @@ func nexusNavigate(ctx context.Context, s nexusShared, target string, app nexusA
 		raw, _ := json.Marshal(args)
 		return app(ctx, "do", command, string(raw))
 	}
-	if s.NexusOpen {
-		if err := call("space-tree.nexus", nil); err != nil {
-			return err
+	var failures []error
+	attempt := func(command string, args any) {
+		if err := call(command, args); err != nil {
+			failures = append(failures, err)
 		}
+	}
+	age := now.UnixMilli() - s.Heartbeat
+	if s.OverlayID != "" && s.Heartbeat > 0 && age >= 0 && age <= 2500 {
+		attempt("overlay.close", map[string]string{"id": s.OverlayID})
 	}
 	for _, h := range s.Heads {
 		if h.Address == target {
 			if !s.HubOpen {
-				if err := call("space.select", map[string]string{"id": h.Space}); err != nil {
-					return err
-				}
-				if err := call("tab.select", map[string]string{"id": h.Tab}); err != nil {
-					return err
-				}
+				attempt("space.select", map[string]string{"id": h.Space})
+				attempt("tab.select", map[string]string{"id": h.Tab})
 			}
-			return call("pane.focus", map[string]string{"terminal": target})
+			attempt("pane.focus", map[string]string{"terminal": target})
+			return errors.Join(failures...)
 		}
 	}
 	return errors.New("이동할 Head가 없습니다")
@@ -278,7 +319,7 @@ func nexusHookPromptRead(ctx context.Context, stdin io.Reader, stdout io.Writer,
 			reason = "! 전달했지만 화면 상태가 올바르지 않습니다"
 			return
 		}
-		if err := nexusNavigate(ctx, shared, reply.Target, app); err != nil {
+		if err := nexusNavigate(ctx, shared, reply.Target, app, d.now()); err != nil {
 			reason = "! 전달했지만 " + err.Error()
 		}
 	}
