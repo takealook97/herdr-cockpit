@@ -35,7 +35,13 @@ export function host(initial = {}) {
     let value = ''; const events = {};
     return { value: () => value, set_value(v) { value = v; }, on(name, fn) { events[name] = fn; }, events, release() {} };
   } };
-  const deps = { View: class {}, div: element, h_flex: element, InputState, Input: { new: element },
+  const TextareaState = { new(opts) {
+    const state = { ...InputState.new(opts), opts, focus() {}, set_rows() {} };
+    state.set_soft_wrap = v => { state.softWrap = v; };
+    state.set_auto_grow = (min, max) => { state.autoGrow = [min, max]; };
+    return state;
+  } };
+  const deps = { View: class {}, div: element, h_flex: element, InputState, Input: { new: element }, TextareaState, Textarea: { new: element },
     shared: key => shared.get(key), setShared: (key, value) => shared.set(key, value),
     theme: () => new Proxy({}, { get: (_o, key) => key }),
     notify: value => calls.push({ notify: value }), run: (...args) => calls.push({ run: args }),

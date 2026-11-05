@@ -329,3 +329,11 @@ test('nexus.listenToggle counts by sequence parity; the init value is ignored', 
   assert.equal(h.view.listening, false);
   assert.equal(h.view.seenListenToggle, 0);
 });
+
+test('init uses a wrapping multi-line textarea of up to 3 rows and warms up speech once', async () => {
+  const h = setup({ action: 'ignore' }, {}); await h.flush();
+  assert.equal(h.view.input.softWrap, true);
+  assert.deepEqual(h.view.input.autoGrow, [1, 3]);
+  assert.equal(h.execs.filter(a => a[0] === 'listen' && a[1] === 'prepare').length, 1);
+  h.view.input.set_value('긴 문장\n두 번째 줄'); assert.equal(h.view.input.value(), '긴 문장\n두 번째 줄');
+});
