@@ -61,11 +61,15 @@ struct TranscriptKeeperTests {
                    "empty results never erase finalized text or timing")
         }
         sequence.observe(text: "C", segments: [("C", 5, 1)], isFinal: false)
-        for isFinal in [false, true] {
-            sequence.observe(text: " \n ", segments: [], isFinal: isFinal)
-            assert(sequence.text == "A B C" && sequence.volatile == "C" && sequence.segments.count == 3,
-                   "empty results never erase the last useful volatile text or timing")
-        }
+        sequence.observe(text: " \n ", segments: [], isFinal: false)
+        assert(sequence.text == "A B C" && sequence.segments.count == 3)
+        sequence.observe(text: "", segments: [], isFinal: true)
+        assert(sequence.text == "A B" && sequence.volatile.isEmpty && sequence.segments.count == 2)
+        var dropped = AnalyzerTranscript()
+        dropped.observe(text: "아", segments: [("아", 0, 1)], isFinal: false)
+        dropped.observe(text: "", segments: [], isFinal: true)
+        assert(dropped.text.isEmpty && dropped.segments.isEmpty,
+               "empty final clears the volatile hypothesis and timing")
         print("TranscriptKeeper tests passed")
     }
 }

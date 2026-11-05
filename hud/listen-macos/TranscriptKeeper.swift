@@ -13,7 +13,7 @@ struct TranscriptKeeper {
 }
 
 // SpeechTranscriber final results append; each volatile result replaces the
-// pending hypothesis wholesale. Empty results retain the last useful text.
+// pending hypothesis wholesale. Empty finals clear the pending hypothesis.
 struct AnalyzerTranscript {
     typealias Segment = (text: String, start: Double, duration: Double)
     private(set) var finalized = ""
@@ -29,13 +29,14 @@ struct AnalyzerTranscript {
 
     mutating func observe(text: String, segments: [Segment], isFinal: Bool) {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
         if isFinal {
-            finalized = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
-            finalizedSegments.append(contentsOf: segments)
+            if !text.isEmpty {
+                finalized = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
+                finalizedSegments.append(contentsOf: segments)
+            }
             volatile = ""
             volatileSegments = []
-        } else {
+        } else if !text.isEmpty {
             volatile = text
             volatileSegments = segments
         }

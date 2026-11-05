@@ -107,6 +107,12 @@ func nexusSanitize(s string) string {
 	return string(r)
 }
 
+var nexusLineBreaks = regexp.MustCompile(`(?:\r?\n)+`)
+
+func nexusSubmitText(text string) string {
+	return strings.TrimSpace(nexusLineBreaks.ReplaceAllString(text, " "))
+}
+
 var nexusLaugh = regexp.MustCompile(`(?i)^(?:[ㅋㅎㅠㅜ]+|(?:푸|으|아)?(?:하{2,}|헤{2,}|히{2,}|호{2,}|크{2,}|(?:킥){2,}|허{2,}|흐{2,}|ㅎ{2,})|\(웃음\)|\[웃음\]|(?:lol)+|(?:ha){2,}|(?:he){2,})$`)
 var nexusSingleLaugh = regexp.MustCompile(`(?i)^(?:ha|he|하|헤|히|호|크|킥|허|흐|ㅎ)$`)
 
@@ -337,7 +343,7 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 	if reply.Message == "" {
 		return nexusError(errors.New("메시지가 비어 있습니다"))
 	}
-	_, err = d.hc(ctx, "send", "--", reply.Target, reply.Message)
+	_, err = d.hc(ctx, "send", "--", reply.Target, nexusSubmitText(reply.Message))
 	if err != nil {
 		return nexusHCError(err)
 	}
@@ -357,7 +363,7 @@ func nexusSend(ctx context.Context, d nexusDeps, to, text string, roster []nexus
 			if msg == "" {
 				return nexusError(errors.New("메시지가 비어 있습니다"))
 			}
-			if _, err := d.hc(ctx, "send", "--", to, msg); err != nil {
+			if _, err := d.hc(ctx, "send", "--", to, nexusSubmitText(msg)); err != nil {
 				return nexusHCError(err)
 			}
 			return nexusReply{Action: "send", Target: to, Label: nexusLabel(r), Message: msg, Sent: true}

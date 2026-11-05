@@ -492,12 +492,27 @@ func TestNexusPolishedMultiline(t *testing.T) {
 		return json.Marshal(map[string]any{"action": "send", "target": "t1", "message": message, "confidence": 0.99})
 	}
 	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
-		if !reflect.DeepEqual(args, []string{"send", "--", "t1", message}) {
+		if !reflect.DeepEqual(args, []string{"send", "--", "t1", "넥서스 확인해. 테스트도 돌려줘."}) {
 			t.Fatal(args)
 		}
 		return nil, nil
 	}
 	if got := nexusRoute(context.Background(), d, "head 액서스 확인해 테스트도 돌려줘", nexusRoster()); !got.Sent || got.Message != message {
+		t.Fatal(got)
+	}
+}
+
+func TestNexusSendMultiline(t *testing.T) {
+	d := nexusFixture(t)
+	message := "첫 문장.\r\n\n다음 문장."
+	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+		if !reflect.DeepEqual(args, []string{"send", "--", "t1", "첫 문장. 다음 문장."}) {
+			t.Fatal(args)
+		}
+		return nil, nil
+	}
+	got := nexusSend(context.Background(), d, "t1", message, nexusRoster())
+	if !got.Sent || got.Message != nexusSanitize(message) {
 		t.Fatal(got)
 	}
 }

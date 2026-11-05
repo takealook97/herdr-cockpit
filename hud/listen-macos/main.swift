@@ -79,7 +79,23 @@ private func preparationRunning() -> Bool {
     let path = listenCacheDirectory().appendingPathComponent("listen-prepare.pid")
     guard let text = try? String(contentsOf: path, encoding: .utf8),
           let pid = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)), pid > 0 else { return false }
-    return kill(pid, 0) == 0 || errno == EPERM
+    let alive = kill(pid, 0) == 0 || errno == EPERM
+    if alive {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-o", "comm=", "-p", String(pid)]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        if (try? process.run()) != nil {
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            let name = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if process.terminationStatus == 0 && name.hasSuffix("herdr-listen") { return true }
+        }
+    }
+    try? FileManager.default.removeItem(at: path)
+    return false
 }
 
 // Detached warm-up owns no microphone or session state. Disclaim here too,
@@ -145,7 +161,7 @@ private func prepareAssets(_ options: Options) throws {
         exit(code)
     }
     // A dispatch deadline also bounds cancellation-insensitive framework work.
-    DispatchQueue.main.asyncAfter(deadline: .now() + 120) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
         fputs("herdr-listen: asset preparation timed out\n", stderr)
         end(1)
     }
