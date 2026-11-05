@@ -196,11 +196,41 @@ test('laughing status dims dots and retracted laughter text never routes', async
   assert.equal(byId(h.view.dots({ accent: 'accent', dim: 'dim' }), 'nexus-dot-0').style.bg, 'accent');
   status = { state: 'listening', partial: '', level: 0.8, laughing: true, trimmed: 1 };
   h.view.pollStatus(h.cx); await h.flush();
-  assert.equal(h.view.input.value(), '');
+  assert.equal(h.view.input.value(), '하하하'); // Empty partials do not write into the input.
   assert.equal(byId(h.view.dots({ accent: 'accent', dim: 'dim' }), 'nexus-dot-0').style.bg, 'dim');
   status = { state: 'idle', final: '', trimmed: 1 };
   h.view.pollStatus(h.cx); await h.flush();
   assert.equal(h.view.listening, false);
+  assert.equal(h.view.input.value(), '');
   assert.equal(h.view.countdown, null);
   assert.ok(!h.execs.some(a => a[0] === 'route'));
+});
+
+
+test('typing during auto-listen survives empty and non-empty partials and the final result', async () => {
+  for (const terminalState of ['final', 'idle']) {
+    let status = { state: 'listening', partial: 'voice', pid: 123 };
+    const h = voice(async a => a[0] === 'log' ? { entries: [] }
+      : a[1] === 'start' ? { state: 'listening', pid: 123 } : status);
+    await h.flush();
+    assert.equal(h.view.listening, true);
+    h.view.pollStatus(h.cx); await h.flush();
+    assert.equal(h.view.input.value(), 'voice');
+    h.view.input.events.change(); // A voice write is not typing.
+    assert.equal(h.view.typedSinceListen, false);
+    h.view.input.set_value('my typed command');
+    h.view.input.events.change();
+    assert.equal(h.view.typedSinceListen, true);
+    for (const partial of ['', 'new voice text']) {
+      status = { state: 'listening', partial, pid: 123 };
+      h.view.pollStatus(h.cx); await h.flush();
+      assert.equal(h.view.input.value(), 'my typed command');
+    }
+    status = { state: terminalState, final: 'final voice text' };
+    h.view.pollStatus(h.cx); await h.flush();
+    assert.equal(h.view.input.value(), 'my typed command');
+    assert.equal(h.view.listening, false);
+    assert.equal(h.view.countdown, null);
+    assert.ok(!h.execs.some(a => a[0] === 'route'));
+  }
 });

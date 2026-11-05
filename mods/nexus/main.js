@@ -14,12 +14,16 @@ export default class Nexus extends View {
     this.entries = []; this.reply = null; this.pending = false; this.micHidden = false;
     this.listening = false; this.laughing = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
     this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
-    this.listenPid = null; this.userTouched = false;
+    this.listenPid = null; this.userTouched = false; this.typedSinceListen = false;
     this.input = InputState.new({ placeholder: PLACEHOLDER });
     this.input.focus();
     this.input.on("submit", () => this.submit(cx));
     this.input.on("change", () => {
-      if (this.countdown && this.input.value() !== this.voiceValue) this.cancelCountdown(cx);
+      if (this.input.value() !== this.voiceValue) {
+        if (this.listening) this.typedSinceListen = true;
+        this.userTouched = true;
+        if (this.countdown) this.cancelCountdown(cx);
+      }
     });
     this.loadLog(cx);
     const gen = this.listenGen;
@@ -105,7 +109,7 @@ export default class Nexus extends View {
 
   startListening(cx) {
     if (this.listening || this.micHidden || this.closed) return;
-    this.userTouched = true;
+    this.userTouched = true; this.typedSinceListen = false;
     const gen = ++this.listenGen;
     this.listening = true; this.laughing = false; this.levels = []; this.sawActive = false; this.startIdle = false;
     this.startedAt = Date.now(); this.cancelCountdown(cx); cx.notify();
@@ -137,12 +141,12 @@ export default class Nexus extends View {
       this.laughing = status.laughing === true;
       if (status.state === "listening" && (status.pid || status.partial || level > 0)) this.sawActive = true;
       this.levels = [...this.levels, level].slice(-DOT_COUNT);
-      if (typeof status.partial === "string" && status.state === "listening") this.setVoiceText(status.partial);
+      if (typeof status.partial === "string" && status.partial.trim() && !this.typedSinceListen && status.state === "listening") this.setVoiceText(status.partial);
       if (status.state === "unavailable") return this.hideMic(cx);
       if (status.state === "final") this.finishListening(status.final || status.partial || "", cx);
       else if (status.state === "error" || status.action === "error") this.failListening(status, cx);
       else if (status.state === "idle" && this.idleSettled()) {
-        if (this.voiceValue !== null) this.clearInput();
+        if (this.voiceValue !== null && !this.typedSinceListen) this.clearInput();
         this.stopPolling(cx);
       }
       cx.notify();
@@ -154,7 +158,8 @@ export default class Nexus extends View {
 
   finishListening(text, cx) {
     this.stopPolling(cx);
-    if (!text.trim()) return;
+    if (this.typedSinceListen) return;
+    if (!text.trim()) { if (this.voiceValue !== null) this.clearInput(); return; }
     this.setVoiceText(text);
     const gen = this.listenGen;
     this.countdown = cx.timer.after(COUNTDOWN_MS, cx => {

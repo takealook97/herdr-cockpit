@@ -16,6 +16,10 @@ struct LaughFilterTests {
         assert(strong.isLaughing && strong.ranges.count == 1, "one strong window")
         strong.observe(windowStart: 3.4, windowEnd: 4, score: 0.9)
         assert(strong.ranges.count == 1 && abs(strong.ranges[0].start - 1.85) < 0.00001, "padded adjacency")
+        let strict = LaughTracker(threshold: 0.95)
+        strict.observe(windowStart: 0, windowEnd: 1, score: 0.85)
+        assert(!strict.isLaughing && strict.ranges.isEmpty, "high threshold raises strong cutoff")
+        assert(strict.strong == 0.99, "strong cutoff capped at 0.99")
         let range = [LaughRange(start: 0, end: 0.6)]
         assert(!keepSegment(start: 0, duration: 1, ranges: range), "60 percent removed")
         assert(keepSegment(start: 0.3, duration: 1, ranges: range), "30 percent kept")

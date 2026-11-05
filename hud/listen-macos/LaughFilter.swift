@@ -13,9 +13,9 @@ final class LaughTracker {
     private(set) var ranges: [LaughRange] = []
     private(set) var isLaughing = false
 
-    init(threshold: Double = 0.5, strong: Double = 0.8, padding: Double = 0.15) {
+    init(threshold: Double = 0.5, padding: Double = 0.15) {
         self.threshold = threshold
-        self.strong = strong
+        self.strong = min(0.99, max(0.8, threshold + 0.15))
         self.padding = max(0, padding)
     }
 

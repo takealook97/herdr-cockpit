@@ -22,7 +22,7 @@ struct Options {
         var args = CommandLine.arguments.dropFirst().makeIterator()
         while let flag = args.next() {
             if flag == "--help" || flag == "-h" {
-                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0..1] [--no-laugh-filter] [--file AUDIO]")
+                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO]")
                 exit(0)
             }
             if flag == "--no-laugh-filter" { laughFilter = false; continue }
@@ -35,8 +35,8 @@ struct Options {
             case "--locale": locale = value
             case "--file": file = value
             case "--laugh-threshold":
-                guard let score = Double(value), score.isFinite, (0...1).contains(score) else {
-                    throw ListenError.message("--laugh-threshold must be between 0 and 1")
+                guard let score = Double(value), score.isFinite, (0.1...0.99).contains(score) else {
+                    throw ListenError.message("--laugh-threshold must be between 0.1 and 0.99")
                 }
                 laughThreshold = score
             default:
@@ -75,6 +75,7 @@ final class LaughObserver: NSObject, SNResultsObserving {
     let lock = NSLock()
     var update: (([LaughRange], Bool, Double) -> Void)?
     var ended: (() -> Void)?
+    var failed: (() -> Void)?
 
     init(threshold: Double, identifiers: Set<String>) {
         tracker = LaughTracker(threshold: threshold)
@@ -91,7 +92,7 @@ final class LaughObserver: NSObject, SNResultsObserving {
         lock.unlock()
         update?(ranges, laughing, end)
     }
-    func request(_ request: SNRequest, didFailWithError error: Error) { ended?() }
+    func request(_ request: SNRequest, didFailWithError error: Error) { failed?() }
     func requestDidComplete(_ request: SNRequest) { ended?() }
 }
 
@@ -117,6 +118,10 @@ final class Listener {
     var recognitionFinished = false
     var segments: [(text: String, start: Double, duration: Double)] = []
     var laughRanges: [LaughRange] = []
+    var formattedTranscript = ""
+    var finalizationDeadline: Double?
+    var partialActivity: Double?
+    var latestAudioEnd = 0.0
     var analyzedThrough = 0.0
     // Delay acoustic speech decisions until classified audio is available. Keeping
     // samples also lets the second weak prediction retract the first window.
@@ -291,6 +296,7 @@ final class Listener {
             let duration = Double(count) / format.sampleRate
             DispatchQueue.main.async {
                 guard !self.finishing, !self.completed else { return }
+                self.latestAudioEnd = start + duration
                 self.state.level = level
                 if level > self.speechThreshold {
                     if self.observer != nil {
@@ -319,7 +325,7 @@ final class Listener {
         let target = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
         for (src, dst) in zip(source, target) {
             if let srcData = src.mData, let dstData = dst.mData {
-                memcpy(dstData, srcData, Int(src.mDataByteSize))
+                memcpy(dstData, srcData, Int(min(src.mDataByteSize, dst.mDataByteSize)))
             }
         }
         return copy
@@ -350,7 +356,7 @@ final class Listener {
             let observer = LaughObserver(threshold: options.laughThreshold, identifiers: identifiers)
             observer.update = { ranges, laughing, end in
                 DispatchQueue.main.async {
-                    guard !self.completed else { return }
+                    guard !self.completed, self.observer != nil else { return }
                     self.laughRanges = ranges
                     self.state.laughing = laughing
                     self.analyzedThrough = max(self.analyzedThrough, end)
@@ -359,24 +365,48 @@ final class Listener {
                     self.write()
                 }
             }
+            observer.failed = {
+                DispatchQueue.main.async {
+                    guard !self.completed, self.observer != nil else { return }
+                    // Switch activity timestamps from the audio timeline to uptime.
+                    let now = ProcessInfo.processInfo.systemUptime
+                    self.lastActivity = self.heardSpeech ? now - max(0, self.latestAudioEnd - self.lastActivity) : now
+                    self.observer = nil
+                    self.state.laughing = false
+                    self.laughRanges = []
+                    self.refreshTranscript()
+                    self.analysisDidFinish()
+                    self.write()
+                }
+            }
             observer.ended = { DispatchQueue.main.async { self.analysisDidFinish() } }
             return (request, observer)
         } catch { return nil }
     }
 
-    func refreshSpeechActivity() {
-        guard observer != nil, options.file == nil else { return }
+    func refreshSpeechActivity(partialChanged: Bool = false) {
+        guard options.file == nil else { return }
+        if partialChanged && !state.laughing && !state.partial.isEmpty {
+            if observer == nil {
+                heardSpeech = true
+                lastActivity = ProcessInfo.processInfo.systemUptime
+                return
+            }
+            // Keep transcript activity on the same timeline as classified samples.
+            partialActivity = latestAudioEnd
+        }
+        guard observer != nil else { return }
         let speech = loudSamples.filter {
             $0.start + $0.duration <= analyzedThrough &&
             keepSegment(start: $0.start, duration: $0.duration, ranges: laughRanges)
         }
-        heardSpeech = !speech.isEmpty
-        lastActivity = speech.last.map { $0.start + $0.duration } ?? 0
+        heardSpeech = !speech.isEmpty || partialActivity != nil
+        lastActivity = max(speech.last.map { $0.start + $0.duration } ?? 0, partialActivity ?? 0)
     }
 
     func refreshTranscript() {
         let trimmed = trimTranscript(segments: segments, ranges: laughRanges)
-        state.partial = trimmed.text
+        state.partial = trimmed.trimmed == 0 ? formattedTranscript : trimmed.text
         state.trimmed = trimmed.trimmed
     }
 
@@ -386,12 +416,10 @@ final class Listener {
                 guard !self.completed, !self.recognitionFinished else { return }
                 if let result {
                     let oldText = self.state.partial
+                    self.formattedTranscript = result.bestTranscription.formattedString
                     self.segments = result.bestTranscription.segments.map { ($0.substring, $0.timestamp, $0.duration) }
                     self.refreshTranscript()
-                    if self.observer == nil && !self.state.laughing && !self.state.partial.isEmpty && oldText != self.state.partial {
-                        self.heardSpeech = true
-                        self.lastActivity = ProcessInfo.processInfo.systemUptime
-                    }
+                    self.refreshSpeechActivity(partialChanged: oldText != self.state.partial)
                     self.write()
                     if result.isFinal { self.complete(); return }
                 }
@@ -411,6 +439,7 @@ final class Listener {
     func finish() {
         guard !finishing, !completed else { return }
         finishing = true
+        beginFinalizationDeadline()
         stopAudio()
         request?.endAudio()
         // Give the on-device recognizer a bounded chance to deliver its final
@@ -423,6 +452,7 @@ final class Listener {
         guard !completed else { return }
         finishing = true
         recognitionFinished = true
+        beginFinalizationDeadline()
         stopAudio()
         request?.endAudio()
         if let analyzer, !analysisClosing {
@@ -437,8 +467,15 @@ final class Listener {
         finalizeIfReady()
     }
 
+    func beginFinalizationDeadline() {
+        guard finalizationDeadline == nil else { return }
+        finalizationDeadline = ProcessInfo.processInfo.systemUptime + 3
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.finalizeIfReady() }
+    }
+
     func finalizeIfReady() {
-        guard !completed, recognitionFinished, analysisFinished else { return }
+        let expired = finalizationDeadline.map { ProcessInfo.processInfo.systemUptime >= $0 } ?? false
+        guard !completed, (recognitionFinished && analysisFinished) || expired else { return }
         completed = true
         task?.cancel()
         refreshTranscript()
