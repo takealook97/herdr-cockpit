@@ -459,7 +459,7 @@ func nexusCLIModel(key string) (nexusModelRunner, error) {
 		key = nexusLoadConfig().Model
 	}
 	if key == "" {
-		key = "claude-haiku"
+		key = "claude-medium-m"
 	}
 	switch key {
 	case "gemini-medium-m":

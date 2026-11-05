@@ -239,7 +239,11 @@ func TestNexusHaikuCLI(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(raw), "--model\nhaiku\n") || strings.Contains(string(raw), "--effort") {
+		want := "--model\nhaiku\n"
+		if key == "" {
+			want = "--model\nsonnet\n"
+		}
+		if !strings.Contains(string(raw), want) || (key != "" && strings.Contains(string(raw), "--effort")) {
 			t.Fatal(string(raw))
 		}
 	}
