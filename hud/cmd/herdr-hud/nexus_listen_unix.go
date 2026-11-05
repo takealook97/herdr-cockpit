@@ -13,24 +13,34 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
 )
 
 type nexusListenState struct {
-	Laughing bool    `json:"laughing,omitempty"`
-	Trimmed  int     `json:"trimmed,omitempty"`
-	State    string  `json:"state"`
-	Level    float64 `json:"level"`
-	Partial  string  `json:"partial"`
-	Final    string  `json:"final"`
-	Error    string  `json:"error"`
-	PID      int     `json:"pid,omitempty"`
+	EndReason string  `json:"end_reason,omitempty"`
+	Engine    string  `json:"engine,omitempty"`
+	Laughing  bool    `json:"laughing,omitempty"`
+	Trimmed   int     `json:"trimmed,omitempty"`
+	State     string  `json:"state"`
+	Level     float64 `json:"level"`
+	Partial   string  `json:"partial"`
+	Final     string  `json:"final"`
+	Error     string  `json:"error"`
+	PID       int     `json:"pid,omitempty"`
 }
 
 func nexusListen(ctx context.Context, sub string, expectedPID ...int) any {
 	home, _ := os.UserHomeDir()
 	return nexusListenWith(ctx, sub, runtime.GOOS, filepath.Join(home, ".local/bin/herdr-listen"), hudCacheDir(), expectedPID...)
 }
+func nexusListenStart(ctx context.Context, hints string) any {
+	home, _ := os.UserHomeDir()
+	return nexusListenWithHints(ctx, "start", runtime.GOOS, filepath.Join(home, ".local/bin/herdr-listen"), hudCacheDir(), hints)
+}
 func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expectedPID ...int) nexusListenState {
+	return nexusListenWithHints(ctx, sub, goos, binary, dir, "", expectedPID...)
+}
+func nexusListenWithHints(ctx context.Context, sub, goos, binary, dir, hints string, expectedPID ...int) nexusListenState {
 	st, err := os.Stat(binary)
 	if goos != "darwin" || err != nil || st.IsDir() || st.Mode()&0111 == 0 {
 		return nexusListenState{State: "unavailable"}
@@ -63,7 +73,7 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expecte
 		if err = os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 			return fail(err)
 		}
-		cmd := exec.Command(binary, nexusListenArgs(statePath, nexusLoadConfig())...)
+		cmd := exec.Command(binary, nexusListenArgs(statePath, nexusLoadConfig(), hints)...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err = cmd.Start(); err != nil {
 			return fail(err)
@@ -114,6 +124,11 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expecte
 		return fail(err)
 	}
 	var out nexusListenState
+	var extra struct {
+		EndReason string `json:"endReason"`
+	}
+	_ = json.Unmarshal(raw, &extra)
+	out.EndReason = extra.EndReason
 	if err = json.Unmarshal(raw, &out); err != nil {
 		return fail(err)
 	}
@@ -135,7 +150,7 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expecte
 	return out
 }
 
-func nexusListenArgs(statePath string, cfg nexusConfig) []string {
+func nexusListenArgs(statePath string, cfg nexusConfig, hints ...string) []string {
 	args := []string{"--state", statePath}
 	if cfg.KeepAudio > 0 && cfg.KeepAudio <= 100 {
 		args = append(args, "--keep-audio", strconv.Itoa(cfg.KeepAudio))
@@ -143,5 +158,33 @@ func nexusListenArgs(statePath string, cfg nexusConfig) []string {
 	if cfg.LaughThreshold >= 0.1 && cfg.LaughThreshold <= 0.99 {
 		args = append(args, "--laugh-threshold", strconv.FormatFloat(cfg.LaughThreshold, 'g', -1, 64))
 	}
+	if cfg.SpeechEngine != "" {
+		args = append(args, "--engine", cfg.SpeechEngine)
+	}
+	if cfg.ServerSpeech {
+		args = append(args, "--server")
+	}
+	if len(hints) > 0 {
+		if cleaned := nexusListenHints(hints[0]); cleaned != "" {
+			args = append(args, "--hints", cleaned)
+		}
+	}
 	return args
+}
+
+func nexusListenHints(value string) string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" || len([]rune(part)) > 64 || strings.ContainsFunc(part, unicode.IsControl) || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+		if len(out) == 100 {
+			break
+		}
+	}
+	return strings.Join(out, ",")
 }

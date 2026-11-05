@@ -72,32 +72,25 @@ func TestNexusRoute(t *testing.T) {
 		})
 	}
 }
-func TestNexusRead(t *testing.T) {
+func TestNexusStatusForwarded(t *testing.T) {
 	d := nexusFixture(t)
 	calls := 0
-	d.model = func(_ context.Context, sys, p string, s []byte) ([]byte, error) {
+	d.model = func(_ context.Context, sys, p string, schema []byte) ([]byte, error) {
 		calls++
-		if calls == 1 {
-			return []byte(`{"action":"read","target":"t1","confidence":0.4}`), nil
+		if strings.Contains(string(schema), `"read"`) || !strings.Contains(sys, "Never paraphrase") || !strings.Contains(sys, "pronunciation") {
+			t.Fatal(sys, string(schema))
 		}
-		if strings.Contains(p, "line-059\n") || !strings.Contains(p, "line-060\n") || !strings.HasSuffix(p, "line-099") {
-			t.Fatalf("bad tail: %s", p)
-		}
-		return []byte(`{"summary":"done"}`), nil
+		return []byte(`{"action":"send","target":"t1","message":"어디까지 했어?","confidence":0.9}`), nil
 	}
 	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
-		if !reflect.DeepEqual(args, []string{"read", "t1"}) {
+		if !reflect.DeepEqual(args, []string{"send", "--", "t1", "어디까지 했어?"}) {
 			t.Fatal(args)
 		}
-		var b strings.Builder
-		for i := 0; i < 100; i++ {
-			fmt.Fprintf(&b, "line-%03d\n\n", i)
-		}
-		return []byte(b.String()), nil
+		return nil, nil
 	}
-	r := nexusRoute(context.Background(), d, "status?", nexusRoster())
-	if r.Summary != "done" || r.Action != "read" || r.Sent || calls != 2 {
-		t.Fatalf("%+v calls %d", r, calls)
+	r := nexusRoute(context.Background(), d, "wiki-island 어디까지 했어?", nexusRoster())
+	if r.Action != "send" || !r.Sent || calls != 1 {
+		t.Fatal(r, calls)
 	}
 }
 func TestNexusSend(t *testing.T) {
@@ -262,25 +255,14 @@ func TestNexusIncompleteRoster(t *testing.T) {
 	}
 }
 
-func TestNexusSummaryPrefix(t *testing.T) {
-	for _, text := range []string{"--help", "-pp", "상태 알려줘"} {
-		t.Run(text, func(t *testing.T) {
-			d := nexusFixture(t)
-			calls := 0
-			d.model = func(_ context.Context, _, prompt string, _ []byte) ([]byte, error) {
-				calls++
-				if calls == 1 {
-					return []byte(`{"action":"read","target":"t1"}`), nil
-				}
-				if !strings.HasPrefix(prompt, nexusSummaryPrefix) {
-					t.Fatal(prompt)
-				}
-				return []byte(`{"summary":"완료"}`), nil
-			}
-			if r := nexusRoute(context.Background(), d, text, nexusRoster()); r.Action != "read" || calls != 2 {
-				t.Fatal(r, calls)
-			}
-		})
+func TestNexusReadRejected(t *testing.T) {
+	d := nexusFixture(t)
+	d.model = func(context.Context, string, string, []byte) ([]byte, error) {
+		return []byte(`{"action":"read","target":"t1"}`), nil
+	}
+	d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("read must not reach hc"); return nil, nil }
+	if r := nexusRoute(context.Background(), d, "상태 알려줘", nexusRoster()); r.Action != "error" {
+		t.Fatal(r)
 	}
 }
 

@@ -79,6 +79,9 @@ struct Options {
     var debugJSON = false
     var file: String?
     var explicitState = false
+    var hints: [String] = []
+    var speechEngine = "auto"
+    var server = false
 
     init() throws {
         let env = ProcessInfo.processInfo.environment
@@ -88,17 +91,22 @@ struct Options {
         var args = CommandLine.arguments.dropFirst().makeIterator()
         while let flag = args.next() {
             if flag == "--help" || flag == "-h" {
-                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--no-disclaim]")
+                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--hints a,b,c] [--engine auto|analyzer|legacy] [--server] [--no-disclaim]")
                 exit(0)
             }
+            if flag == "--server" { server = true; continue }
             if flag == "--no-disclaim" { continue }
             if flag == "--debug-json" { debugJSON = true; continue }
             if flag == "--no-laugh-filter" { laughFilter = false; continue }
-            guard ["--state", "--locale", "--max-seconds", "--silence", "--laugh-threshold", "--file", "--keep-audio"].contains(flag),
+            guard ["--state", "--locale", "--max-seconds", "--silence", "--laugh-threshold", "--file", "--keep-audio", "--hints", "--engine"].contains(flag),
                   let value = args.next(), !value.isEmpty else {
                 throw ListenError.message("Invalid argument: \(flag)")
             }
             switch flag {
+            case "--hints": hints = contextualHints(value)
+            case "--engine":
+                guard ["auto", "analyzer", "legacy"].contains(value.lowercased()) else { throw ListenError.message("Invalid speech engine: \(value)") }
+                speechEngine = value.lowercased()
             case "--state": statePath = value; explicitState = true
             case "--locale": locale = value
             case "--file": file = value
@@ -137,6 +145,8 @@ struct ListenState: Encodable {
     var error = ""
     var laughing = false
     var trimmed = 0
+    var endReason = ""
+    var engine = "legacy"
     let pid = ProcessInfo.processInfo.environment["HERDR_LISTEN_PROXY_PID"]
         .flatMap { Int32($0) }.flatMap { $0 > 0 ? $0 : nil } ?? getpid()
 }
@@ -160,6 +170,7 @@ private func writeListenState(_ state: ListenState, to stateURL: URL) throws {
 private func reportResponsibilityFailure(_ options: Options) throws {
     var state = ListenState()
     state.state = "error"
+    state.endReason = "error"
     state.error = "음성 인식 권한을 요청할 수 없습니다 (책임 프로세스 분리 실패)"
     if options.file == nil || options.explicitState {
         let url = URL(fileURLWithPath: options.statePath).standardizedFileURL
@@ -228,6 +239,13 @@ final class Listener {
     var segments: [(text: String, start: Double, duration: Double)] = []
     var laughRanges: [LaughRange] = []
     var formattedTranscript = ""
+    var transcriptKeeper = TranscriptKeeper()
+    var feedSpeech: ((AVAudioPCMBuffer) -> Void)?
+    var finishSpeech: (() -> Void)?
+    var cancelSpeech: (() -> Void)?
+    var preparingSpeech = false
+    var speechPreparation: Task<Void, Never>?
+    var attemptedAnalyzer = false
     var finalizationDeadline: Double?
     var partialActivity: Double?
     var latestAudioEnd = 0.0
@@ -277,7 +295,7 @@ final class Listener {
         for number in [SIGTERM, SIGINT] {
             signal(number, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: number, queue: .main)
-            source.setEventHandler { self.finish() }
+            source.setEventHandler { self.finish(reason: "signal") }
             source.resume()
             signals.append(source)
         }
@@ -293,7 +311,7 @@ final class Listener {
             if now - self.started >= self.options.maxSeconds ||
                 (self.options.file == nil && self.heardSpeech &&
                  (self.observer == nil ? now - self.lastActivity : self.analyzedThrough - self.lastActivity) >= self.options.silence) {
-                self.finish()
+                self.finish(reason: now - self.started >= self.options.maxSeconds ? "max" : "silence")
             }
             if self.dirty { self.write() }
         }
@@ -319,13 +337,56 @@ final class Listener {
     }
 
     func startAudio() {
+        guard !finishing, !completed else { return }
+        if !attemptedAnalyzer && options.speechEngine != "legacy" && !options.server {
+            attemptedAnalyzer = true
+            if #available(macOS 26, *) {
+                preparingSpeech = true
+                speechPreparation = Task { @MainActor in
+                    var driver: AnalyzerSpeech?
+                    do { driver = try await AnalyzerSpeech.prepare(locale: options.locale, hints: options.hints) }
+                    catch { /* Unsupported locale/assets: this session uses legacy. */ }
+                    let prepared = driver
+                    guard self.preparingSpeech, !self.finishing, !self.completed else { prepared?.cancel(); return }
+                    self.preparingSpeech = false
+                    if let prepared {
+                        prepared.onResult = { text, segments in self.observeTranscript(text, segments) }
+                        prepared.onFinish = { error in
+                            guard !self.completed else { return }
+                            if let error, !self.finishing { self.fail("음성 인식 오류: \(error.localizedDescription)") }
+                            else { self.complete() }
+                        }
+                        self.feedSpeech = { prepared.append($0) }
+                        self.finishSpeech = { prepared.finish() }
+                        self.cancelSpeech = { prepared.cancel() }
+                        self.state.engine = "analyzer"
+                        self.write(immediate: true)
+                        prepared.start()
+                    }
+                    self.startAudio()
+                }
+                // Do not await a cancellation-insensitive asset download. The
+                // deadline independently starts legacy; late results are retired.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+                    guard self.preparingSpeech, !self.finishing, !self.completed else { return }
+                    self.preparingSpeech = false
+                    self.speechPreparation?.cancel()
+                    self.startAudio()
+                }
+                return
+            }
+        }
+        if feedSpeech == nil { startLegacyAudio(); return }
+        startCapture()
+    }
+
+    func startLegacyAudio() {
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: options.locale)),
               recognizer.isAvailable else {
             fail("음성 인식을 사용할 수 없습니다 (\(options.locale))")
             return
         }
-        // Never fall back to network speech recognition.
-        guard recognizer.supportsOnDeviceRecognition else {
+        guard options.server || recognizer.supportsOnDeviceRecognition else {
             fail("기기 내 음성 인식을 사용할 수 없습니다 (\(options.locale))")
             return
         }
@@ -354,6 +415,39 @@ final class Listener {
         let request = SFSpeechAudioBufferRecognitionRequest()
         configure(request)
         self.request = request
+        startRecognition(recognizer, request)
+        startCapture()
+    }
+
+    func startCapture() {
+        if let path = options.file {
+            let url = URL(fileURLWithPath: path)
+            guard FileManager.default.isReadableFile(atPath: path) else { fail("오디오 파일을 읽을 수 없습니다"); return }
+            if let setup = makeClassifier() {
+                do {
+                    let analyzer = try SNAudioFileAnalyzer(url: url)
+                    try analyzer.add(setup.0, withObserver: setup.1)
+                    observer = setup.1
+                    fileAnalyzer = analyzer
+                    analysisFinished = false
+                    analysisQueue.async { analyzer.analyze(); DispatchQueue.main.async { self.analysisDidFinish() } }
+                } catch { /* Classification is optional. */ }
+            }
+            let feed = feedSpeech
+            let finish = finishSpeech
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    let file = try AVAudioFile(forReading: url)
+                    while file.framePosition < file.length {
+                        guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw ListenError.message("Cannot allocate audio buffer") }
+                        try file.read(into: buffer)
+                        if buffer.frameLength > 0 { feed?(buffer) }
+                    }
+                    finish?()
+                } catch { DispatchQueue.main.async { self.fail("오디오 파일 오류: \(error.localizedDescription)") } }
+            }
+            return
+        }
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
@@ -374,7 +468,8 @@ final class Listener {
         var framePosition: AVAudioFramePosition = 0
         let analyzer = self.analyzer
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
-            request.append(buffer)
+            self.request?.append(buffer)
+            self.feedSpeech?(buffer)
             let position = framePosition
             framePosition += AVAudioFramePosition(buffer.frameLength)
             if analyzer != nil || self.options.keepAudio > 0, let copy = Self.copyBuffer(buffer) {
@@ -420,7 +515,6 @@ final class Listener {
             }
         }
         tapped = true
-        startRecognition(recognizer, request)
         do {
             engine.prepare()
             try engine.start()
@@ -441,7 +535,8 @@ final class Listener {
     }
 
     func configure(_ request: SFSpeechRecognitionRequest) {
-        request.requiresOnDeviceRecognition = true
+        request.requiresOnDeviceRecognition = !options.server
+        request.contextualStrings = options.hints
         request.shouldReportPartialResults = true
     }
 
@@ -520,17 +615,24 @@ final class Listener {
         state.trimmed = trimmed.trimmed
     }
 
+    func observeTranscript(_ text: String, _ segments: [(text: String, start: Double, duration: Double)]) {
+        guard !completed, !recognitionFinished else { return }
+        let oldText = state.partial
+        transcriptKeeper.observe(text: text, segments: segments)
+        formattedTranscript = transcriptKeeper.text
+        self.segments = transcriptKeeper.segments
+        refreshTranscript()
+        refreshSpeechActivity(partialChanged: oldText != state.partial)
+        write()
+    }
+
     func startRecognition(_ recognizer: SFSpeechRecognizer, _ request: SFSpeechRecognitionRequest) {
         task = recognizer.recognitionTask(with: request) { result, error in
             DispatchQueue.main.async {
                 guard !self.completed, !self.recognitionFinished else { return }
                 if let result {
-                    let oldText = self.state.partial
-                    self.formattedTranscript = result.bestTranscription.formattedString
-                    self.segments = result.bestTranscription.segments.map { ($0.substring, $0.timestamp, $0.duration) }
-                    self.refreshTranscript()
-                    self.refreshSpeechActivity(partialChanged: oldText != self.state.partial)
-                    self.write()
+                    self.observeTranscript(result.bestTranscription.formattedString,
+                        result.bestTranscription.segments.map { ($0.substring, $0.timestamp, $0.duration) })
                     if result.isFinal { self.complete(); return }
                 }
                 if let error {
@@ -546,12 +648,16 @@ final class Listener {
         if tapped { engine.inputNode.removeTap(onBus: 0); tapped = false }
     }
 
-    func finish() {
+    func finish(reason: String) {
         guard !finishing, !completed else { return }
         finishing = true
+        state.endReason = reason
+        preparingSpeech = false
+        speechPreparation?.cancel()
         beginFinalizationDeadline()
         stopAudio()
         request?.endAudio()
+        if let finishSpeech { finishSpeech(); return }
         // Give the on-device recognizer a bounded chance to deliver its final
         // transcript; retain the latest partial if it never sends a final result.
         if task == nil { complete(); return }
@@ -562,6 +668,7 @@ final class Listener {
         guard !completed else { return }
         finishing = true
         recognitionFinished = true
+        if state.endReason.isEmpty { state.endReason = "final" }
         beginFinalizationDeadline()
         stopAudio()
         request?.endAudio()
@@ -588,6 +695,7 @@ final class Listener {
         guard !completed, (recognitionFinished && analysisFinished) || expired else { return }
         completed = true
         task?.cancel()
+        cancelSpeech?()
         refreshTranscript()
         state.final = state.partial
         state.state = state.final.isEmpty ? "idle" : "final"
@@ -739,6 +847,10 @@ final class Listener {
         request?.endAudio()
         task?.cancel()
         state.state = "error"
+        state.endReason = "error"
+        preparingSpeech = false
+        speechPreparation?.cancel()
+        cancelSpeech?()
         state.level = 0
         state.error = message
         write(immediate: true)
