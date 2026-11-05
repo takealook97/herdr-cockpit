@@ -3,7 +3,8 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, panes, terminals, shared, setShared, theme, props, closeOverlay, notify, run } from "herdr";
 import { buildRoster, logLines, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
 
-const POLL_MS = 120, COUNTDOWN_MS = 1500, LOG_LIMIT = 6, NOTIFY_MS = 5000;
+const POLL_MS = 120, COUNTDOWN_MS = 1500, LOG_LIMIT = 6, NOTIFY_MS = 5000, WARNING_MS = 6000, STARTUP_MS = 3000;
+const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니다";
 const PLACEHOLDER = "Head에게 보낼 말 · ⌃Space 말하기";
 
 export default class Nexus extends View {
@@ -12,6 +13,7 @@ export default class Nexus extends View {
     this.handle = cx.focus_handle();
     this.entries = []; this.reply = null; this.pending = false; this.micHidden = false;
     this.listening = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
+    this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
     this.input = InputState.new({ placeholder: PLACEHOLDER });
     this.input.focus();
     this.input.on("submit", () => this.submit(cx));
@@ -21,15 +23,15 @@ export default class Nexus extends View {
     this.loadLog(cx);
     cx.spawn(async cx => {
       const status = await this.helper("listen", { action: "status" });
-      this.micHidden = status.state === "unavailable";
+      if (status.state === "unavailable") return this.hideMic(cx);
       cx.notify();
+      if (props()?.listen && !this.micHidden && !this.closed) this.startListening(cx);
     });
-    if (props()?.listen) this.startListening(cx);
   }
 
   helper(sub, opts) {
     return exec("sh", helperArgs(sub, opts)).then(r => parseReply(r.stdout))
-      .catch(error => ({ action: "error", error: String(error?.message ?? error) }));
+      .catch(error => ({ action: "error", error: `helper를 실행하지 못했습니다: ${String(error?.message ?? error)}` }));
   }
   roster() { return buildRoster(shared("hub.heads") ?? [], panes(), terminals()); }
 
@@ -71,7 +73,10 @@ export default class Nexus extends View {
 
   handleReply(reply, cx) {
     this.reply = reply;
-    if (reply.action === "send" && reply.sent !== false) this.afterSend(reply);
+    if (reply.action === "send" && reply.sent !== false) {
+      this.afterSend(reply);
+      if (reply.warning) notify({ title: "Nexus", body: reply.warning, level: "warning", timeout: WARNING_MS });
+    }
     cx.notify();
   }
 
@@ -88,37 +93,63 @@ export default class Nexus extends View {
   clearInput() { this.voiceValue = null; this.input.set_value(""); }
   setVoiceText(text) { this.voiceValue = text; this.input.set_value(text); }
 
+  hideMic(cx) {
+    this.micHidden = true; this.stopPolling(cx);
+    this.reply = { action: "info", info: UNAVAILABLE_TEXT };
+    cx.notify();
+  }
+
   startListening(cx) {
-    if (this.listening || this.micHidden) return;
-    this.listening = true; this.levels = []; this.cancelCountdown(cx); cx.notify();
+    if (this.listening || this.micHidden || this.closed) return;
+    const gen = ++this.listenGen;
+    this.listening = true; this.levels = []; this.sawActive = false; this.startIdle = false;
+    this.startedAt = Date.now(); this.cancelCountdown(cx); cx.notify();
     cx.spawn(async cx => {
       const started = await this.helper("listen", { action: "start" });
+      if (gen !== this.listenGen || !this.listening || this.closed) {
+        if (started.state === "listening") this.helper("listen", { action: "stop" });
+        return;
+      }
+      if (started.state === "unavailable") return this.hideMic(cx);
       if (started.state === "error" || started.action === "error") return this.failListening(started, cx);
+      this.startIdle = started.state === "idle";
       this.poll = cx.timer.every(POLL_MS, cx => this.pollStatus(cx));
     });
   }
 
   pollStatus(cx) {
     if (this.polling || !this.listening) return;
+    const gen = this.listenGen;
     this.polling = true;
     cx.spawn(async cx => {
       const status = await this.helper("listen", { action: "status" });
+      if (gen !== this.listenGen || !this.listening) return;
       this.polling = false;
-      if (!this.listening) return;
-      this.levels = [...this.levels, Number(status.level) || 0].slice(-DOT_COUNT);
+      const level = Number(status.level) || 0;
+      if (status.state === "listening" && (status.pid || status.partial || level > 0)) this.sawActive = true;
+      this.levels = [...this.levels, level].slice(-DOT_COUNT);
       if (status.partial && status.state === "listening") this.setVoiceText(status.partial);
+      if (status.state === "unavailable") return this.hideMic(cx);
       if (status.state === "final") this.finishListening(status.final || status.partial || "", cx);
       else if (status.state === "error" || status.action === "error") this.failListening(status, cx);
-      else if (status.state === "idle") this.stopPolling(cx);
+      else if (status.state === "idle" && this.idleSettled()) this.stopPolling(cx);
       cx.notify();
     });
   }
+
+  // The detached helper may report idle until it initializes; only trust idle after the startup window.
+  idleSettled() { return this.startIdle || this.sawActive || Date.now() - this.startedAt >= STARTUP_MS; }
 
   finishListening(text, cx) {
     this.stopPolling(cx);
     if (!text.trim()) return;
     this.setVoiceText(text);
-    this.countdown = cx.timer.after(COUNTDOWN_MS, cx => { this.countdown = null; this.submit(cx); cx.notify(); });
+    const gen = this.listenGen;
+    this.countdown = cx.timer.after(COUNTDOWN_MS, cx => {
+      this.countdown = null;
+      if (gen !== this.listenGen || this.closed) return;
+      this.submit(cx); cx.notify();
+    });
   }
   failListening(status, cx) {
     this.stopPolling(cx);
@@ -128,7 +159,7 @@ export default class Nexus extends View {
   stopPolling() { this.listening = false; this.polling = false; this.poll?.cancel?.(); this.poll = null; this.levels = []; }
   cancelCountdown(cx) { if (this.countdown) { this.countdown.cancel(); this.countdown = null; cx?.notify(); } }
   stopListening(cx) {
-    this.stopPolling(cx); this.helper("listen", { action: "stop" }); cx.notify();
+    this.listenGen++; this.stopPolling(cx); this.helper("listen", { action: "stop" }); cx.notify();
   }
   toggleMic(cx) { if (this.listening) this.stopListening(cx); else this.startListening(cx); }
 
@@ -141,6 +172,7 @@ export default class Nexus extends View {
 
   close() {
     setShared("nexus.open", false);
+    this.closed = true; this.listenGen++;
     this.cancelCountdown();
     const wasListening = this.listening;
     this.stopPolling();
@@ -165,7 +197,8 @@ export default class Nexus extends View {
         div().id(`nexus-chip-${c.address}`).h(24).px(8).rounded(6).border(1).border_color(t.border)
           .flex().items_center().text_size(11.5).text_color(t.foreground).hover(s => s.bg(t.hover))
           .on_click((_e, cx) => this.chooseCandidate(c, cx)).child(c.label || c.address))));
-    } else if (reply?.action === "read") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.summary ?? ""}`));
+    } else if (reply?.action === "info") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.info ?? ""}`));
+    else if (reply?.action === "read") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.summary ?? ""}`));
     else if (reply?.action === "error") body.child(div().flex_none().text_color(this.lineColor("!", t)).child(`! ${reply.error ?? ""}`));
     if (this.pending) body.child(h_flex().flex_none().gap(4).text_color(t.dim).child("판단 중")
       .child(div().loop("opacity", { from: 0.2, to: 1, period: 900 }).child("···")));
