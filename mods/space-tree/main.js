@@ -176,6 +176,7 @@ export default class SpaceTree extends Plumbing {
     }
     if (this.nexusIsOpen()) {
       const apple = shared("nexus.mode") === "apple";
+      if (listen && this.nexusRecordPending) { this.nexusRecordPending = false; return; }
       if (listen && apple) { setShared("nexus.listenToggle", (Number(shared("nexus.listenToggle")) || 0) + 1); return; }
       if (listen) { this.voiceRecord(); return; }
       const id = shared("nexus.overlayId") ?? this.nexusOverlay;
@@ -203,19 +204,19 @@ export default class SpaceTree extends Plumbing {
       });
   }
   // Open overlays are keyed by id; a just-opened dialog has no heartbeat yet, so it counts as open briefly.
-  // Drop our record of an overlay that is gone: closed by the header × (closedAt) or heartbeat gone stale.
+  // Drop our record of an overlay that is gone: closed by the header × (closedOverlay) or heartbeat gone stale.
   reconcileNexus() {
     if (!this.nexusOverlay) return;
-    const closedAt = Number(shared("nexus.closedAt")) || 0;
+    const closed = shared("nexus.closedOverlay") === this.nexusOverlay;
     const stale = !this.nexusIsOpen() && !this.justOpened();
-    if (closedAt >= (this.nexusOpenedAt ?? 0) || stale) this.cancelNexusOpen();
+    if (closed || stale) this.cancelNexusOpen();
   }
   // Every close path ends here: pending focus/recording callbacks must not outlive their overlay.
   cancelNexusOpen() {
     this.nexusGen = (this.nexusGen ?? 0) + 1;
     this.nexusTimers?.forEach(t => t?.cancel?.());
     this.nexusTimers = [];
-    this.nexusOverlay = null; this.nexusOpenedAt = 0;
+    this.nexusOverlay = null; this.nexusOpenedAt = 0; this.nexusRecordPending = false;
   }
   justOpened() { return !!this.nexusOverlay && Date.now() - (this.nexusOpenedAt ?? 0) < NEXUS_OPEN_GRACE_MS; }
   openAppleBar(listen) {
@@ -238,14 +239,16 @@ export default class SpaceTree extends Plumbing {
       { type: "block", size: { px: NEXUS_HEADER_PX }, content: { mod: "nexus", props: { header: true } } },
       { type: "block", content: { terminal } }] } });
     this.nexusOpenedAt = Date.now();
+    const overlay = this.nexusOverlay;
+    this.nexusRecordPending = !!record;
     // The overlay mounts after openOverlay returns; focus the terminal once it is visible, then verify.
-    const live = () => !this.closed && gen === this.nexusGen && (Number(shared("nexus.closedAt")) || 0) < this.nexusOpenedAt;
+    const live = () => !this.closed && gen === this.nexusGen && shared("nexus.closedOverlay") !== overlay;
     this.nexusTimers = [
       this.cx.timer.after(NEXUS_FOCUS_MS, () => { if (live()) run("pane.focus", { terminal }); }),
       this.cx.timer.after(NEXUS_FOCUS_RETRY_MS, () => {
       if (!live()) return;
       if (focused()?.terminal !== terminal) run("pane.focus", { terminal });
-      if (record) this.voiceRecord();
+      if (record && this.nexusRecordPending) { this.nexusRecordPending = false; this.voiceRecord(); }
     })];
   }
   select(row, cx) {

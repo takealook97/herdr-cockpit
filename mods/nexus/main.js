@@ -256,7 +256,7 @@ export default class Nexus extends View {
   close() {
     setShared("nexus.open", false);
     this.closed = true; this.beatTimer?.cancel?.();
-    setShared("nexus.heartbeat", 0); setShared("nexus.overlayId", null); setShared("nexus.closedAt", Date.now());
+    setShared("nexus.heartbeat", 0); setShared("nexus.overlayId", null); setShared("nexus.closedOverlay", props()?.overlay ?? null);
     if (this.header) {
       exec("sh", [...logArgs().slice(0, 4), "voice", "cancel"]).catch(() => {});
       this.closed = true; this.logTimer?.cancel?.(); this.logTimer = null; return;
