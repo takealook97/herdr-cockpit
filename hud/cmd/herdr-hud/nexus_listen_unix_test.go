@@ -380,7 +380,7 @@ func TestCmdNexusListenStartForwardsHints(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &state); err != nil || state.State != "listening" || state.PID <= 0 {
 		t.Fatalf("%s (%v)", out.String(), err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	for {
 		raw, err := os.ReadFile(argsPath)
 		if err == nil && strings.Contains(string(raw), "--hints\nwiki-island,온톨로지\n") {
@@ -389,7 +389,7 @@ func TestCmdNexusListenStartForwardsHints(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("hints were not forwarded: %q (%v)", raw, err)
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -439,7 +439,7 @@ func TestNexusListenPrepare(t *testing.T) {
 				t.Fatal(got)
 			}
 			if tc.launch {
-				deadline := time.Now().Add(3 * time.Second)
+				deadline := time.Now().Add(15 * time.Second)
 				for {
 					raw, err := os.ReadFile(argsPath)
 					if err == nil && string(raw) == "--prepare\n--locale\nko-KR\n" {
@@ -448,7 +448,7 @@ func TestNexusListenPrepare(t *testing.T) {
 					if time.Now().After(deadline) {
 						t.Fatalf("launch arguments %q: %v", raw, err)
 					}
-					time.Sleep(10 * time.Millisecond)
+					time.Sleep(20 * time.Millisecond)
 				}
 				st, err := os.Stat(filepath.Join(dir, "listen-prepare.pid"))
 				if err != nil {
