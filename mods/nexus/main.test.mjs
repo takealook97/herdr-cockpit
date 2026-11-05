@@ -304,7 +304,7 @@ test('status row is one line: no wrap, truncated question and chips, at most 4 c
   assert.ok(!nodes.some(n => n?.style && 'flex_wrap' in n.style));
   const chips = nodes.filter(n => String(n?.style?.id ?? '').startsWith('nexus-chip-'));
   assert.equal(chips.length, 4);
-  assert.ok(chips.every(c => 'truncate' in c.style && c.style.max_w === 140 && c.style.tooltip));
+  assert.ok(chips.every(c => 'truncate' in c.style && c.style.max_w === 140 && c.style.min_w === 0 && !('flex_none' in c.style) && c.style.tooltip));
   const question = byId(row, 'nexus-question');
   assert.ok('truncate' in question.style && question.style.max_w > 0 && question.style.tooltip.length > 200);
   h.view.reply = { action: 'error', error: 'e'.repeat(300) };
