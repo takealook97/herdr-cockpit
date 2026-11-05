@@ -10,7 +10,7 @@ A full-height left sidebar divides space-tree and agent-list in a 3:1 ratio. A c
 
 ## How it behaves
 
-Space-tree navigates machines, repositories, worktrees, tabs, and panes with colored section rails, persistent folds, aliases, keyboard navigation and guarded tab moves. Its locked hub section sits under This computer and directly lists Heads. Ctrl-Shift-H toggles an in-layout interactive grid of those original terminals. Tree navigation closes hub; the tab bar stays hidden while hub is open. Cmd-Alt-arrow moves between grid cells and Cmd-Shift-Enter toggles a single focused cell. The same keys call native pane commands outside hub. Cmd-[ / Cmd-] remain unchanged. Each card has a native-style header and a go-to-source button. Agent-list opens agent sessions; usage follows the active machine.
+Space-tree navigates machines, repositories, worktrees, tabs, and panes with colored section rails, persistent folds, aliases, keyboard navigation and guarded tab moves. Its locked hub section sits under This computer and directly lists Heads. Cmd-Shift-H toggles an in-layout interactive grid of those original terminals. Tree navigation closes hub; the tab bar stays hidden while hub is open. Cmd-Alt-arrow moves between grid cells and Cmd-Shift-Enter toggles a single focused cell. The same keys call native pane commands outside hub. Cmd-[ / Cmd-] remain unchanged. Each card has a native-style header and a go-to-source button. Agent-list opens agent sessions; usage follows the active machine.
 
 ## Built from
 
