@@ -75,6 +75,58 @@ private func listenCacheDirectory() -> URL {
     return URL(fileURLWithPath: cache).appendingPathComponent("herdr-hud", isDirectory: true)
 }
 
+// Diagnostic writes are serialized across capture, recognition and lifecycle queues.
+// Disabled sessions never create or truncate the trace file.
+final class ListenTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private let file: FileHandle
+    private var captureStart: Double?
+    private var lines = 0
+    private var sawBuffer = false
+    private var selectedEngine = "pending"
+
+    init() throws {
+        let directory = listenCacheDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                               attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let path = directory.appendingPathComponent("listen-trace.jsonl").path
+        let fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_NONBLOCK, 0o600)
+        guard fd >= 0 else { throw ListenError.message("cannot open listen trace") }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+              fchmod(fd, 0o600) == 0, ftruncate(fd, 0) == 0 else {
+            close(fd)
+            throw ListenError.message("cannot initialize listen trace")
+        }
+        file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    func record(_ event: String, text: String = "", engine: String? = nil) {
+        lock.lock()
+        defer { lock.unlock() }
+        let now = ProcessInfo.processInfo.systemUptime
+        if event == "capture_start" {
+            guard captureStart == nil else { return }
+            captureStart = now
+        }
+        if event == "first_buffer" {
+            guard !sawBuffer else { return }
+            sawBuffer = true
+        }
+        guard lines < 2000 else { return }
+        if event == "engine", let engine { selectedEngine = engine }
+        let entry: [String: Any] = ["t": max(0, now - (captureStart ?? now)), "ev": event,
+                                    "text": String(text.prefix(80)), "engine": engine ?? selectedEngine]
+        do {
+            var data = try JSONSerialization.data(withJSONObject: entry, options: [.sortedKeys])
+            data.append(0x0a)
+            try file.write(contentsOf: data)
+            lines += 1
+        } catch { /* Diagnostics must not interrupt recognition. */ }
+    }
+}
+
 private func preparationRunning() -> Bool {
     let path = listenCacheDirectory().appendingPathComponent("listen-prepare.pid")
     guard let text = try? String(contentsOf: path, encoding: .utf8),
@@ -200,6 +252,7 @@ struct Options {
     var speechEngine = "auto"
     var server = false
     var prepare = false
+    var trace = false
 
     init() throws {
         let env = ProcessInfo.processInfo.environment
@@ -209,9 +262,10 @@ struct Options {
         var args = CommandLine.arguments.dropFirst().makeIterator()
         while let flag = args.next() {
             if flag == "--help" || flag == "-h" {
-                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--hints a,b,c] [--engine auto|analyzer|legacy] [--server] [--prepare] [--no-disclaim]")
+                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100] [--hints a,b,c] [--engine auto|analyzer|legacy] [--server] [--trace] [--prepare] [--no-disclaim]")
                 exit(0)
             }
+            if flag == "--trace" { trace = true; continue }
             if flag == "--prepare" { prepare = true; continue }
             if flag == "--server" { server = true; continue }
             if flag == "--no-disclaim" { continue }
@@ -266,12 +320,13 @@ struct ListenState: Encodable {
     var trimmed = 0
     var endReason = ""
     var engine = "legacy"
+    var trace = false
     let pid = ProcessInfo.processInfo.environment["HERDR_LISTEN_PROXY_PID"]
         .flatMap { Int32($0) }.flatMap { $0 > 0 ? $0 : nil } ?? getpid()
 }
 
 // Used by the failure path too, without initializing any audio objects.
-private func writeListenState(_ state: ListenState, to stateURL: URL) throws {
+private func writeListenState(_ state: ListenState, to stateURL: URL, trace: ListenTrace? = nil) throws {
     let temporary = stateURL.deletingLastPathComponent()
         .appendingPathComponent(".listen-\(UUID().uuidString)")
     defer { try? FileManager.default.removeItem(at: temporary) }
@@ -284,10 +339,13 @@ private func writeListenState(_ state: ListenState, to stateURL: URL) throws {
     guard rename(temporary.path, stateURL.path) == 0 else {
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
+    trace?.record("state_write", text: state.final.isEmpty ? state.partial : state.final, engine: state.engine)
 }
 
 private func reportResponsibilityFailure(_ options: Options) throws {
     var state = ListenState()
+    state.trace = options.trace
+    let trace = options.trace ? try? ListenTrace() : nil
     state.state = "error"
     state.endReason = "error"
     state.error = "음성 인식 권한을 요청할 수 없습니다 (책임 프로세스 분리 실패)"
@@ -297,8 +355,9 @@ private func reportResponsibilityFailure(_ options: Options) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-        try writeListenState(state, to: url)
+        try writeListenState(state, to: url, trace: trace)
     }
+    trace?.record("end", text: state.endReason, engine: state.engine)
     if options.file != nil { print(String(decoding: try JSONEncoder().encode(state), as: UTF8.self)) }
     fputs("herdr-listen: \(state.error)\n", stderr)
 }
@@ -339,6 +398,7 @@ final class LaughObserver: NSObject, SNResultsObserving {
 final class Listener {
     let options: Options
     let stateURL: URL
+    let trace: ListenTrace?
     var state = ListenState()
     var lastWrite = -Double.infinity
     var dirty = false
@@ -394,6 +454,8 @@ final class Listener {
 
     init(_ options: Options) throws {
         self.options = options
+        trace = options.trace ? try? ListenTrace() : nil
+        state.trace = options.trace
         stateURL = URL(fileURLWithPath: options.statePath).standardizedFileURL
         guard options.file == nil || options.explicitState else { return }
         let directory = stateURL.deletingLastPathComponent()
@@ -408,7 +470,7 @@ final class Listener {
         let now = ProcessInfo.processInfo.systemUptime
         guard immediate || now - lastWrite >= 0.1 else { return }
         do {
-            try writeListenState(state, to: stateURL)
+            try writeListenState(state, to: stateURL, trace: trace)
             dirty = false
             lastWrite = now
         } catch {
@@ -494,6 +556,11 @@ final class Listener {
                     guard self.preparingSpeech, !self.finishing, !self.completed else { prepared?.cancel(); return }
                     self.preparingSpeech = false
                     if let prepared {
+                        self.trace?.record("analyzer_ready", engine: "analyzer")
+                        let trace = self.trace
+                        prepared.onTrace = { text, isFinal in
+                            trace?.record(isFinal ? "final" : "volatile", text: text, engine: "analyzer")
+                        }
                         prepared.onResult = { text, segments in self.observeTranscript(text, segments) }
                         prepared.onFinish = { error in
                             guard !self.completed else { return }
@@ -504,6 +571,7 @@ final class Listener {
                         self.finishSpeech = { prepared.finish() }
                         self.cancelSpeech = { prepared.cancel() }
                         self.state.engine = "analyzer"
+                        self.trace?.record("engine", engine: "analyzer")
                         self.write(immediate: true)
                         prepared.start()
                         self.activateSpeechInput { prepared.append($0) }
@@ -527,6 +595,7 @@ final class Listener {
 
     func startLegacyAudio() {
         state.engine = "legacy"
+        trace?.record("engine", engine: "legacy")
         write(immediate: true)
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: options.locale)),
               recognizer.isAvailable else {
@@ -556,6 +625,7 @@ final class Listener {
                     }
                 } catch { /* Classification is optional; recognition still works. */ }
             }
+            trace?.record("capture_start")
             started = ProcessInfo.processInfo.systemUptime
             startRecognition(recognizer, request)
             return
@@ -605,6 +675,7 @@ final class Listener {
                     analysisQueue.async { analyzer.analyze(); DispatchQueue.main.async { self.analysisDidFinish() } }
                 } catch { /* Classification is optional. */ }
             }
+            trace?.record("capture_start")
             started = ProcessInfo.processInfo.systemUptime
             let feed = feedSpeech
             let finish = finishSpeech
@@ -614,7 +685,7 @@ final class Listener {
                     while file.framePosition < file.length {
                         guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw ListenError.message("Cannot allocate audio buffer") }
                         try file.read(into: buffer)
-                        if buffer.frameLength > 0 { feed?(buffer) }
+                        if buffer.frameLength > 0 { self.trace?.record("first_buffer"); feed?(buffer) }
                     }
                     finish?()
                 } catch { DispatchQueue.main.async { self.fail("오디오 파일 오류: \(error.localizedDescription)") } }
@@ -641,6 +712,7 @@ final class Listener {
         var framePosition: AVAudioFramePosition = 0
         let analyzer = self.analyzer
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
+            self.trace?.record("first_buffer")
             // Own speech storage separately: bounding the pending buffer must
             // never truncate the samples sent to the laughter classifier.
             if let copy = Self.copyBuffer(buffer) { self.acceptSpeechBuffer(copy) }
@@ -691,6 +763,7 @@ final class Listener {
         tapped = true
         do {
             engine.prepare()
+            trace?.record("capture_start")
             started = ProcessInfo.processInfo.systemUptime
             lastActivity = started!
             try engine.start()
@@ -803,7 +876,12 @@ final class Listener {
     }
 
     func startRecognition(_ recognizer: SFSpeechRecognizer, _ request: SFSpeechRecognitionRequest) {
+        let trace = self.trace
         task = recognizer.recognitionTask(with: request) { result, error in
+            if let result {
+                trace?.record(result.isFinal ? "final" : "volatile",
+                              text: result.bestTranscription.formattedString, engine: "legacy")
+            }
             DispatchQueue.main.async {
                 guard !self.completed, !self.recognitionFinished else { return }
                 if let result {
@@ -886,6 +964,7 @@ final class Listener {
         write(immediate: true)
         saveSample()
         printOfflineState()
+        trace?.record("end", text: state.endReason, engine: state.engine)
         exit(0)
     }
 
@@ -1038,6 +1117,7 @@ final class Listener {
         state.error = message
         write(immediate: true)
         printOfflineState()
+        trace?.record("end", text: state.endReason, engine: state.engine)
         exit(1)
     }
 }

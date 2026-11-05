@@ -21,6 +21,7 @@ final class AnalyzerSpeech: @unchecked Sendable {
     var analysisTask: Task<Void, Never>?
     var transcript = AnalyzerTranscript()
     var onResult: ((String, [Segment]) -> Void)?
+    var onTrace: ((String, Bool) -> Void)?
     var onFinish: ((Error?) -> Void)?
 
     private init(transcriber: SpeechTranscriber, format: AVAudioFormat) {
@@ -37,7 +38,7 @@ final class AnalyzerSpeech: @unchecked Sendable {
         guard SpeechTranscriber.isAvailable,
               let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: locale)) else { return nil }
         let module = SpeechTranscriber(locale: locale, transcriptionOptions: [],
-                                       reportingOptions: [.volatileResults], attributeOptions: [.audioTimeRange])
+                                       reportingOptions: [.volatileResults, .fastResults], attributeOptions: [.audioTimeRange])
         return (module, await AssetInventory.status(forModules: [module]) == .installed)
     }
 
@@ -76,6 +77,7 @@ final class AnalyzerSpeech: @unchecked Sendable {
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
+                    onTrace?(text, result.isFinal)
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                     let segments: [Segment] = result.text.runs.map { run in
                         let range = run.audioTimeRange ?? result.range

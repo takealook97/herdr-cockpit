@@ -18,6 +18,7 @@ import (
 )
 
 type nexusListenState struct {
+	Trace     bool    `json:"trace,omitempty"`
 	EndReason string  `json:"end_reason,omitempty"`
 	Engine    string  `json:"engine,omitempty"`
 	Laughing  bool    `json:"laughing,omitempty"`
@@ -164,6 +165,9 @@ func nexusListenArgs(statePath string, cfg nexusConfig, hints ...string) []strin
 	}
 	if cfg.SpeechEngine != "" {
 		args = append(args, "--engine", cfg.SpeechEngine)
+	}
+	if cfg.ListenTrace {
+		args = append(args, "--trace")
 	}
 	if cfg.ServerSpeech {
 		args = append(args, "--server")

@@ -392,6 +392,7 @@ type nexusConfig struct {
 	LaughThreshold float64
 	SpeechEngine   string
 	ServerSpeech   bool
+	ListenTrace    bool
 }
 
 func nexusParseConfig(raw []byte) nexusConfig {
@@ -429,6 +430,7 @@ func nexusParseConfig(raw []byte) nexusConfig {
 		}
 	}
 	_ = json.Unmarshal(field("serverSpeech"), &cfg.ServerSpeech)
+	_ = json.Unmarshal(field("listenTrace"), &cfg.ListenTrace)
 	return cfg
 }
 

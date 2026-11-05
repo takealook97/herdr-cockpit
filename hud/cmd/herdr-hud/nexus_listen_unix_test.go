@@ -312,6 +312,34 @@ func TestNexusListenStatusUsesVerifiedProxyPID(t *testing.T) {
 	}
 }
 
+func TestNexusListenTraceConfigAndArgs(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{`{}`, false},
+		{`{"listenTrace":true}`, true},
+		{`{"LiStEnTrAcE":true}`, true},
+		{`{"listenTrace":false}`, false},
+		{`{"listenTrace":"true"}`, false},
+		{`{"listenTrace":1}`, false},
+		{`{"listenTrace":null}`, false},
+	} {
+		cfg := nexusParseConfig([]byte(tc.raw))
+		if cfg.ListenTrace != tc.want {
+			t.Fatalf("%s: %+v", tc.raw, cfg)
+		}
+		args := nexusListenArgs("/tmp/state", cfg)
+		want := "--state /tmp/state"
+		if tc.want {
+			want += " --trace"
+		}
+		if strings.Join(args, " ") != want {
+			t.Fatalf("%s: %v", tc.raw, args)
+		}
+	}
+}
+
 func TestNexusListenHintsAndEngine(t *testing.T) {
 	raw := []byte(`{"SpEeChEnGiNe":"ANALYZER","SERVERSPEECH":true,"model":"claude-medium-m"}`)
 	cfg := nexusParseConfig(raw)
@@ -341,15 +369,15 @@ func TestNexusListenEndReason(t *testing.T) {
 	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "listen.json"), []byte(`{"state":"final","final":"테스트","endReason":"silence","engine":"analyzer"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "listen.json"), []byte(`{"state":"final","final":"테스트","endReason":"silence","engine":"analyzer","trace":true}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	got := nexusListenWith(context.Background(), "status", "darwin", binary, dir)
-	if got.EndReason != "silence" || got.Engine != "analyzer" {
+	if got.EndReason != "silence" || got.Engine != "analyzer" || !got.Trace {
 		t.Fatal(got)
 	}
 	raw, _ := json.Marshal(got)
-	if !strings.Contains(string(raw), `"end_reason":"silence"`) {
+	if !strings.Contains(string(raw), `"end_reason":"silence"`) || !strings.Contains(string(raw), `"trace":true`) {
 		t.Fatal(string(raw))
 	}
 }
@@ -363,6 +391,14 @@ func TestCmdNexusListenStartForwardsHints(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	configDir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configDir)
+	if err := os.MkdirAll(filepath.Join(configDir, "herdr-hud"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "herdr-hud/nexus.json"), []byte(`{"LiStEnTrAcE":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	argsPath := filepath.Join(home, "args")
 	t.Setenv("NEXUS_TEST_LISTENER_ARGS", argsPath)
 	binary := filepath.Join(home, ".local", "bin", "herdr-listen")
@@ -383,7 +419,7 @@ func TestCmdNexusListenStartForwardsHints(t *testing.T) {
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		raw, err := os.ReadFile(argsPath)
-		if err == nil && strings.Contains(string(raw), "--hints\nwiki-island,온톨로지\n") {
+		if err == nil && strings.Contains(string(raw), "--hints\nwiki-island,온톨로지\n") && strings.Contains(string(raw), "--trace\n") {
 			break
 		}
 		if time.Now().After(deadline) {
