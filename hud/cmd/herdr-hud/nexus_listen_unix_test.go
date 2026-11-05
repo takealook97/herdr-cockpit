@@ -286,6 +286,20 @@ func TestNexusListenStatusUsesVerifiedProxyPID(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// A verified preparation process is reused without launching or rewriting its PID.
+	preparePID := filepath.Join(dir, "listen-prepare.pid")
+	originalPID := []byte(strconv.Itoa(pid))
+	if err := os.WriteFile(preparePID, originalPID, 0600); err != nil {
+		t.Fatal(err)
+	}
+	gotPrepare := nexusListenPrepareWith(context.Background(), "darwin", binary, dir, time.Now)
+	if gotPrepare["state"] != "preparing" {
+		t.Fatal(gotPrepare)
+	}
+	if raw, err := os.ReadFile(preparePID); err != nil || !bytes.Equal(raw, originalPID) {
+		t.Fatalf("PID changed: %q, %v", raw, err)
+	}
+
 	if err := os.WriteFile(filepath.Join(dir, "listen.pid"), []byte(strconv.Itoa(pid)), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -376,5 +390,74 @@ func TestCmdNexusListenStartForwardsHints(t *testing.T) {
 			t.Fatalf("hints were not forwarded: %q (%v)", raw, err)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestNexusListenPrepare(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name, goos, pid, want string
+		missing               bool
+		markerAge             time.Duration
+		marker                bool
+		launch                bool
+	}{
+		{name: "other platform", goos: "linux", want: "unavailable"},
+		{name: "missing binary", goos: "darwin", missing: true, want: "unavailable"},
+		{name: "fresh marker", goos: "darwin", marker: true, markerAge: 6 * 24 * time.Hour, want: "ready"},
+		{name: "expired marker", goos: "darwin", marker: true, markerAge: 7 * 24 * time.Hour, want: "preparing", launch: true},
+		{name: "no marker", goos: "darwin", want: "preparing", launch: true},
+		{name: "stale pid", goos: "darwin", pid: "99999999", want: "preparing", launch: true},
+		{name: "invalid pid", goos: "darwin", pid: "bad", want: "preparing", launch: true},
+		{name: "unrelated process", goos: "darwin", pid: strconv.Itoa(os.Getpid()), want: "preparing", launch: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			binary := filepath.Join(dir, "herdr-listen")
+			argsPath := filepath.Join(dir, "args")
+			if !tc.missing {
+				if err := os.WriteFile(binary, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+argsPath+"'\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.marker {
+				path := filepath.Join(dir, "listen-assets-ko-KR.ok")
+				if err := os.WriteFile(path, nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, now.Add(-tc.markerAge), now.Add(-tc.markerAge)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.pid != "" {
+				if err := os.WriteFile(filepath.Join(dir, "listen-prepare.pid"), []byte(tc.pid), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got := nexusListenPrepareWith(context.Background(), tc.goos, binary, dir, func() time.Time { return now })
+			if got["state"] != tc.want || len(got) != 1 {
+				t.Fatal(got)
+			}
+			if tc.launch {
+				deadline := time.Now().Add(3 * time.Second)
+				for {
+					raw, err := os.ReadFile(argsPath)
+					if err == nil && string(raw) == "--prepare\n--locale\nko-KR\n" {
+						break
+					}
+					if time.Now().After(deadline) {
+						t.Fatalf("launch arguments %q: %v", raw, err)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				st, err := os.Stat(filepath.Join(dir, "listen-prepare.pid"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st.Mode().Perm() != 0600 {
+					t.Fatal(st.Mode())
+				}
+			}
+		})
 	}
 }

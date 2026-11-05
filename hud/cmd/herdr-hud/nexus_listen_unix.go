@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 )
 
@@ -31,6 +32,9 @@ type nexusListenState struct {
 
 func nexusListen(ctx context.Context, sub string, expectedPID ...int) any {
 	home, _ := os.UserHomeDir()
+	if sub == "prepare" {
+		return nexusListenPrepareWith(ctx, runtime.GOOS, filepath.Join(home, ".local/bin/herdr-listen"), hudCacheDir(), time.Now)
+	}
 	return nexusListenWith(ctx, sub, runtime.GOOS, filepath.Join(home, ".local/bin/herdr-listen"), hudCacheDir(), expectedPID...)
 }
 func nexusListenStart(ctx context.Context, hints string) any {
@@ -187,4 +191,48 @@ func nexusListenHints(value string) string {
 		}
 	}
 	return strings.Join(out, ",")
+}
+
+// Preparation has its own PID and does not interfere with microphone sessions.
+func nexusListenPrepareWith(ctx context.Context, goos, binary, dir string, now func() time.Time) map[string]string {
+	result := func(state string) map[string]string { return map[string]string{"state": state} }
+	st, err := os.Stat(binary)
+	if goos != "darwin" || err != nil || st.IsDir() || st.Mode()&0111 == 0 {
+		return result("unavailable")
+	}
+	if marker, err := os.Stat(filepath.Join(dir, "listen-assets-ko-KR.ok")); err == nil && !marker.IsDir() && now().Sub(marker.ModTime()) < 7*24*time.Hour {
+		return result("ready")
+	}
+	pidPath := filepath.Join(dir, "listen-prepare.pid")
+	raw, _ := os.ReadFile(pidPath)
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if pid > 0 && syscall.Kill(pid, 0) == nil {
+		comm, err := exec.CommandContext(ctx, "ps", "-o", "comm=", "-p", strconv.Itoa(pid)).Output()
+		if err == nil && filepath.Base(strings.TrimSpace(string(comm))) == "herdr-listen" {
+			return result("preparing")
+		}
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return result("unavailable")
+	}
+	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return result("unavailable")
+	}
+	defer null.Close()
+	cmd := exec.Command(binary, "--prepare", "--locale", "ko-KR")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = null, null, null
+	if err := cmd.Start(); err != nil {
+		return result("unavailable")
+	}
+	if err := nexusAtomic(pidPath, []byte(strconv.Itoa(cmd.Process.Pid))); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return result("unavailable")
+	}
+	if err := cmd.Process.Release(); err != nil {
+		return result("unavailable")
+	}
+	return result("preparing")
 }
