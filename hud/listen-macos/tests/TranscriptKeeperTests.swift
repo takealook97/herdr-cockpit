@@ -32,7 +32,12 @@ struct TranscriptKeeperTests {
         assert(mergingTranscriptPieces([later], with: TranscriptPiece(start: 0, end: 2.5, text: "half")).count == 2, "exactly half overlap keeps the tail")
         assert(mergingTranscriptPieces([later], with: TranscriptPiece(start: 0, end: 2.51, text: "most")).map(\.text) == ["most"], "more than half overlap replaces the tail")
         assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 0, end: 2, text: "new")).map(\.text) == ["new"])
-        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 1, end: 3, text: "next")).map(\.text) == ["next"], "overlapping earlier piece is replaced")
+        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 1.98, end: 3, text: "next")).map(\.text) == ["final", "next"], "slight overlap must retain the earlier phrase")
+        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 1, end: 3, text: "next")).map(\.text) == ["final", "next"], "half overlap keeps the earlier phrase")
+        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 0, end: 1.5, text: "volatile update")).map(\.text) == ["volatile update"], "same-start volatile update replaces the prior piece")
+        let point = TranscriptPiece(start: 2, end: 2, text: "point")
+        assert(mergingTranscriptPieces([point], with: TranscriptPiece(start: 1, end: 3, text: "cover")).map(\.text) == ["cover"], "covered zero-duration piece is replaced")
+        assert(mergingTranscriptPieces([point], with: TranscriptPiece(start: 3, end: 4, text: "outside")).map(\.text) == ["point", "outside"], "zero-duration piece outside the range survives")
         print("TranscriptKeeper tests passed")
     }
 }

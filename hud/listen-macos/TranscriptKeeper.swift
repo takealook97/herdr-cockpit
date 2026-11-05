@@ -12,8 +12,8 @@ struct TranscriptKeeper {
     }
 }
 
-// Replace overlapping hypotheses, preserving a later phrase when only its
-// leading edge overlaps (at most half its duration). Touching ranges stay intact.
+// Replace a stored hypothesis only when more than half its duration overlaps.
+// Zero-duration pieces are replaced when their point is inside the new range.
 struct TranscriptPiece {
     var start: Double
     var end: Double
@@ -23,9 +23,10 @@ struct TranscriptPiece {
 
 func mergingTranscriptPieces(_ pieces: [TranscriptPiece], with new: TranscriptPiece) -> [TranscriptPiece] {
     let retained = pieces.filter { piece in
-        guard piece.start < new.end && piece.end > new.start else { return true }
-        let overlap = min(piece.end, new.end) - max(piece.start, new.start)
-        return piece.start > new.start && overlap <= (piece.end - piece.start) * 0.5
+        let duration = piece.end - piece.start
+        if duration == 0 { return !(new.start <= piece.start && piece.start <= new.end) }
+        let overlap = max(0, min(piece.end, new.end) - max(piece.start, new.start))
+        return overlap <= duration * 0.5
     }
     return (retained + [new]).sorted { $0.start < $1.start }
 }
