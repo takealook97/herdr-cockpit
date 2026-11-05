@@ -1,5 +1,5 @@
 import { View, div } from "gpui-kit";
-import { h_flex, v_flex, InputState, Input } from "gpui-base";
+import { h_flex, v_flex, TextareaState, Textarea } from "gpui-base";
 import { exec, panes, terminals, shared, setShared, theme, props, closeOverlay, notify, run } from "herdr";
 import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
 
@@ -8,6 +8,7 @@ const POLL_MS = 120, COUNTDOWN_MS = 1000, WARNING_MS = 6000, STARTUP_MS = 3000;
 const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니다";
 const NO_SPEECH_TEXT = "말을 알아듣지 못했습니다";
 const IGNORED_TEXT = "명령으로 들리지 않아 넘겼습니다";
+const INPUT_MAX_ROWS = 3;
 const PLACEHOLDER = "Head에게 보낼 말 · ⌘⇧Space 말하기";
 
 export default class Nexus extends View {
@@ -19,7 +20,9 @@ export default class Nexus extends View {
     this.listening = false; this.laughing = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
     this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
     this.listenPid = null; this.userTouched = false; this.typedSinceListen = false;
-    this.input = InputState.new({ placeholder: PLACEHOLDER });
+    this.input = TextareaState.new({ placeholder: PLACEHOLDER });
+    this.input.set_soft_wrap(true);
+    this.input.set_auto_grow(1, INPUT_MAX_ROWS);
     this.input.focus();
     this.input.on("submit", () => this.submit(cx));
     this.input.on("change", () => {
@@ -29,6 +32,7 @@ export default class Nexus extends View {
         if (this.countdown) this.cancelCountdown(cx);
       }
     });
+    this.helper("listen", { action: "prepare" });
     const gen = this.listenGen;
     cx.spawn(async cx => {
       const status = await this.helper("listen", { action: "status" });
@@ -265,8 +269,8 @@ export default class Nexus extends View {
     const t = theme();
     return v_flex().id("nexus").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .size_full().min_h(0).bg(t.background).p(12).gap(6).text_size(12)
-      .child(h_flex().flex_none().gap(8).items_center()
-        .child(div().flex_1().min_w(0).child(Input.new(this.input)))
+      .child(h_flex().flex_1().min_h(0).gap(8).items_start()
+        .child(div().flex_1().min_w(0).child(Textarea.new(this.input)))
         .child(this.dots(t))
         .when(!this.micHidden, el => el.child(div().id("nexus-mic").size(24).flex_none().flex().items_center().justify_center()
           .rounded(6).border(1).border_color(this.listening ? t.accent : t.border).text_size(11)
