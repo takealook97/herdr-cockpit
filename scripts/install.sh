@@ -145,6 +145,11 @@ fi
 if "$dry_run"; then
     if "$build"; then echo "Build hud/cmd/herdr-hud for $goos/$goarch"; else echo "Use prebuilt $prebuilt"; fi
     echo "Install helper: $HOME/.local/bin/herdr-hud"
+    if [ "$goos" = darwin ] && command -v swiftc >/dev/null; then
+        echo "Build herdr-listen"
+    else
+        echo "Skip herdr-listen (needs macOS swiftc)"
+    fi
     echo "Sync custom mods: $app/mods (exclude tests and editor files)"
     echo "Copy custom layouts: $app/layouts"
     merge_keys dry-run
@@ -176,6 +181,26 @@ if [ "$goos" = darwin ]; then xattr -d com.apple.quarantine "$helper_tmp" 2>/dev
 chmod 755 "$helper_tmp"
 mv -f "$helper_tmp" "$HOME/.local/bin/herdr-hud"
 if [ "$goos" = darwin ]; then xattr -d com.apple.quarantine "$HOME/.local/bin/herdr-hud" 2>/dev/null || true; fi
+if [ "$goos" = darwin ] && command -v swiftc >/dev/null; then
+    echo "Build herdr-listen"
+    if swiftc -O "$root/hud/listen-macos/main.swift" -o "$scratch/herdr-listen" \
+        -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+        -Xlinker "$root/hud/listen-macos/Info.plist"; then
+        listen_tmp=
+        if listen_tmp=$(mktemp "$HOME/.local/bin/.herdr-listen.XXXXXX") && \
+            cp "$scratch/herdr-listen" "$listen_tmp" && chmod 755 "$listen_tmp" && \
+            mv -f "$listen_tmp" "$HOME/.local/bin/herdr-listen"; then
+            echo "Install helper: $HOME/.local/bin/herdr-listen"
+        else
+            echo "Warning: could not install herdr-listen; continuing" >&2
+        fi
+        if [ -n "$listen_tmp" ]; then rm -f "$listen_tmp"; fi
+    else
+        echo "Warning: could not build herdr-listen; continuing" >&2
+    fi
+else
+    echo "Skip herdr-listen (needs macOS swiftc)"
+fi
 for mod in "$root"/mods/*; do
     [ -d "$mod" ] || continue
     mkdir -p "$app/mods/${mod##*/}"
