@@ -125,12 +125,12 @@ export function ageLabel(ms, now = Date.now()) {
 }
 
 export const nexusHint = (last, now = Date.now()) =>
-  last?.label && Number.isFinite(last.at) ? `→ ${last.label} · ${ageLabel(last.at, now)}` : "⌃⇧N";
+  last?.label && Number.isFinite(last.at) ? `→ ${last.label} · ${ageLabel(last.at, now)}` : "⌘⇧N";
 
 // Global command line to the Heads: opens the nexus dialog.
 export function nexusRow(view, row, t) {
   return h_flex().id(row.key).relative().h(30).flex_none().mx(6).px(8).items_center().gap(8).rounded(7)
-    .tooltip("Nexus · Ctrl-Shift-N")
+    .tooltip("Nexus · Cmd-Shift-N")
     .when(row.active, e => e.bg(t.background).border(1).border_color(t.border))
     .hover(s => s.bg(t.hover))
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })

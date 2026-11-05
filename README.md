@@ -39,7 +39,7 @@ Omit machine names to target all connected machines. This explicitly writes to t
 
 ## nexus
 
-NEXUS is the locked top row above hub under **This computer**. Click it, press **Ctrl-Shift-N**, or press **Ctrl-Shift-Space** (opens and starts listening) from any tab of the cockpit layout to open a dimmed, centered dialog. The same shortcut closes it. It works only in the cockpit layout, because the space-tree mod receives the bindings.
+NEXUS is the locked top row above hub under **This computer**. Click it, press **Cmd-Shift-N** (or **Ctrl-Shift-N**), or press **Ctrl-Shift-Space** (opens and starts listening) from any tab of the cockpit layout to open a dimmed, centered dialog. The same shortcut closes it. It works only in the cockpit layout, because the space-tree mod receives the bindings.
 
 Each command is routed by one stateless model call that sees only the local Head roster (space · tab, folder, status, model, last report line), the last 6 Nexus log entries and the command, so context never grows; the default key measured about 1.2k input tokens per call. Nexus sends with `hc send` only to a validated local Head (no remote Heads, workers or observers). When the target is ambiguous or confidence is below 0.6 it asks, with candidate chips. Status questions are answered by reading at most the last 40 screen lines of that Head, with one extra summary call. After a send the dialog closes; with hub open the target Head is focused, otherwise a toast links to it.
 

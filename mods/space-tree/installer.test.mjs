@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 const hubKeys = JSON.parse(readFileSync(new URL('../../keys/hub.json', import.meta.url))).global;
-const nexusKeys = JSON.parse(readFileSync(new URL('../../keys/nexus.json', import.meta.url))).global;
+const nexusKeys = { 'cmd-shift-n': 'space-tree.nexus', 'ctrl-shift-n': 'space-tree.nexus', 'ctrl-shift-space': 'space-tree.nexus-listen' };
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function sandbox(fn) {
   const folder = mkdtempSync(join(root, '.test-install-'));
