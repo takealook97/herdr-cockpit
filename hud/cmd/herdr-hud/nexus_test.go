@@ -263,7 +263,7 @@ func TestNexusIncompleteRoster(t *testing.T) {
 }
 
 func TestNexusSummaryPrefix(t *testing.T) {
-	for _, text := range []string{"--help", "-p", "상태 알려줘"} {
+	for _, text := range []string{"--help", "-pp", "상태 알려줘"} {
 		t.Run(text, func(t *testing.T) {
 			d := nexusFixture(t)
 			calls := 0
@@ -348,5 +348,81 @@ func TestNexusModelDeadline(t *testing.T) {
 				t.Fatalf("%+v", got)
 			}
 		})
+	}
+}
+
+func TestNexusPrefilter(t *testing.T) {
+	for _, tc := range []struct {
+		text, cleaned string
+		ignore        bool
+	}{
+		{"ㅋㅋㅋ", "", true},
+		{"하하하 음", "", true},
+		{"음 어 ontology에 테스트 돌려 ㅋㅋ", "ontology에 테스트 돌려", false},
+		{"그거 다시 해", "그거 다시 해", false},
+		{"어디까지 했어", "어디까지 했어", false},
+		{"아까 그거", "아까 그거", false},
+		{"(웃음) 빌드 봐줘", "빌드 봐줘", false},
+		{"저기 그 음… 빌드 어어 봐줘", "빌드 봐줘", false},
+		{"푸하하 으흐흐 헤헤 히히 크크 킥킥 허허 [웃음] LOL haha hehe", "", true},
+		{"아!?", "아!?", true},
+		{"a1", "a1", false},
+		{"빌드 그 저기 확인", "빌드 그 저기 확인", false},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			cleaned, ignore := nexusPrefilter(tc.text)
+			if cleaned != tc.cleaned || ignore != tc.ignore {
+				t.Fatalf("got %q, %v; want %q, %v", cleaned, ignore, tc.cleaned, tc.ignore)
+			}
+		})
+	}
+}
+
+func TestNexusIgnore(t *testing.T) {
+	for _, tc := range []struct {
+		text       string
+		modelCalls int
+		summary    string
+	}{
+		{"ㅋㅋㅋ", 0, nexusIgnoreSummary},
+		{"잠깐만", 1, "잠시 기다리는 말입니다"},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			d := nexusFixture(t)
+			models, hc, panes := 0, 0, 0
+			originalPanes := d.panes
+			d.panes = func(ctx context.Context) HUDPanes { panes++; return originalPanes(ctx) }
+			d.model = func(context.Context, string, string, []byte) ([]byte, error) {
+				models++
+				return []byte(`{"action":"ignore","target":"bad","message":"do not send","summary":"잠시 기다리는 말입니다"}`), nil
+			}
+			d.hc = func(context.Context, ...string) ([]byte, error) { hc++; return nil, nil }
+			reply := nexusRoute(context.Background(), d, tc.text, nexusRoster())
+			if reply.Action != "ignore" || reply.Sent || reply.Summary != tc.summary || reply.Target != "" || reply.Message != "" {
+				t.Fatalf("%+v", reply)
+			}
+			if models != tc.modelCalls || hc != 0 || (models == 0 && panes != 0) {
+				t.Fatalf("model=%d hc=%d panes=%d", models, hc, panes)
+			}
+			if _, err := os.Stat(d.logPath); !os.IsNotExist(err) {
+				t.Fatalf("ignore wrote log: %v", err)
+			}
+		})
+	}
+}
+
+func TestNexusModelReceivesCleanedSpeech(t *testing.T) {
+	d := nexusFixture(t)
+	d.model = func(_ context.Context, sys, prompt string, schema []byte) ([]byte, error) {
+		if !strings.HasSuffix(prompt, "User command:\nontology에 테스트 돌려") {
+			t.Fatal(prompt)
+		}
+		if !strings.Contains(sys, "self-corrections") || !strings.Contains(string(schema), `"ignore"`) {
+			t.Fatal("missing speech routing instructions")
+		}
+		return []byte(`{"action":"send","target":"t1","message":"테스트 돌려","confidence":0.9}`), nil
+	}
+	if r := nexusRoute(context.Background(), d, "음 어 ontology에 테스트 돌려 ㅋㅋ", nexusRoster()); !r.Sent {
+		t.Fatal(r)
 	}
 }

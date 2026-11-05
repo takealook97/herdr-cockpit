@@ -76,6 +76,7 @@ export default class Nexus extends View {
 
   handleReply(reply, cx) {
     this.reply = reply;
+    if (reply.action === "ignore") this.clearInput();
     if (reply.action === "send" && reply.sent !== false) {
       this.afterSend(reply);
       if (reply.warning) notify({ title: "Nexus", body: reply.warning, level: "warning", timeout: WARNING_MS });
@@ -210,6 +211,7 @@ export default class Nexus extends View {
           .flex().items_center().text_size(11.5).text_color(t.foreground).hover(s => s.bg(t.hover))
           .on_click((_e, cx) => this.chooseCandidate(c, cx)).child(c.label || c.address))));
     } else if (reply?.action === "info") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.info ?? ""}`));
+    else if (reply?.action === "ignore") body.child(div().flex_none().text_color(t.dim).child(`· ${reply.summary || "명령으로 들리지 않아 넘겼습니다"}`));
     else if (reply?.action === "read") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.summary ?? ""}`));
     else if (reply?.action === "error") body.child(div().flex_none().text_color(this.lineColor("!", t)).child(`! ${reply.error ?? ""}`));
     if (this.pending) body.child(h_flex().flex_none().gap(4).text_color(t.dim).child("판단 중")

@@ -43,6 +43,8 @@ NEXUS is the locked top row above hub under **This computer**. Click it, press *
 
 Each command is routed by one stateless model call that sees only the local Head roster (space · tab, folder, status, model, last report line), the last 6 Nexus log entries and the command, so context never grows; the default key measured about 1.2k input tokens per call. Nexus sends with `hc send` only to a validated local Head (no remote Heads, workers or observers). When the target is ambiguous or confidence is below 0.6 it asks, with candidate chips. Status questions are answered by reading at most the last 40 screen lines of that Head, with one extra summary call. After a send the dialog closes; with hub open the target Head is focused, otherwise a toast links to it.
 
+Laughter and fillers are stripped locally before the model call. Input that is not a command is ignored without sending or logging.
+
 Model: the `HERDR_NEXUS_MODEL` environment variable, or `${XDG_CONFIG_HOME:-~/.config}/herdr-hud/nexus.json` with `{"model":"<key>"}`; the default is `claude-medium-m`. It accepts orch catalog keys of the Claude or Codex families. The CLI runs without user settings, MCP servers, tools or slash commands. A failure or the 20 s timeout sends nothing.
 
 Voice is macOS only, with on-device ko-KR speech recognition through `herdr-listen`. Five dots follow the input level and partial text fills the input. 1.2 s of silence ends listening, and the text is sent after a 1.5 s countdown that Esc or editing cancels. It requires System Settings > Keyboard > Dictation to be enabled and microphone/speech permission for Herdr. Without `herdr-listen` the mic button is hidden.
