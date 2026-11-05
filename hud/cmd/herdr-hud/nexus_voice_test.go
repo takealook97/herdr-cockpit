@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,9 +31,15 @@ func TestNexusVoiceEnsure(t *testing.T) {
 					}
 					return []byte(`{"terminals":[]}`), nil
 				}
+				if args[0] == "get" {
+					raw, _ := os.ReadFile(filepath.Join(cache, "nexus-voice", "settings.json"))
+					info, _ := os.Stat(voiceTestClaude(t))
+					sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", raw, voiceTestClaude(t), info.ModTime().UnixNano())))
+					return []byte(fmt.Sprintf(`{"labels":{"nexus.voice":"1","nexus.voice.rev":"%x"}}`, sum[:8])), nil
+				}
 				return []byte(`{"address":"t5x"}`), nil
 			}
-			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, func(string) string { return "/fake/claude" }, hc)
+			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, func(string) string { return voiceTestClaude(t) }, hc)
 			if r.Mode != "claude" || r.Terminal != "t5x" || r.Error != "" {
 				t.Fatal(r)
 			}
@@ -79,11 +87,11 @@ func TestNexusVoiceEnsure(t *testing.T) {
 				t.Fatalf("hook shell command: %q, %v", got, err)
 			}
 			if reuse {
-				if len(calls) != 3 {
+				if len(calls) != 4 {
 					t.Fatal(calls)
 				}
 			} else {
-				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", "/fake/claude", "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
+				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", calls[1][10], "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", voiceTestClaude(t), "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
 				if len(calls) != 3 || !reflect.DeepEqual(calls[1], want) {
 					t.Fatal(calls)
 				}
@@ -223,8 +231,8 @@ func TestNexusVoiceResolveName(t *testing.T) {
 			return nil, nil
 		}
 	}
-	r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return "/fake/claude" }, hc)
-	if r.Terminal != "t5x" || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "nexus-voice", "--json"}, {"label", "t5x", "nexus.voice=1"}, {"read", "t5x", "--lines", "40"}}) {
+	r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return voiceTestClaude(t) }, hc)
+	if r.Error == "" || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "nexus-voice", "--json"}, {"get", "t5x", "--json"}}) {
 		t.Fatal(r, calls)
 	}
 }
@@ -307,7 +315,7 @@ func TestNexusVoiceEnsureErrors(t *testing.T) {
 				}
 				return []byte(`{}`), nil
 			}
-			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return "/fake/claude" }, hc)
+			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return voiceTestClaude(t) }, hc)
 			if r.Action != "error" || r.Error == "" || r.Terminal != "" {
 				t.Fatal(r)
 			}
@@ -425,6 +433,7 @@ func TestNexusVoiceKey(t *testing.T) {
 func TestNexusVoiceEnsureTrust(t *testing.T) {
 	for _, reuse := range []bool{false, true} {
 		for _, screen := range []string{"Do you TRUST THIS FOLDER?", "Quick Safety Check", "ready"} {
+			cache := t.TempDir()
 			var keys int
 			hc := func(_ context.Context, args ...string) ([]byte, error) {
 				switch args[0] {
@@ -435,8 +444,11 @@ func TestNexusVoiceEnsureTrust(t *testing.T) {
 					return []byte(`{"terminals":[]}`), nil
 				case "run":
 					return []byte(`{"address":"t1"}`), nil
-				case "label":
-					return nil, nil
+				case "get":
+					raw, _ := os.ReadFile(filepath.Join(cache, "nexus-voice", "settings.json"))
+					info, _ := os.Stat(voiceTestClaude(t))
+					sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", raw, voiceTestClaude(t), info.ModTime().UnixNano())))
+					return []byte(fmt.Sprintf(`{"labels":{"nexus.voice":"1","nexus.voice.rev":"%x"}}`, sum[:8])), nil
 				case "read":
 					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "40"}) {
 						t.Fatal(args)
@@ -453,7 +465,7 @@ func TestNexusVoiceEnsureTrust(t *testing.T) {
 					return nil, nil
 				}
 			}
-			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return "/fake/claude" }, hc)
+			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, func(string) string { return voiceTestClaude(t) }, hc)
 			want := 1
 			if screen == "ready" {
 				want = 0
@@ -462,5 +474,92 @@ func TestNexusVoiceEnsureTrust(t *testing.T) {
 				t.Fatal(reuse, screen, r, keys)
 			}
 		}
+	}
+}
+
+func voiceTestClaude(t *testing.T) string {
+	t.Helper()
+	p, err := filepath.EvalSymlinks("/bin/sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestNexusVoiceRevisionLifecycle(t *testing.T) {
+	for _, scenario := range []string{"same", "different", "restart", "start again", "missing"} {
+		t.Run(scenario, func(t *testing.T) {
+			cache := t.TempDir()
+			var rev string
+			live := false
+			var calls []string
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, args[0])
+				switch args[0] {
+				case "ls":
+					if live {
+						return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+					}
+					return []byte(`{"terminals":[]}`), nil
+				case "run":
+					for i, a := range args {
+						if a == "--label" && strings.HasPrefix(args[i+1], "nexus.voice.rev=") {
+							rev = strings.TrimPrefix(args[i+1], "nexus.voice.rev=")
+						}
+					}
+					return []byte(`{"address":"t1"}`), nil
+				case "get":
+					label := "1"
+					if scenario == "missing" {
+						label = ""
+					}
+					r := rev
+					if scenario == "different" {
+						r = "old"
+					}
+					return json.Marshal(map[string]any{"labels": map[string]string{"nexus.voice": label, "nexus.voice.rev": r}})
+				case "read":
+					if live && scenario == "restart" {
+						return []byte("Update installed · /restart to apply"), nil
+					}
+					if live && scenario == "start again" {
+						return []byte("Please start Claude again"), nil
+					}
+				}
+				return nil, nil
+			}
+			lookup := func(string) string { return voiceTestClaude(t) }
+			if r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, lookup, hc); r.Error != "" {
+				t.Fatal(r)
+			}
+			if len(rev) != 16 {
+				t.Fatal(rev)
+			}
+			live = true
+			calls = nil
+			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, lookup, hc)
+			if scenario == "missing" {
+				if r.Error == "" {
+					t.Fatal(r)
+				}
+			} else if r.Error != "" {
+				t.Fatal(r)
+			}
+			got := strings.Join(calls, ",")
+			switch scenario {
+			case "same":
+				if got != "ls,get,read,read" {
+					t.Fatal(got)
+				}
+			case "missing":
+				if got != "ls,get" {
+					t.Fatal(got)
+				}
+			default:
+				if got != "ls,get,read,kill,wait,rm,run,read" {
+					t.Fatal(got)
+				}
+			}
+		})
 	}
 }

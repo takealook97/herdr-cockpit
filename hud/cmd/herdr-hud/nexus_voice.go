@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,6 +30,14 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	if claude == "" {
 		return fail(errors.New("claude CLI를 찾을 수 없습니다"))
 	}
+	claude, err := filepath.EvalSymlinks(claude)
+	if err != nil {
+		return fail(err)
+	}
+	info, err := os.Stat(claude)
+	if err != nil {
+		return fail(err)
+	}
 	dir := filepath.Join(cache, "nexus-voice")
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -48,17 +57,45 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	if err = nexusAtomic(path, raw); err != nil {
 		return fail(err)
 	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", raw, claude, info.ModTime().UnixNano())))
+	rev := fmt.Sprintf("%x", sum[:8])
 	address, err := nexusVoiceLive(ctx, hc)
 	if err != nil {
 		return fail(err)
 	}
 	if address != "" {
-		if _, err := hc(ctx, "label", address, "nexus.voice=1"); err != nil {
+		detail, err := hc(ctx, "get", address, "--json")
+		if err != nil {
 			return fail(err)
 		}
-		return nexusVoiceReady(ctx, address, hc)
+		var terminal struct {
+			Labels map[string]string `json:"labels"`
+		}
+		if err := json.Unmarshal(detail, &terminal); err != nil {
+			return fail(err)
+		}
+		if terminal.Labels["nexus.voice"] != "1" {
+			return fail(errors.New("음성 터미널 소유 라벨을 확인하지 못했습니다"))
+		}
+		tail, err := hc(ctx, "read", address, "--lines", "40")
+		if err != nil {
+			return fail(err)
+		}
+		text := strings.ToLower(string(tail))
+		if terminal.Labels["nexus.voice.rev"] == rev && !strings.Contains(text, "/restart to apply") && !strings.Contains(text, "start claude again") {
+			return nexusVoiceReady(ctx, address, hc)
+		}
+		if _, err := hc(ctx, "kill", address); err != nil {
+			return fail(err)
+		}
+		if _, err := hc(ctx, "wait", address, "--timeout", "10"); err != nil {
+			return fail(err)
+		}
+		if _, err := hc(ctx, "rm", address); err != nil {
+			return fail(err)
+		}
 	}
-	raw, err = hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
+	raw, err = hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", "nexus.voice.rev="+rev, "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
 	if err != nil {
 		return fail(err)
 	}
