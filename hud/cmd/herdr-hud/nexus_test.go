@@ -166,7 +166,7 @@ func TestNexusLog(t *testing.T) {
 }
 func TestCmdNexus(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	for _, args := range [][]string{nil, {"wat"}, {"route"}, {"send", "--text", "hi", "--roster", "[]"}, {"route", "--text", "hi", "--roster", "{"}, {"route", "--text", "hi", "--roster", "null"}, {"log", "--limit", "-1"}, {"listen"}, {"listen", "wat"}, {"log", "extra"}} {
+	for _, args := range [][]string{nil, {"wat"}, {"route"}, {"send", "--text", "hi", "--roster", "[]"}, {"route", "--text", "hi", "--roster", "{"}, {"route", "--text", "hi", "--roster", "null"}, {"log", "--limit", "-1"}, {"listen"}, {"listen", "wat"}, {"listen", "stop", "--pid", "0"}, {"listen", "stop", "--pid", "bad"}, {"listen", "start", "--pid", "123"}, {"listen", "status", "--pid", "123"}, {"log", "extra"}} {
 		var out, stderr bytes.Buffer
 		if code := cmdNexus(args, &out, &stderr); code != 2 {
 			t.Fatalf("%v: %d %s", args, code, out.String())
@@ -306,5 +306,47 @@ func TestNexusKoreanErrors(t *testing.T) {
 		if got := nexusError(tc.err); got.Error != tc.want {
 			t.Fatal(got)
 		}
+	}
+}
+
+func TestNexusHCErrorPassthrough(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"stderr", errors.New("hc: target vanished"), "hc: target vanished"},
+		{"bounded stderr", errors.New(strings.Repeat("x", 400)), strings.Repeat("x", 300)},
+		{"deadline", fmt.Errorf("hc runner: %w", context.DeadlineExceeded), "Head에 보내는 시간이 초과됐습니다"},
+	} {
+		for _, mode := range []string{"send", "route"} {
+			t.Run(tc.name+"/"+mode, func(t *testing.T) {
+				d := nexusFixture(t)
+				d.hc = func(context.Context, ...string) ([]byte, error) { return nil, tc.err }
+				var got nexusReply
+				if mode == "send" {
+					got = nexusSend(context.Background(), d, "t1", "hello", nexusRoster())
+				} else {
+					got = nexusRoute(context.Background(), d, "hello", nexusRoster())
+				}
+				if got.Error != tc.want || got.Sent {
+					t.Fatalf("%+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestNexusModelDeadline(t *testing.T) {
+	for _, err := range []error{context.DeadlineExceeded, fmt.Errorf("model runner: %w", context.DeadlineExceeded)} {
+		t.Run(err.Error(), func(t *testing.T) {
+			d := nexusFixture(t)
+			d.model = func(context.Context, string, string, []byte) ([]byte, error) { return nil, err }
+			d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("deadline sent a command"); return nil, nil }
+			got := nexusRoute(context.Background(), d, "hello", nexusRoster())
+			if got.Error != "모델 호출 시간이 초과됐습니다" || got.Sent {
+				t.Fatalf("%+v", got)
+			}
+		})
 	}
 }

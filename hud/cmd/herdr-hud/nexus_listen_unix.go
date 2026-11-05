@@ -24,11 +24,11 @@ type nexusListenState struct {
 	PID     int     `json:"pid,omitempty"`
 }
 
-func nexusListen(ctx context.Context, sub string) any {
+func nexusListen(ctx context.Context, sub string, expectedPID ...int) any {
 	home, _ := os.UserHomeDir()
-	return nexusListenWith(ctx, sub, runtime.GOOS, filepath.Join(home, ".local/bin/herdr-listen"), hudCacheDir())
+	return nexusListenWith(ctx, sub, runtime.GOOS, filepath.Join(home, ".local/bin/herdr-listen"), hudCacheDir(), expectedPID...)
 }
-func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusListenState {
+func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expectedPID ...int) nexusListenState {
 	st, err := os.Stat(binary)
 	if goos != "darwin" || err != nil || st.IsDir() || st.Mode()&0111 == 0 {
 		return nexusListenState{State: "unavailable"}
@@ -79,6 +79,9 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusLi
 	}
 	if sub == "stop" {
 		pid := readPID()
+		if len(expectedPID) > 0 && (pid <= 0 || pid != expectedPID[0] || (alive(pid) && !identity(pid))) {
+			return nexusListenWith(ctx, "status", goos, binary, dir)
+		}
 		if alive(pid) && identity(pid) {
 			if err = syscall.Kill(pid, syscall.SIGTERM); err != nil {
 				return fail(err)
@@ -99,10 +102,11 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusLi
 	}
 	raw, err := os.ReadFile(statePath)
 	if os.IsNotExist(err) {
-		if pid := readPID(); alive(pid) && identity(pid) {
+		pid := readPID()
+		if alive(pid) && identity(pid) {
 			return nexusListenState{State: "listening", PID: pid}
 		}
-		return nexusListenState{State: "idle"}
+		return nexusListenState{State: "idle", PID: pid}
 	}
 	if err != nil {
 		return fail(err)
@@ -120,6 +124,7 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusLi
 	if pid == 0 {
 		pid = readPID()
 	}
+	out.PID = pid
 	if out.State == "listening" && (!alive(pid) || !identity(pid)) {
 		out.State = "error"
 		out.Error = "음성 인식 프로세스가 종료되었습니다"

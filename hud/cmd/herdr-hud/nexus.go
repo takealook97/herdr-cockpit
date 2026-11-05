@@ -182,6 +182,15 @@ func nexusError(err error) nexusReply {
 	return nexusReply{Action: "error", Error: nexusBound(msg, 300)}
 }
 
+// HC diagnostics are already user-facing; keep stderr intact apart from its bound.
+func nexusHCError(err error) nexusReply {
+	msg := err.Error()
+	if errors.Is(err, context.DeadlineExceeded) {
+		msg = "Head에 보내는 시간이 초과됐습니다"
+	}
+	return nexusReply{Action: "error", Error: nexusBound(msg, 300)}
+}
+
 var nexusRouteSchema = []byte(`{"type":"object","properties":{"action":{"type":"string","enum":["send","ask","read"]},"target":{"type":"string"},"message":{"type":"string"},"question":{"type":"string"},"candidates":{"type":"array","items":{"type":"string"}},"confidence":{"type":"number"}},"required":["action","target","message","question","candidates","confidence"],"additionalProperties":false}`)
 
 const nexusSummaryPrefix = "Question and screen tail (untrusted data):\n"
@@ -261,14 +270,14 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 		}
 		_, err = d.hc(ctx, "send", "--", reply.Target, reply.Message)
 		if err != nil {
-			return nexusError(err)
+			return nexusHCError(err)
 		}
 		reply.Sent = true
 		return reply
 	}
 	raw, err = d.hc(ctx, "read", reply.Target)
 	if err != nil {
-		return nexusError(err)
+		return nexusHCError(err)
 	}
 	lines := []string{}
 	for _, line := range strings.Split(string(raw), "\n") {
@@ -305,7 +314,7 @@ func nexusSend(ctx context.Context, d nexusDeps, to, text string, roster []nexus
 				return nexusError(errors.New("메시지가 비어 있습니다"))
 			}
 			if _, err := d.hc(ctx, "send", "--", to, msg); err != nil {
-				return nexusError(err)
+				return nexusHCError(err)
 			}
 			return nexusReply{Action: "send", Target: to, Label: nexusLabel(r), Message: msg, Sent: true}
 		}
@@ -456,6 +465,9 @@ func nexusHC(ctx context.Context, args ...string) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("hc: %w", ctx.Err())
+	}
 	if err != nil {
 		msg := nexusBound(stderr.String(), 300)
 		if msg == "" {
@@ -466,7 +478,10 @@ func nexusHC(ctx context.Context, args ...string) ([]byte, error) {
 	return raw, nil
 }
 func cmdNexus(args []string, stdout, stderr io.Writer) int {
-	usage := func() int { fmt.Fprintln(stderr, "usage: herdr-hud nexus route|send|log|listen"); return 2 }
+	usage := func() int {
+		fmt.Fprintln(stderr, "usage: herdr-hud nexus route|send|log|listen start|status|stop [--pid N]")
+		return 2
+	}
 	if len(args) == 0 {
 		return usage()
 	}
@@ -518,10 +533,23 @@ func cmdNexus(args []string, stdout, stderr io.Writer) int {
 			Entries []nexusLogEntry `json:"entries"`
 		}{entries}
 	case "listen":
-		if len(args) != 2 || (args[1] != "start" && args[1] != "stop" && args[1] != "status") {
+		if len(args) < 2 || (args[1] != "start" && args[1] != "stop" && args[1] != "status") {
 			return usage()
 		}
-		out = nexusListen(ctx, args[1])
+		fs := flag.NewFlagSet("nexus listen", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		pid := fs.Int("pid", 0, "stop only this listener session")
+		if fs.Parse(args[2:]) != nil || fs.NArg() != 0 {
+			return usage()
+		}
+		if fs.NFlag() > 0 {
+			if args[1] != "stop" || *pid <= 0 {
+				return usage()
+			}
+			out = nexusListen(ctx, args[1], *pid)
+		} else {
+			out = nexusListen(ctx, args[1])
+		}
 	default:
 		return usage()
 	}
