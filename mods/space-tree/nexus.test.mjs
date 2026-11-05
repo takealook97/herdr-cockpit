@@ -22,7 +22,7 @@ function setup(existing) {
   return h;
 }
 
-const ensure = reply => ({ exec: async (_c, args) => { ensure.args = args; return { code: 0, stdout: JSON.stringify(reply) }; } });
+const ensure = reply => ({ exec: async (_c, args) => { ensure.args = args; return { code: 0, stdout: JSON.stringify(typeof reply === 'function' ? await reply() : reply) }; } });
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function setupVoice(reply, existing) {
@@ -64,6 +64,26 @@ test('a second press while ensure is pending opens only one dialog', async () =>
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(false); h.tree.toggleNexus(false); await settle();
   assert.equal(h.overlays.filter(o => o[0] === 'open').length, 1);
+});
+
+test('a close() before ensure resolves opens no dialog and takes no focus', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.tree.toggleNexus(false); h.tree.close(); await settle();
+  assert.equal(h.overlays.length, 0);
+  assert.deepEqual(h.calls.filter(c => c.run || c.notify), []);
+});
+
+test('a newer toggle supersedes an older pending ensure', async () => {
+  const gates = [];
+  const h = setupVoice(() => new Promise(resolve => gates.push(resolve)));
+  const base = gates.length;
+  h.tree.toggleNexus(false); h.tree.toggleNexus(false); await settle();
+  gates[base + 1]({ mode: 'claude', terminal: 't2' }); await settle();
+  gates[base]({ mode: 'claude', terminal: 't1' }); await settle();
+  const opened = h.overlays.filter(o => o[0] === 'open');
+  assert.equal(opened.length, 1);
+  assert.deepEqual(opened[0][1].layout.children[1].content, { terminal: 't2' });
+  assert.deepEqual(h.calls.filter(c => c.run).map(c => c.run), [['pane.focus', { terminal: 't2' }]]);
 });
 
 test('apple mode keeps the old bar and passes the listen flag', async () => {
