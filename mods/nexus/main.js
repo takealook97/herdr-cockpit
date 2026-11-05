@@ -3,7 +3,7 @@ import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, panes, terminals, shared, setShared, theme, props, closeOverlay, notify, run } from "herdr";
 import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
 
-const QUESTION_MAX_W = 220, CHIP_MAX_W = 140, MAX_CHIPS = 4;
+const QUESTION_MAX_W = 160, CHIP_MAX_W = 140, MAX_CHIPS = 4;
 const POLL_MS = 120, COUNTDOWN_MS = 1000, WARNING_MS = 6000, STARTUP_MS = 3000;
 const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니다";
 const NO_SPEECH_TEXT = "말을 알아듣지 못했습니다";
@@ -232,7 +232,7 @@ export default class Nexus extends View {
       return row.child(h_flex().id("nexus-chips").flex_1().min_w(0).overflow_hidden().gap(6).items_center()
         .children((reply.candidates ?? []).slice(0, MAX_CHIPS).map(c => {
           const label = c.label || c.address;
-          return div().id(`nexus-chip-${c.address}`).flex_none().max_w(CHIP_MAX_W).h(22).px(8).rounded(6).border(1).border_color(t.border)
+          return div().id(`nexus-chip-${c.address}`).flex_1().min_w(0).max_w(CHIP_MAX_W).h(22).px(8).rounded(6).border(1).border_color(t.border)
             .flex().items_center().truncate().text_size(11.5).text_color(t.foreground).hover(s => s.bg(t.hover))
             .tooltip(label).on_click((_e, cx) => this.chooseCandidate(c, cx)).child(label);
         })));
