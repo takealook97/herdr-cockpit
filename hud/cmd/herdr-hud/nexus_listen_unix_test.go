@@ -295,3 +295,45 @@ func TestNexusListenStatusUsesVerifiedProxyPID(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestNexusListenHintsAndEngine(t *testing.T) {
+	raw := []byte(`{"SpEeChEnGiNe":"ANALYZER","SERVERSPEECH":true,"model":"claude-medium-m"}`)
+	cfg := nexusParseConfig(raw)
+	if cfg.SpeechEngine != "analyzer" || !cfg.ServerSpeech || cfg.Model != "claude-medium-m" {
+		t.Fatal(cfg)
+	}
+	args := nexusListenArgs("/tmp/state", cfg, " wiki-island,온톨로지,wiki-island,,"+strings.Repeat("가", 65)+",bad\x00hint")
+	want := "--state /tmp/state --engine analyzer --server --hints wiki-island,온톨로지"
+	if strings.Join(args, " ") != want {
+		t.Fatal(args)
+	}
+	if c := nexusParseConfig([]byte(`{"speechEngine":false,"serverSpeech":"true","keepAudio":2}`)); c.SpeechEngine != "" || c.ServerSpeech || c.KeepAudio != 2 {
+		t.Fatal(c)
+	}
+	many := []string{}
+	for i := 0; i < 110; i++ {
+		many = append(many, fmt.Sprintf("head-%d", i))
+	}
+	if n := len(strings.Split(nexusListenHints(strings.Join(many, ",")), ",")); n != 100 {
+		t.Fatal(n)
+	}
+}
+
+func TestNexusListenEndReason(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "herdr-listen")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "listen.json"), []byte(`{"state":"final","final":"테스트","endReason":"silence","engine":"analyzer"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got := nexusListenWith(context.Background(), "status", "darwin", binary, dir)
+	if got.EndReason != "silence" || got.Engine != "analyzer" {
+		t.Fatal(got)
+	}
+	raw, _ := json.Marshal(got)
+	if !strings.Contains(string(raw), `"end_reason":"silence"`) {
+		t.Fatal(string(raw))
+	}
+}
