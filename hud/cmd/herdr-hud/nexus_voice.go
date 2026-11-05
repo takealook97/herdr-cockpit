@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -75,7 +76,7 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 			return fail(err)
 		}
 		if terminal.Labels["nexus.voice"] != "1" {
-			return fail(errors.New("음성 터미널 소유 라벨을 확인하지 못했습니다"))
+			return fail(errors.New("nexus-voice 터미널에 라벨이 없습니다. `hc kill nexus-voice` 후 다시 여세요"))
 		}
 		tail, err := hc(ctx, "read", address, "--lines", "40")
 		if err != nil {
@@ -83,19 +84,24 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 		}
 		text := strings.ToLower(string(tail))
 		if terminal.Labels["nexus.voice.rev"] == rev && !strings.Contains(text, "/restart to apply") && !strings.Contains(text, "start claude again") {
-			return nexusVoiceReady(ctx, address, hc)
+			return nexusVoiceReply{Mode: "claude", Terminal: address}
 		}
 		if _, err := hc(ctx, "kill", address); err != nil {
 			return fail(err)
 		}
-		if _, err := hc(ctx, "wait", address, "--timeout", "10"); err != nil {
-			return fail(err)
-		}
-		if _, err := hc(ctx, "rm", address); err != nil {
-			return fail(err)
-		}
+		_, _ = hc(ctx, "wait", address, "--timeout", "10")
+		_, _ = hc(ctx, "rm", address)
 	}
-	raw, err = hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", "nexus.voice.rev="+rev, "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
+	create := func() ([]byte, error) {
+		return hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", "nexus.voice.rev="+rev, "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
+	}
+	raw, err = create()
+	if err != nil && address != "" && nexusVoiceNameTaken(string(raw)+" "+err.Error()) {
+		if waitErr := nexusVoicePause(ctx, 500*time.Millisecond); waitErr != nil {
+			return fail(waitErr)
+		}
+		raw, err = create()
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -108,7 +114,7 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 	if created.Address == "" || strings.Contains(created.Address, "/") {
 		return fail(errors.New("음성 터미널 주소를 확인하지 못했습니다"))
 	}
-	return nexusVoiceReady(ctx, created.Address, hc)
+	return nexusVoiceReady(ctx, created.Address, dir, hc)
 }
 
 func nexusVoiceLive(ctx context.Context, hc nexusHCRunner) (string, error) {
@@ -152,24 +158,88 @@ func nexusVoiceLive(ctx context.Context, hc nexusHCRunner) (string, error) {
 	return "", nil
 }
 
-func nexusVoiceReady(ctx context.Context, address string, hc nexusHCRunner) nexusVoiceReply {
-	raw, err := hc(ctx, "read", address, "--lines", "40")
-	if err == nil {
-		text := strings.ToLower(string(raw))
-		if strings.Contains(text, "trust this folder") || strings.Contains(text, "quick safety check") {
-			_, err = hc(ctx, "keys", address, "enter")
-		}
-	}
-	if err != nil {
-		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
-	}
-	return nexusVoiceReply{Mode: "claude", Terminal: address}
+func nexusVoiceNameTaken(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "name") && (strings.Contains(text, "already") || strings.Contains(text, "taken") || strings.Contains(text, "in use") || strings.Contains(text, "exists"))
 }
 
+func nexusVoicePause(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// Only newly created terminals may accept a trust dialog. Read screen content,
+// never scrollback, and require both the explicit choice and our private cwd.
+func nexusVoiceReady(ctx context.Context, address, dir string, hc nexusHCRunner) nexusVoiceReply {
+	ready := nexusVoiceReply{Mode: "claude", Terminal: address}
+	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	home, _ := os.UserHomeDir()
+	short := dir
+	if home != "" && strings.HasPrefix(dir, home+string(filepath.Separator)) {
+		short = "~" + strings.TrimPrefix(dir, home)
+	}
+	for {
+		raw, err := hc(pollCtx, "read", address, "--lines", "0")
+		if err != nil {
+			if ctx.Err() == nil && pollCtx.Err() != nil {
+				return ready
+			}
+			return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+		}
+		text := string(raw)
+		choice, input := false, false
+		for _, line := range strings.Split(text, "\n") {
+			choice = choice || strings.Contains(line, "Yes, I trust this folder")
+			trimmed := strings.TrimSpace(line)
+			input = input || trimmed == "›" || strings.HasPrefix(trimmed, "› ") || trimmed == "❯" || strings.HasPrefix(trimmed, "❯ ")
+		}
+		if choice && (strings.Contains(text, dir) || strings.Contains(text, short)) {
+			if _, err := hc(pollCtx, "keys", address, "enter"); err != nil {
+				return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+			}
+			return ready
+		}
+		if input {
+			return ready
+		}
+		if err := nexusVoicePause(pollCtx, 200*time.Millisecond); err != nil {
+			if ctx.Err() != nil {
+				return nexusVoiceReply{Action: "error", Error: nexusError(ctx.Err()).Error}
+			}
+			return ready
+		}
+	}
+}
+
+var nexusVoiceKeyPattern = regexp.MustCompile(`^[a-z0-9+_-]{1,20}$`)
+
 func nexusVoiceKey(ctx context.Context, key string, hc nexusHCRunner) nexusVoiceReply {
+	if !nexusVoiceKeyPattern.MatchString(key) || strings.HasPrefix(key, "-") {
+		return nexusVoiceReply{Action: "error", Error: "올바르지 않은 음성 키입니다"}
+	}
 	address, err := nexusVoiceLive(ctx, hc)
 	if err == nil && address == "" {
 		err = errors.New("실행 중인 음성 터미널이 없습니다")
+	}
+	if err == nil {
+		var raw []byte
+		raw, err = hc(ctx, "get", address, "--json")
+		var terminal struct {
+			Labels map[string]string `json:"labels"`
+		}
+		if err == nil {
+			err = json.Unmarshal(raw, &terminal)
+		}
+		if err == nil && terminal.Labels["nexus.voice"] != "1" {
+			err = errors.New("음성 터미널 소유 라벨을 확인하지 못했습니다")
+		}
 	}
 	if err == nil {
 		_, err = hc(ctx, "keys", address, key)

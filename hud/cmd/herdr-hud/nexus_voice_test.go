@@ -37,6 +37,9 @@ func TestNexusVoiceEnsure(t *testing.T) {
 					sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", raw, voiceTestClaude(t), info.ModTime().UnixNano())))
 					return []byte(fmt.Sprintf(`{"labels":{"nexus.voice":"1","nexus.voice.rev":"%x"}}`, sum[:8])), nil
 				}
+				if args[0] == "read" {
+					return []byte("› "), nil
+				}
 				return []byte(`{"address":"t5x"}`), nil
 			}
 			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, func(string) string { return voiceTestClaude(t) }, hc)
@@ -87,7 +90,7 @@ func TestNexusVoiceEnsure(t *testing.T) {
 				t.Fatalf("hook shell command: %q, %v", got, err)
 			}
 			if reuse {
-				if len(calls) != 4 {
+				if len(calls) != 3 {
 					t.Fatal(calls)
 				}
 			} else {
@@ -232,7 +235,7 @@ func TestNexusVoiceResolveName(t *testing.T) {
 		}
 	}
 	r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return voiceTestClaude(t) }, hc)
-	if r.Error == "" || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "nexus-voice", "--json"}, {"get", "t5x", "--json"}}) {
+	if r.Error != "nexus-voice 터미널에 라벨이 없습니다. `hc kill nexus-voice` 후 다시 여세요" || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "nexus-voice", "--json"}, {"get", "t5x", "--json"}}) {
 		t.Fatal(r, calls)
 	}
 }
@@ -392,7 +395,7 @@ func TestNexusNavigateHeartbeatAndFailures(t *testing.T) {
 }
 
 func TestNexusVoiceKey(t *testing.T) {
-	for _, stage := range []string{"ok", "missing", "exited", "remote", "ls", "keys"} {
+	for _, stage := range []string{"ok", "missing", "exited", "remote", "ls", "keys", "get", "unlabeled", "invalid detail"} {
 		t.Run(stage, func(t *testing.T) {
 			var calls [][]string
 			hc := func(_ context.Context, args ...string) ([]byte, error) {
@@ -411,6 +414,14 @@ func TestNexusVoiceKey(t *testing.T) {
 						return []byte(`{"terminals":[{"address":"remote/t1","name":"nexus-voice"}]}`), nil
 					}
 					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					if stage == "unlabeled" {
+						return []byte(`{"labels":{}}`), nil
+					}
+					if stage == "invalid detail" {
+						return []byte("{"), nil
+					}
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
 				case "keys":
 					return nil, nil
 				default:
@@ -420,7 +431,7 @@ func TestNexusVoiceKey(t *testing.T) {
 			}
 			r := nexusVoiceKey(context.Background(), "space", hc)
 			if stage == "ok" {
-				if !r.OK || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"keys", "t1", "space"}}) {
+				if !r.OK || !reflect.DeepEqual(calls, [][]string{{"ls", "--json"}, {"get", "t1", "--json"}, {"keys", "t1", "space"}}) {
 					t.Fatal(r, calls)
 				}
 			} else if r.OK || r.Action != "error" || r.Error == "" {
@@ -431,14 +442,16 @@ func TestNexusVoiceKey(t *testing.T) {
 }
 
 func TestNexusVoiceEnsureTrust(t *testing.T) {
-	for _, reuse := range []bool{false, true} {
-		for _, screen := range []string{"Do you TRUST THIS FOLDER?", "Quick Safety Check", "ready"} {
-			cache := t.TempDir()
-			var keys int
+	for _, scenario := range []string{"third poll", "history only", "reuse", "wrong cwd", "tilde"} {
+		t.Run(scenario, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			cache := filepath.Join(home, "cache")
+			reads, keys := 0, 0
 			hc := func(_ context.Context, args ...string) ([]byte, error) {
 				switch args[0] {
 				case "ls":
-					if reuse {
+					if scenario == "reuse" {
 						return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
 					}
 					return []byte(`{"terminals":[]}`), nil
@@ -450,10 +463,28 @@ func TestNexusVoiceEnsureTrust(t *testing.T) {
 					sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d", raw, voiceTestClaude(t), info.ModTime().UnixNano())))
 					return []byte(fmt.Sprintf(`{"labels":{"nexus.voice":"1","nexus.voice.rev":"%x"}}`, sum[:8])), nil
 				case "read":
-					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "40"}) {
+					reads++
+					prompt := filepath.Join(cache, "nexus-voice") + "\n1. Yes, I trust this folder"
+					if scenario == "reuse" {
+						return []byte(prompt), nil
+					}
+					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "0"}) {
 						t.Fatal(args)
 					}
-					return []byte(screen), nil
+					if scenario == "third poll" && reads < 3 {
+						return nil, nil
+					}
+					if scenario == "history only" {
+						// The accepted dialog exists only in history; screen-only reads omit it.
+						return []byte("› "), nil
+					}
+					if scenario == "wrong cwd" {
+						return []byte("/other\nYes, I trust this folder\n› "), nil
+					}
+					if scenario == "tilde" {
+						prompt = "~/cache/nexus-voice\nYes, I trust this folder"
+					}
+					return []byte(prompt), nil
 				case "keys":
 					keys++
 					if !reflect.DeepEqual(args, []string{"keys", "t1", "enter"}) {
@@ -466,13 +497,22 @@ func TestNexusVoiceEnsureTrust(t *testing.T) {
 				}
 			}
 			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, func(string) string { return voiceTestClaude(t) }, hc)
-			want := 1
-			if screen == "ready" {
-				want = 0
+			want := 0
+			if scenario == "third poll" || scenario == "tilde" {
+				want = 1
 			}
-			if r.Error != "" || r.Terminal != "t1" || keys != want {
-				t.Fatal(reuse, screen, r, keys)
+			if r.Error != "" || keys != want || (scenario == "third poll" && reads != 3) || (scenario == "reuse" && reads != 1) {
+				t.Fatal(r, reads, keys)
 			}
+		})
+	}
+}
+
+func TestNexusVoiceKeyValidation(t *testing.T) {
+	for _, key := range []string{"", "-enter", "--help", "SPACE", "a b", "a;id", strings.Repeat("a", 21)} {
+		r := nexusVoiceKey(context.Background(), key, func(context.Context, ...string) ([]byte, error) { t.Fatal("invalid key reached hc"); return nil, nil })
+		if r.Action != "error" {
+			t.Fatal(key, r)
 		}
 	}
 }
@@ -519,14 +559,14 @@ func TestNexusVoiceRevisionLifecycle(t *testing.T) {
 					}
 					return json.Marshal(map[string]any{"labels": map[string]string{"nexus.voice": label, "nexus.voice.rev": r}})
 				case "read":
-					if live && scenario == "restart" {
+					if live && args[3] == "40" && scenario == "restart" {
 						return []byte("Update installed · /restart to apply"), nil
 					}
-					if live && scenario == "start again" {
+					if live && args[3] == "40" && scenario == "start again" {
 						return []byte("Please start Claude again"), nil
 					}
 				}
-				return nil, nil
+				return []byte("› "), nil
 			}
 			lookup := func(string) string { return voiceTestClaude(t) }
 			if r := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, lookup, hc); r.Error != "" {
@@ -548,7 +588,7 @@ func TestNexusVoiceRevisionLifecycle(t *testing.T) {
 			got := strings.Join(calls, ",")
 			switch scenario {
 			case "same":
-				if got != "ls,get,read,read" {
+				if got != "ls,get,read" {
 					t.Fatal(got)
 				}
 			case "missing":
@@ -559,6 +599,48 @@ func TestNexusVoiceRevisionLifecycle(t *testing.T) {
 				if got != "ls,get,read,kill,wait,rm,run,read" {
 					t.Fatal(got)
 				}
+			}
+		})
+	}
+}
+
+func TestNexusVoiceRestartCleanupAndRetry(t *testing.T) {
+	for _, conflict := range []bool{false, true} {
+		t.Run(fmt.Sprint(conflict), func(t *testing.T) {
+			var calls []string
+			runs := 0
+			var firstRun time.Time
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, args[0])
+				switch args[0] {
+				case "ls":
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					return []byte(`{"labels":{"nexus.voice":"1","nexus.voice.rev":"old"}}`), nil
+				case "read":
+					return []byte("› "), nil
+				case "wait", "rm":
+					return nil, errors.New("cleanup failed")
+				case "run":
+					runs++
+					if conflict && runs == 1 {
+						firstRun = time.Now()
+						return nil, errors.New("name nexus-voice already taken")
+					}
+					if conflict && time.Since(firstRun) < 500*time.Millisecond {
+						t.Fatal("retry did not wait")
+					}
+					return []byte(`{"address":"t2"}`), nil
+				}
+				return nil, nil
+			}
+			r := nexusVoiceEnsure(context.Background(), nexusConfig{}, t.TempDir(), func(string) string { return voiceTestClaude(t) }, hc)
+			want := "ls,get,read,kill,wait,rm,run,read"
+			if conflict {
+				want = "ls,get,read,kill,wait,rm,run,run,read"
+			}
+			if r.Error != "" || r.Terminal != "t2" || strings.Join(calls, ",") != want {
+				t.Fatal(r, calls)
 			}
 		})
 	}
