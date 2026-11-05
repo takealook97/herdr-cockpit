@@ -12,23 +12,34 @@ struct TranscriptKeeper {
     }
 }
 
-// Replace a stored hypothesis only when more than half its duration overlaps.
-// Zero-duration pieces are replaced when their point is inside the new range.
-struct TranscriptPiece {
-    var start: Double
-    var end: Double
-    var text: String
-    var segments: [(text: String, start: Double, duration: Double)] = []
-}
+// SpeechTranscriber final results append; each volatile result replaces the
+// pending hypothesis wholesale. Empty results retain the last useful text.
+struct AnalyzerTranscript {
+    typealias Segment = (text: String, start: Double, duration: Double)
+    private(set) var finalized = ""
+    private(set) var volatile = ""
+    private(set) var finalizedSegments: [Segment] = []
+    private(set) var volatileSegments: [Segment] = []
 
-func mergingTranscriptPieces(_ pieces: [TranscriptPiece], with new: TranscriptPiece) -> [TranscriptPiece] {
-    let retained = pieces.filter { piece in
-        let duration = piece.end - piece.start
-        if duration == 0 { return !(new.start <= piece.start && piece.start <= new.end) }
-        let overlap = max(0, min(piece.end, new.end) - max(piece.start, new.start))
-        return overlap <= duration * 0.5
+    var text: String {
+        [finalized, volatile].filter { !$0.isEmpty }.joined(separator: " ")
     }
-    return (retained + [new]).sorted { $0.start < $1.start }
+
+    var segments: [Segment] { finalizedSegments + volatileSegments }
+
+    mutating func observe(text: String, segments: [Segment], isFinal: Bool) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if isFinal {
+            finalized = [finalized, text].filter { !$0.isEmpty }.joined(separator: " ")
+            finalizedSegments.append(contentsOf: segments)
+            volatile = ""
+            volatileSegments = []
+        } else {
+            volatile = text
+            volatileSegments = segments
+        }
+    }
 }
 
 func contextualHints(_ value: String) -> [String] {

@@ -4,7 +4,7 @@ import Speech
 
 // All conversion and continuation writes are serialized, including end-of-input.
 // Keep this type availability-gated; Listener retains it through closures only.
-// Mutable conversion state belongs to queue, pieces to resultTask, and callbacks
+// Mutable conversion state belongs to queue, transcript to resultTask, and callbacks
 // and task handles to the main lifecycle queue. No mutable state crosses owners.
 @available(macOS 26, *)
 final class AnalyzerSpeech: @unchecked Sendable {
@@ -19,7 +19,7 @@ final class AnalyzerSpeech: @unchecked Sendable {
     var closed = false
     var resultTask: Task<Void, Never>?
     var analysisTask: Task<Void, Never>?
-    var pieces: [TranscriptPiece] = []
+    var transcript = AnalyzerTranscript()
     var onResult: ((String, [Segment]) -> Void)?
     var onFinish: ((Error?) -> Void)?
 
@@ -62,11 +62,9 @@ final class AnalyzerSpeech: @unchecked Sendable {
                         let range = run.audioTimeRange ?? result.range
                         return (String(result.text[run.range].characters), CMTimeGetSeconds(range.start), CMTimeGetSeconds(range.duration))
                     }
-                    pieces = mergingTranscriptPieces(pieces, with: TranscriptPiece(
-                        start: CMTimeGetSeconds(result.range.start),
-                        end: CMTimeGetSeconds(CMTimeRangeGetEnd(result.range)), text: text, segments: segments))
-                    let combined = pieces.map(\.text).joined(separator: " ")
-                    let allSegments = pieces.flatMap(\.segments)
+                    transcript.observe(text: text, segments: segments, isFinal: result.isFinal)
+                    let combined = transcript.text
+                    let allSegments = transcript.segments
                     DispatchQueue.main.async { self.onResult?(combined, allSegments) }
                 }
                 DispatchQueue.main.async { self.onFinish?(nil) }

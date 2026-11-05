@@ -21,23 +21,43 @@ struct TranscriptKeeperTests {
         assert(contextualHints(originals.joined(separator: ",")) == Array(originals.prefix(100)))
         assert(contextualHints("a-b,a b,ab,a_b") == ["a-b", "a b", "ab", "a_b"])
 
-        let earlier = TranscriptPiece(start: 0, end: 2, text: "final", segments: [("final", 0, 2)])
-        let later = TranscriptPiece(start: 2, end: 3, text: "tail", segments: [("tail", 2, 1)])
-        let correction = TranscriptPiece(start: 0, end: 2.1, text: "corrected", segments: [("corrected", 0, 2.1)])
-        let merged = mergingTranscriptPieces([earlier, later], with: correction)
-        assert(merged.map(\.text) == ["corrected", "tail"], "slight overlap must retain the later phrase")
-        assert(merged.flatMap(\.segments).map { $0.text } == ["corrected", "tail"])
-        assert(mergingTranscriptPieces([later], with: earlier).map(\.text) == ["final", "tail"], "touching pieces remain ordered")
-        assert(mergingTranscriptPieces([later], with: TranscriptPiece(start: 0, end: 1, text: "before")).map(\.text) == ["before", "tail"], "non-overlapping later piece survives")
-        assert(mergingTranscriptPieces([later], with: TranscriptPiece(start: 0, end: 2.5, text: "half")).count == 2, "exactly half overlap keeps the tail")
-        assert(mergingTranscriptPieces([later], with: TranscriptPiece(start: 0, end: 2.51, text: "most")).map(\.text) == ["most"], "more than half overlap replaces the tail")
-        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 0, end: 2, text: "new")).map(\.text) == ["new"])
-        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 1.98, end: 3, text: "next")).map(\.text) == ["final", "next"], "slight overlap must retain the earlier phrase")
-        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 1, end: 3, text: "next")).map(\.text) == ["final", "next"], "half overlap keeps the earlier phrase")
-        assert(mergingTranscriptPieces([earlier], with: TranscriptPiece(start: 0, end: 1.5, text: "volatile update")).map(\.text) == ["volatile update"], "same-start volatile update replaces the prior piece")
-        let point = TranscriptPiece(start: 2, end: 2, text: "point")
-        assert(mergingTranscriptPieces([point], with: TranscriptPiece(start: 1, end: 3, text: "cover")).map(\.text) == ["cover"], "covered zero-duration piece is replaced")
-        assert(mergingTranscriptPieces([point], with: TranscriptPiece(start: 3, end: 4, text: "outside")).map(\.text) == ["point", "outside"], "zero-duration piece outside the range survives")
+        var transcript = AnalyzerTranscript()
+        transcript.observe(text: "A partial", segments: [("A partial", 0, 2)], isFinal: false)
+        transcript.observe(text: "A full", segments: [("A full", 0, 3)], isFinal: false)
+        assert(transcript.text == "A full", "volatile updates replace the entire hypothesis")
+        assert(transcript.segments.count == 1 && transcript.segments[0].duration == 3,
+               "volatile timing is replaced with the latest result")
+        transcript.observe(text: "A", segments: [("A", 1.9, 1)], isFinal: true)
+        assert(transcript.text == "A", "final replaces volatile even with little timing overlap")
+        assert(transcript.finalized == "A" && transcript.volatile.isEmpty && transcript.volatileSegments.isEmpty,
+               "final appends to finalized text and clears volatile text and timing")
+        assert(transcript.segments.count == 1 && transcript.segments[0].start == 1.9)
+
+        var sequence = AnalyzerTranscript()
+        sequence.observe(text: "A", segments: [("A", 0, 2)], isFinal: false)
+        sequence.observe(text: "A", segments: [("A", 1.9, 1)], isFinal: true)
+        sequence.observe(text: "B", segments: [("B", 2, 2)], isFinal: false)
+        assert(sequence.text == "A B" && sequence.segments.map { $0.text } == ["A", "B"],
+               "display and laughter trimming combine finalized and latest volatile results")
+        sequence.observe(text: "B", segments: [("B", 3.9, 1)], isFinal: true)
+        assert(sequence.text == "A B", "volatile/final pairs must not duplicate sentences")
+        assert(sequence.finalized == "A B" && sequence.volatile.isEmpty)
+        assert(sequence.segments.map { $0.start } == [1.9, 3.9], "only finalized timing survives")
+        let laughterTrimmed = trimTranscript(segments: sequence.segments, ranges: [LaughRange(start: 3.9, end: 4.9)])
+        assert(laughterTrimmed.text == "A" && laughterTrimmed.trimmed == 1)
+
+        for isFinal in [false, true] {
+            sequence.observe(text: "", segments: [], isFinal: isFinal)
+            sequence.observe(text: " \n ", segments: [], isFinal: isFinal)
+            assert(sequence.text == "A B" && sequence.segments.count == 2,
+                   "empty results never erase finalized text or timing")
+        }
+        sequence.observe(text: "C", segments: [("C", 5, 1)], isFinal: false)
+        for isFinal in [false, true] {
+            sequence.observe(text: " \n ", segments: [], isFinal: isFinal)
+            assert(sequence.text == "A B C" && sequence.volatile == "C" && sequence.segments.count == 3,
+                   "empty results never erase the last useful volatile text or timing")
+        }
         print("TranscriptKeeper tests passed")
     }
 }
