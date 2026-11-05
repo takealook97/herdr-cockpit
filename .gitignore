@@ -4,3 +4,4 @@ bin/
 node_modules/
 __pycache__/
 *.pyc
+.test-install-*/

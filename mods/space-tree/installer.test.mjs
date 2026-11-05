@@ -15,15 +15,24 @@ function sandbox(fn) {
     for (const sub of ['app', 'tmp', 'mock']) mkdirSync(join(folder, sub));
     writeFileSync(join(folder, 'mock', 'go'), '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then shift; printf "#!/bin/sh\\nexit 0\\n" > "$1"; exit 0; fi; shift; done\n');
     writeFileSync(join(folder, 'mock', 'rsync'), '#!/bin/sh\nexit 0\n');
-    for (const name of ['go', 'rsync']) chmodSync(join(folder, 'mock', name), 0o755);
+    writeFileSync(join(folder, 'mock', 'swiftc'), '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do if [ "$1" = "-o" ]; then shift; printf "#!/bin/sh\\nexit 0\\n" > "$1"; exit 0; fi; shift; done\n');
+    writeFileSync(join(folder, 'mock', 'codesign'), '#!/bin/sh\nexit 0\n');
+    for (const name of ['go', 'rsync', 'swiftc', 'codesign']) chmodSync(join(folder, 'mock', name), 0o755);
     const keys = join(folder, 'app', 'keys.json');
     const run = (args = []) => spawnSync('/bin/bash', [join(root, 'scripts', 'install.sh'), ...args], {
-      cwd: root, encoding: 'utf8', env: { ...process.env, HOME: folder, HERDR_APP_HOME: join(folder, 'app'),
+      cwd: root, encoding: 'utf8', env: { ...process.env, HOME: folder, HERDR_APP_HOME: join(folder, 'app'), HERDR_SKIP_LISTEN_PREPARE: '1',
         TMPDIR: join(folder, 'tmp'), PATH: `${join(folder, 'mock')}:${process.env.PATH}` },
     });
     fn({ folder, keys, run });
   } finally { rmSync(folder, { recursive: true, force: true }); }
 }
+test('dry-run reports skipped listen preparation', () => sandbox(({ folder, run }) => {
+  writeFileSync(join(folder, 'mock', 'uname'), '#!/bin/sh\nif [ "$1" = "-s" ]; then echo Darwin; else echo arm64; fi\n', { mode: 0o755 });
+  const result = run(['--dry-run']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Skip herdr-listen prepare \(HERDR_SKIP_LISTEN_PREPARE\)/);
+  assert.doesNotMatch(result.stdout, /nohup .*herdr-listen/);
+}));
 test('installer backs up keys and adds only missing bindings, idempotently', () => sandbox(({ folder, keys, run }) => {
   const original = '{"global":{"ctrl-x":"app.help"},"terminal":{"ctrl-a":"home"}}\n';
   writeFileSync(keys, original, { mode: 0o640 });
