@@ -11,11 +11,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 )
 
 type nexusVoiceReply struct {
 	OK        bool   `json:"ok,omitempty"`
+	Pending   bool   `json:"pending,omitempty"`
 	Recording *bool  `json:"recording,omitempty"`
 	Submitted *bool  `json:"submitted,omitempty"`
 	Cancelled *bool  `json:"cancelled,omitempty"`
@@ -227,6 +229,11 @@ func nexusVoiceKey(ctx context.Context, key string, hc nexusHCRunner) nexusVoice
 	if !nexusVoiceKeyPattern.MatchString(key) || strings.HasPrefix(key, "-") {
 		return nexusVoiceReply{Action: "error", Error: "올바르지 않은 음성 키입니다"}
 	}
+	unlock, err := nexusVoiceLock(ctx)
+	if err != nil {
+		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	}
+	defer unlock()
 	address, err := nexusVoiceOwned(ctx, hc)
 	if err == nil {
 		_, err = hc(ctx, "keys", address, key)
@@ -266,27 +273,125 @@ func nexusVoiceCheckOwner(ctx context.Context, address string, hc nexusHCRunner)
 	return nil
 }
 
+// Keep the lock file in place: unlinking it could let another process lock a
+// different inode while an action still owns the original lock.
+func nexusVoiceLock(ctx context.Context) (func(), error) {
+	dir := filepath.Join(hudCacheDir(), "nexus-voice")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "voice.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, err
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for {
+		if err := waitCtx.Err(); err != nil {
+			f.Close()
+			return nil, err
+		}
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			f.Close()
+			return nil, err
+		}
+		if err := nexusVoicePause(waitCtx, 25*time.Millisecond); err != nil {
+			f.Close()
+			return nil, err
+		}
+	}
+}
+
+type nexusVoiceState struct {
+	Recording bool  `json:"recording"`
+	Since     int64 `json:"since"`
+}
+
+func nexusVoiceStatePath() string { return filepath.Join(hudCacheDir(), "nexus-voice", "state.json") }
+
+func nexusVoiceRecent(age time.Duration) bool {
+	raw, err := os.ReadFile(nexusVoiceStatePath())
+	var state nexusVoiceState
+	if err != nil || json.Unmarshal(raw, &state) != nil || !state.Recording {
+		return false
+	}
+	elapsed := time.Now().UnixMilli() - state.Since
+	return elapsed >= 0 && elapsed <= age.Milliseconds()
+}
+
+func nexusVoiceRecording(screen string) bool { return strings.Contains(screen, "⏺ REC") }
+
+const nexusVoiceBlocked = "UserPromptSubmit operation blocked by hook"
+
+// A missing prompt is not evidence that the editor is empty.
+func nexusVoiceInput(screen string) (string, bool) {
+	input, found := "", false
+	for _, line := range strings.Split(screen, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "❯" || strings.HasPrefix(line, "❯ ") {
+			input, found = strings.TrimSpace(strings.TrimPrefix(line, "❯")), true
+		}
+	}
+	return input, found
+}
+
+// Poll only the live screen, never history containing old recording markers.
+func nexusVoiceWaitREC(ctx context.Context, address string, hc nexusHCRunner) (bool, error) {
+	pollCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	for {
+		raw, err := hc(pollCtx, "read", address, "--lines", "0")
+		if err != nil {
+			if ctx.Err() == nil && pollCtx.Err() != nil {
+				return false, nil
+			}
+			return false, err
+		}
+		if nexusVoiceRecording(string(raw)) {
+			return true, nil
+		}
+		if err := nexusVoicePause(pollCtx, 200*time.Millisecond); err != nil {
+			return false, ctx.Err()
+		}
+	}
+}
+
 // Closing an idle dialog must not alter its prompt or start a recording.
 func nexusVoiceCancel(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 	cancelled := false
-	fail := func(err error) nexusVoiceReply {
-		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	fail := func(err error) nexusVoiceReply { return nexusVoiceReply{Action: "error", Error: nexusError(err).Error} }
+	unlock, err := nexusVoiceLock(ctx)
+	if err != nil {
+		return fail(err)
 	}
+	defer unlock()
 	address, err := nexusVoiceLive(ctx, hc)
 	if err != nil {
 		return fail(err)
 	}
 	if address == "" {
+		_ = os.Remove(nexusVoiceStatePath())
 		return nexusVoiceReply{OK: true, Cancelled: &cancelled}
 	}
 	if err := nexusVoiceCheckOwner(ctx, address, hc); err != nil {
 		return fail(err)
 	}
+	defer os.Remove(nexusVoiceStatePath())
 	raw, err := hc(ctx, "read", address, "--lines", "0")
 	if err != nil {
 		return fail(err)
 	}
-	if strings.Contains(string(raw), "REC") {
+	visible := nexusVoiceRecording(string(raw))
+	if visible || nexusVoiceRecent(5*time.Second) {
+		if !visible {
+			if _, err := nexusVoiceWaitREC(ctx, address, hc); err != nil {
+				return fail(err)
+			}
+		}
 		if _, err := hc(ctx, "keys", address, "esc"); err != nil {
 			return fail(err)
 		}
@@ -299,77 +404,102 @@ func nexusVoiceCancel(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 }
 
 func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
-	fail := func(err error) nexusVoiceReply {
-		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	fail := func(err error) nexusVoiceReply { return nexusVoiceReply{Action: "error", Error: nexusError(err).Error} }
+	unlock, err := nexusVoiceLock(ctx)
+	if err != nil {
+		return fail(err)
 	}
+	defer unlock()
 	address, err := nexusVoiceOwned(ctx, hc)
 	if err != nil {
 		return fail(err)
 	}
-	// Screen only: an old REC marker in scrollback must not stop a new recording.
 	raw, err := hc(ctx, "read", address, "--lines", "0")
 	if err != nil {
 		return fail(err)
 	}
-	recording := strings.Contains(string(raw), "REC")
-	if !recording {
-		// Tap mode starts only on an empty prompt. Move to its end and clear it.
-		if _, err := hc(ctx, "keys", address, "ctrl+e", "ctrl+u"); err != nil {
+	screen := string(raw)
+	if !nexusVoiceRecording(screen) && !nexusVoiceRecent(3*time.Second) {
+		for attempt := 0; ; attempt++ {
+			input, found := nexusVoiceInput(screen)
+			if found && input == "" {
+				break
+			}
+			if attempt == 3 {
+				return fail(errors.New("입력창을 비우지 못했습니다"))
+			}
+			if _, err := hc(ctx, "keys", address, "ctrl+e", "ctrl+u"); err != nil {
+				return fail(err)
+			}
+			raw, err = hc(ctx, "read", address, "--lines", "0")
+			if err != nil {
+				return fail(err)
+			}
+			screen = string(raw)
+		}
+		if _, err := hc(ctx, "keys", address, "space"); err != nil {
 			return fail(err)
 		}
+		state, _ := json.Marshal(nexusVoiceState{Recording: true, Since: time.Now().UnixMilli()})
+		if err := nexusAtomic(nexusVoiceStatePath(), state); err != nil {
+			return fail(err)
+		}
+		recording, err := nexusVoiceWaitREC(ctx, address, hc)
+		if err != nil {
+			return fail(err)
+		}
+		return nexusVoiceReply{OK: true, Recording: &recording, Pending: !recording}
 	}
+	defer os.Remove(nexusVoiceStatePath())
+	blocked := strings.Count(screen, nexusVoiceBlocked)
 	if _, err := hc(ctx, "keys", address, "space"); err != nil {
 		return fail(err)
 	}
-	if !recording {
-		recording = true
-		return nexusVoiceReply{OK: true, Recording: &recording}
-	}
-	recording = false
-	submitted := false
-	pollCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	recording, submitted := false, false
+	reply := func() nexusVoiceReply { return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted} }
+	pollCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
+	stableText := ""
+	var stableSince time.Time
 	for {
-		select {
-		case <-pollCtx.Done():
-			return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted}
-		case <-ticker.C:
+		if err := nexusVoicePause(pollCtx, 200*time.Millisecond); err != nil {
+			if ctx.Err() != nil {
+				return fail(ctx.Err())
+			}
+			return reply()
 		}
 		raw, err := hc(pollCtx, "read", address, "--lines", "0")
 		if pollCtx.Err() != nil {
-			return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted}
+			if ctx.Err() != nil {
+				return fail(ctx.Err())
+			}
+			return reply()
 		}
 		if err != nil {
 			return fail(err)
 		}
-		screen := string(raw)
-		if strings.Contains(screen, "REC") {
+		screen = string(raw)
+		if strings.Count(screen, nexusVoiceBlocked) > blocked {
+			submitted = true
+			return reply()
+		}
+		input, found := nexusVoiceInput(screen)
+		if nexusVoiceRecording(screen) || !found || input == "" {
+			stableText, stableSince = "", time.Time{}
 			continue
 		}
-		if strings.Contains(screen, "UserPromptSubmit hook") {
-			submitted = true
-		} else {
-			found := false
-			input := ""
-			for _, line := range strings.Split(screen, "\n") {
-				if strings.HasPrefix(line, "❯ ") {
-					found = true
-					input = strings.TrimSpace(strings.TrimPrefix(line, "❯ "))
-				}
-			}
-			if !found {
-				continue
-			}
-			if input != "" {
-				if _, err := hc(pollCtx, "keys", address, "enter"); err != nil {
-					return fail(err)
-				}
-			}
-			submitted = true
+		if input != stableText {
+			stableText, stableSince = input, time.Now()
+			continue
 		}
-		return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted}
+		if time.Since(stableSince) < 400*time.Millisecond {
+			continue
+		}
+		if _, err := hc(pollCtx, "keys", address, "enter"); err != nil {
+			return fail(err)
+		}
+		submitted = true
+		return reply()
 	}
 }
 

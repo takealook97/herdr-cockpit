@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -395,6 +396,7 @@ func TestNexusNavigateHeartbeatAndFailures(t *testing.T) {
 }
 
 func TestNexusVoiceKey(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	for _, stage := range []string{"ok", "missing", "exited", "remote", "ls", "keys", "get", "unlabeled", "invalid detail"} {
 		t.Run(stage, func(t *testing.T) {
 			var calls [][]string
@@ -646,98 +648,48 @@ func TestNexusVoiceRestartCleanupAndRetry(t *testing.T) {
 	}
 }
 
-func TestNexusVoiceRecord(t *testing.T) {
-	for _, scenario := range []string{"leftover", "recording", "missing", "unlabelled", "read failure", "clear failure", "space failure"} {
-		t.Run(scenario, func(t *testing.T) {
-			var calls [][]string
-			reads := 0
-			hc := func(_ context.Context, args ...string) ([]byte, error) {
-				calls = append(calls, append([]string(nil), args...))
-				switch args[0] {
-				case "ls":
-					if scenario == "missing" {
-						return []byte(`{"terminals":[]}`), nil
-					}
-					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
-				case "get":
-					if scenario == "unlabelled" {
-						return []byte(`{"labels":{}}`), nil
-					}
-					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
-				case "read":
-					if scenario == "read failure" {
-						return nil, errors.New("read failed")
-					}
-					if scenario == "recording" {
-						reads++
-						if reads > 1 {
-							return []byte("❯ "), nil
-						}
-						return []byte("● REC 00:03\n❯ "), nil
-					}
-					return []byte("❯ 네. 아 이거 근데"), nil
-				case "keys":
-					if scenario == "clear failure" && args[2] == "ctrl+e" || scenario == "space failure" && args[2] == "space" {
-						return nil, errors.New("keys failed")
-					}
-					return nil, nil
-				default:
-					t.Fatalf("unexpected hc call: %v", args)
-					return nil, nil
-				}
-			}
-			r := nexusVoiceRecord(context.Background(), hc)
-			want := [][]string{{"ls", "--json"}}
-			if scenario != "missing" {
-				want = append(want, []string{"get", "t1", "--json"})
-				if scenario != "unlabelled" {
-					want = append(want, []string{"read", "t1", "--lines", "0"})
-					if scenario != "read failure" {
-						if scenario != "recording" {
-							want = append(want, []string{"keys", "t1", "ctrl+e", "ctrl+u"})
-						}
-						if scenario != "clear failure" {
-							want = append(want, []string{"keys", "t1", "space"})
-						}
-					}
-				}
-			}
-			if scenario == "recording" {
-				want = append(want, []string{"read", "t1", "--lines", "0"})
-			}
-			if !reflect.DeepEqual(calls, want) {
-				t.Fatalf("calls %v, want %v", calls, want)
-			}
-			if scenario == "leftover" || scenario == "recording" {
-				raw, err := json.Marshal(r)
-				wantJSON := `{"ok":true,"recording":true}`
-				if scenario == "recording" {
-					wantJSON = `{"ok":true,"recording":false,"submitted":true}`
-				}
-				if err != nil || string(raw) != wantJSON {
-					t.Fatal(string(raw), err)
-				}
-			} else if r.OK || r.Error == "" || r.Action != "error" || r.Recording != nil {
-				t.Fatal(r)
-			}
-		})
-	}
-}
-
-func TestNexusVoiceRecordStopSubmission(t *testing.T) {
-	for _, scenario := range []struct {
-		name   string
-		screen string
-		enter  int
-		sent   bool
+func TestNexusVoiceScreenSequences(t *testing.T) {
+	const rec = "⏺ REC 00:03\n❯ interim"
+	const blocked = nexusVoiceBlocked + ": old\n"
+	tests := []struct {
+		name, action                             string
+		screens                                  []string
+		recent                                   time.Duration
+		keys                                     []string
+		recording, submitted, cancelled, pending bool
+		wantError                                string
+		minElapsed                               time.Duration
 	}{
-		{"auto submitted hook", "UserPromptSubmit hook\n❯ short phrase", 0, true},
-		{"auto submitted empty", "❯ ", 0, true},
-		{"short phrase", "❯ 짧은 말", 1, true},
-		{"timeout", "● REC 00:04\n❯ pending", 0, false},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			reads, enters, spaces := 0, 0, 0
+		{name: "interim then final", screens: []string{rec, "❯ interim", "❯ final text", "❯ final text", "❯ final text"}, keys: []string{"space", "enter"}, submitted: true, minElapsed: 800 * time.Millisecond},
+		{name: "auto submit count increases", screens: []string{blocked + rec, blocked + "❯ interim", blocked + blocked + "❯ final text"}, keys: []string{"space"}, submitted: true},
+		{name: "old hook count does not submit", screens: []string{blocked + rec, blocked + "❯ final text"}, keys: []string{"space", "enter"}, submitted: true},
+		{name: "cancel before REC renders", action: "cancel", recent: time.Second, screens: []string{"❯", "❯", "❯", rec}, keys: []string{"esc", "ctrl+e ctrl+u"}, cancelled: true, minElapsed: 400 * time.Millisecond},
+		{name: "pending cancel still escapes on timeout", action: "cancel", recent: time.Second, screens: []string{"❯"}, keys: []string{"esc", "ctrl+e ctrl+u"}, cancelled: true, minElapsed: 3 * time.Second},
+		{name: "cancel draft REC", action: "cancel", screens: []string{"❯ REC RECORD recording"}},
+		{name: "draft REC is not recording", screens: []string{"❯ REC RECORD", "❯", "⏺ REC 00:00\n❯"}, keys: []string{"ctrl+e ctrl+u", "space"}, recording: true},
+		{name: "clear multiline draft in three attempts", screens: []string{"❯ line three", "❯ line two", "❯ line one", "❯", rec}, keys: []string{"ctrl+e ctrl+u", "ctrl+e ctrl+u", "ctrl+e ctrl+u", "space"}, recording: true},
+		{name: "cannot clear draft", screens: []string{"❯ never empty"}, keys: []string{"ctrl+e ctrl+u", "ctrl+e ctrl+u", "ctrl+e ctrl+u"}, wantError: "입력창을 비우지 못했습니다"},
+		{name: "missing input is not empty", screens: []string{"loading"}, keys: []string{"ctrl+e ctrl+u", "ctrl+e ctrl+u", "ctrl+e ctrl+u"}, wantError: "입력창을 비우지 못했습니다"},
+		{name: "pending start keeps state", screens: []string{"❯"}, keys: []string{"space"}, pending: true, minElapsed: 3 * time.Second},
+		{name: "empty prompt is not submitted", screens: []string{rec, "❯"}, keys: []string{"space"}, minElapsed: 6 * time.Second},
+		{name: "REC timeout does not submit", screens: []string{rec}, keys: []string{"space"}, minElapsed: 6 * time.Second},
+		{name: "recent state stops before REC", recent: time.Second, screens: []string{"❯", "❯ final"}, keys: []string{"space", "enter"}, submitted: true},
+		{name: "expired start state starts again", recent: 4 * time.Second, screens: []string{"❯", rec}, keys: []string{"space"}, recording: true},
+		{name: "expired cancel state preserves draft", action: "cancel", recent: 6 * time.Second, screens: []string{"❯ draft"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			if tt.recent != 0 {
+				raw, _ := json.Marshal(nexusVoiceState{true, time.Now().Add(-tt.recent).UnixMilli()})
+				if err := nexusAtomic(nexusVoiceStatePath(), raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reads := 0
+			var keys []string
+			var lastChange time.Time
+			var lastInput string
 			hc := func(_ context.Context, args ...string) ([]byte, error) {
 				switch args[0] {
 				case "ls":
@@ -746,40 +698,289 @@ func TestNexusVoiceRecordStopSubmission(t *testing.T) {
 					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
 				case "read":
 					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "0"}) {
-						t.Fatalf("unexpected read: %v", args)
+						t.Fatalf("not screen only: %v", args)
+					}
+					index := reads
+					if index >= len(tt.screens) {
+						index = len(tt.screens) - 1
+					}
+					screen := tt.screens[index]
+					input, _ := nexusVoiceInput(screen)
+					if input != lastInput {
+						lastChange, lastInput = time.Now(), input
 					}
 					reads++
-					if reads <= 2 {
-						return []byte("● REC 00:03\n❯ pending"), nil
-					}
-					return []byte(scenario.screen), nil
+					return []byte(screen), nil
 				case "keys":
-					switch args[2] {
-					case "space":
-						spaces++
-					case "enter":
-						enters++
-					default:
-						t.Fatalf("unexpected keys: %v", args)
+					key := strings.Join(args[2:], " ")
+					if key == "enter" && (lastInput == "" || time.Since(lastChange) < 400*time.Millisecond) {
+						t.Fatal("Enter before final text settled")
 					}
+					if tt.name == "interim then final" && key == "enter" && lastInput != "final text" {
+						t.Fatal("submitted interim transcript")
+					}
+					if tt.name == "cancel before REC renders" && key == "esc" && reads < 4 {
+						t.Fatal("cancel did not await REC")
+					}
+					keys = append(keys, key)
+					return nil, nil
 				default:
-					t.Fatalf("unexpected hc: %v", args)
+					t.Fatalf("unexpected command %v", args)
+					return nil, nil
 				}
+			}
+			start := time.Now()
+			var reply nexusVoiceReply
+			if tt.action == "cancel" {
+				reply = nexusVoiceCancel(context.Background(), hc)
+			} else {
+				reply = nexusVoiceRecord(context.Background(), hc)
+			}
+			if !reflect.DeepEqual(keys, tt.keys) {
+				t.Fatalf("keys %v, want %v", keys, tt.keys)
+			}
+			if tt.wantError != "" {
+				if reply.Error != tt.wantError || reply.OK {
+					t.Fatalf("reply %+v", reply)
+				}
+				return
+			}
+			if !reply.OK || reply.Error != "" || reply.Pending != tt.pending {
+				t.Fatalf("reply %+v", reply)
+			}
+			if tt.action == "cancel" {
+				if reply.Cancelled == nil || *reply.Cancelled != tt.cancelled {
+					t.Fatalf("reply %+v", reply)
+				}
+			} else {
+				if reply.Recording == nil || *reply.Recording != tt.recording {
+					t.Fatalf("reply %+v", reply)
+				}
+				if reply.Submitted != nil && *reply.Submitted != tt.submitted || tt.submitted && reply.Submitted == nil {
+					t.Fatalf("reply %+v", reply)
+				}
+			}
+			if time.Since(start) < tt.minElapsed {
+				t.Fatal("returned before required wait")
+			}
+			raw, err := os.ReadFile(nexusVoiceStatePath())
+			if tt.recording || tt.pending {
+				var state nexusVoiceState
+				if err != nil || json.Unmarshal(raw, &state) != nil || !state.Recording || state.Since < start.UnixMilli() {
+					t.Fatalf("state %s, err %v", raw, err)
+				}
+				info, err := os.Stat(nexusVoiceStatePath())
+				if err != nil || info.Mode().Perm() != 0600 {
+					t.Fatalf("state permissions: %v %v", info, err)
+				}
+			} else if !os.IsNotExist(err) {
+				t.Fatalf("state not cleared: %s %v", raw, err)
+			}
+		})
+	}
+}
+
+func TestNexusVoiceRecordFailures(t *testing.T) {
+	for _, stage := range []string{"missing", "unlabelled", "read", "clear", "space", "poll", "enter"} {
+		t.Run(stage, func(t *testing.T) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			reads := 0
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				switch args[0] {
+				case "ls":
+					if stage == "missing" {
+						return []byte(`{"terminals":[]}`), nil
+					}
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					if stage == "unlabelled" {
+						return []byte(`{"labels":{}}`), nil
+					}
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					reads++
+					if stage == "read" || stage == "poll" && reads > 1 {
+						return nil, errors.New("read failed")
+					}
+					if stage == "enter" {
+						if reads == 1 {
+							return []byte("⏺ REC\n❯ draft"), nil
+						}
+						return []byte("❯ final"), nil
+					}
+					if stage == "clear" {
+						return []byte("❯ draft"), nil
+					}
+					return []byte("❯"), nil
+				case "keys":
+					if stage == "clear" && args[2] == "ctrl+e" || stage == "space" && args[2] == "space" || stage == "enter" && args[2] == "enter" {
+						return nil, errors.New("keys failed")
+					}
+					return nil, nil
+				}
+				t.Fatalf("unexpected command %v", args)
 				return nil, nil
 			}
-			started := time.Now()
-			r := nexusVoiceRecord(context.Background(), hc)
-			if !r.OK || r.Recording == nil || *r.Recording || r.Submitted == nil || *r.Submitted != scenario.sent || enters != scenario.enter || spaces != 1 || reads < 3 {
-				t.Fatalf("reply %+v, reads %d, enters %d, spaces %d", r, reads, enters, spaces)
+			reply := nexusVoiceRecord(context.Background(), hc)
+			if reply.OK || reply.Action != "error" || reply.Error == "" {
+				t.Fatalf("reply %+v", reply)
 			}
-			if scenario.name == "timeout" && time.Since(started) < 4*time.Second {
-				t.Fatal("returned before polling timeout")
+			// A failed start confirmation still leaves a cancellation safety lease.
+			if stage == "poll" && !nexusVoiceRecent(5*time.Second) {
+				t.Fatal("lost pending start state")
+			}
+			unlock, err := nexusVoiceLock(context.Background())
+			if err != nil {
+				t.Fatalf("lock leaked after failure: %v", err)
+			}
+			unlock()
+		})
+	}
+}
+
+func TestNexusVoiceLockWaitLimit(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	unlock, err := nexusVoiceLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	for _, tt := range []struct {
+		name  string
+		limit time.Duration
+	}{
+		{"five second limit", 0}, {"caller deadline", 50 * time.Millisecond},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tt.limit != 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.limit)
+				defer cancel()
+			}
+			started := time.Now()
+			unexpectedUnlock, err := nexusVoiceLock(ctx)
+			if unexpectedUnlock != nil {
+				unexpectedUnlock()
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("lock error %v", err)
+			}
+			limit := tt.limit
+			if limit == 0 {
+				limit = 5 * time.Second
+			}
+			if elapsed := time.Since(started); elapsed < limit || elapsed > limit+time.Second {
+				t.Fatalf("wait %v, want %v", elapsed, limit)
+			}
+		})
+	}
+}
+
+func TestNexusVoiceConcurrentActions(t *testing.T) {
+	for _, action := range []string{"record", "cancel", "key"} {
+		t.Run(action, func(t *testing.T) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			started, release := make(chan struct{}), make(chan struct{})
+			firstDone, secondDone := make(chan nexusVoiceReply, 1), make(chan nexusVoiceReply, 1)
+			var mu sync.Mutex
+			spaces, reads := 0, 0
+			firstHC := func(_ context.Context, args ...string) ([]byte, error) {
+				switch args[0] {
+				case "ls":
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					reads++
+					if reads == 1 {
+						return []byte("❯"), nil
+					}
+					close(started)
+					<-release
+					return []byte("⏺ REC 00:00\n❯"), nil
+				case "keys":
+					mu.Lock()
+					defer mu.Unlock()
+					if args[2] == "space" {
+						spaces++
+					}
+					return nil, nil
+				}
+				return nil, errors.New("unexpected command")
+			}
+			go func() { firstDone <- nexusVoiceRecord(context.Background(), firstHC) }()
+			<-started
+			secondEntered := make(chan struct{}, 1)
+			secondReads := 0
+			secondHC := func(_ context.Context, args ...string) ([]byte, error) {
+				select {
+				case secondEntered <- struct{}{}:
+				default:
+				}
+				switch args[0] {
+				case "ls":
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					secondReads++
+					if secondReads == 1 {
+						return []byte("⏺ REC 00:01\n❯"), nil
+					}
+					return []byte(nexusVoiceBlocked + "\n❯"), nil
+				case "keys":
+					mu.Lock()
+					defer mu.Unlock()
+					if args[2] == "space" {
+						spaces++
+					}
+					return nil, nil
+				}
+				return nil, errors.New("unexpected command")
+			}
+			go func() {
+				switch action {
+				case "record":
+					secondDone <- nexusVoiceRecord(context.Background(), secondHC)
+				case "cancel":
+					secondDone <- nexusVoiceCancel(context.Background(), secondHC)
+				case "key":
+					secondDone <- nexusVoiceKey(context.Background(), "esc", secondHC)
+				}
+			}()
+			premature := false
+			select {
+			case <-secondEntered:
+				premature = true
+			case <-time.After(150 * time.Millisecond):
+			}
+			close(release)
+			first, second := <-firstDone, <-secondDone
+			if premature {
+				t.Fatal("second action bypassed flock")
+			}
+			if !first.OK || first.Recording == nil || !*first.Recording || !second.OK {
+				t.Fatalf("replies %+v %+v", first, second)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			wantSpaces := 1
+			if action == "record" {
+				wantSpaces = 2
+				if second.Submitted == nil || !*second.Submitted {
+					t.Fatalf("second call did not stop recording: %+v", second)
+				}
+			}
+			if spaces != wantSpaces {
+				t.Fatalf("space count %d, want %d", spaces, wantSpaces)
 			}
 		})
 	}
 }
 
 func TestNexusVoiceCancel(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	for _, scenario := range []string{"recording", "idle", "missing", "exited", "remote", "unlabelled", "list failure", "read failure", "esc failure", "clear failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			var calls [][]string
@@ -810,7 +1011,7 @@ func TestNexusVoiceCancel(t *testing.T) {
 					if scenario == "idle" {
 						return []byte("❯ leftover text"), nil
 					}
-					return []byte("● REC 00:03\n❯ "), nil
+					return []byte("⏺ REC 00:03\n❯ "), nil
 				case "keys":
 					if scenario == "esc failure" && args[2] == "esc" || scenario == "clear failure" && args[2] == "ctrl+e" {
 						return nil, errors.New("keys failed")
