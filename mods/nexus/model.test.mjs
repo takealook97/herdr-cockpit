@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildRoster, logLines, parseReply, dotHeights, helperArgs } from "./model.js";
+import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs } from "./model.js";
 
 test("buildRoster uses cwd basename, caps the report and tolerates missing panes", () => {
   const long = "x".repeat(200);
@@ -16,12 +16,11 @@ test("buildRoster uses cwd basename, caps the report and tolerates missing panes
   assert.deepEqual(buildRoster(), []);
 });
 
-test("logLines maps each action to its marker", () => {
-  const lines = logLines([
-    { text: "a", action: "send", label: "tool · x" }, { text: "b", action: "ask", question: "which?" },
-    { text: "c", action: "read", summary: "sum" }, { text: "d", action: "error", error: "boom" }]);
-  assert.deepEqual(lines.map(l => l.kind), [">", "→", ">", "?", ">", "·", ">", "!"]);
-  assert.deepEqual(lines.filter(l => l.kind !== ">").map(l => l.text), ["tool · x", "which?", "sum", "boom"]);
+test("hintsFrom keeps unique non-empty space and tab names", () => {
+  assert.deepEqual(hintsFrom([{ spaceName: "tool", tabName: "a,b" }, { spaceName: "tool", tabName: " " }, {}, null]), ["tool", "a b"]);
+  assert.equal(hintsFrom(Array.from({ length: 150 }, (_, i) => ({ tabName: `t${i}` }))).length, 100);
+  assert.equal(hintsFrom([{ tabName: "x".repeat(80) }])[0].length, 64);
+  assert.deepEqual(hintsFrom(), []);
 });
 
 test("parseReply returns an error object for bad JSON", () => {
@@ -42,7 +41,10 @@ test("helperArgs builds the D15 argv", () => {
   const base = ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "nexus"];
   assert.deepEqual(helperArgs("route", { text: "hi", roster }), [...base, "route", "--text", "hi", "--roster", JSON.stringify(roster)]);
   assert.deepEqual(helperArgs("send", { to: "t1", text: "-x", roster }), [...base, "send", "--to", "t1", "--text", "-x", "--roster", JSON.stringify(roster)]);
-  assert.deepEqual(helperArgs("log"), [...base, "log", "--limit", "6"]);
+  assert.throws(() => helperArgs("log"));
+  assert.deepEqual(helperArgs("listen", { action: "start", hints: ["a", "b c"] }), [...base, "listen", "start", "--hints", "a,b c"]);
+  assert.deepEqual(helperArgs("listen", { action: "start", hints: [] }), [...base, "listen", "start"]);
+  assert.deepEqual(helperArgs("listen", { action: "status", hints: ["a"] }), [...base, "listen", "status"]);
   assert.deepEqual(helperArgs("listen", { action: "status" }), [...base, "listen", "status"]);
   assert.throws(() => helperArgs("bogus"));
 });

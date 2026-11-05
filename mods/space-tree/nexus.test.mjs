@@ -25,7 +25,7 @@ function setup(existing) {
 test('nexus command opens a dialog overlay and a second one closes it while open', () => {
   const h = setup();
   h.tree.toggleNexus(false);
-  assert.deepEqual(h.overlays[0], ['open', { mod: 'nexus', kind: 'dialog', width: 560, height: 420, props: { listen: false } }]);
+  assert.deepEqual(h.overlays[0], ['open', { mod: 'nexus', kind: 'dialog', width: 560, height: 120, props: { listen: false } }]);
   h.shared.set('nexus.open', true);
   h.tree.toggleNexus(true);
   assert.deepEqual(h.overlays[1], ['close', 'ov1']);
