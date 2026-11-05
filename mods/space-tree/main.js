@@ -16,6 +16,7 @@ export default class SpaceTree extends Plumbing {
     initRename(this);
     if (props()?.treeMenu) { this.handle.focus(); return; }
     super.init(p, cx);
+    setShared("nexus.open", false); // overlays never survive a restart, shared values do
     try { this.treeFolded = JSON.parse(localStorage.getItem("tree.folded") ?? "{}"); } catch { this.treeFolded = {}; }
     this.orch = {};
     this.lastModel = {};

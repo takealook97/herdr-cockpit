@@ -5,8 +5,8 @@ import { load, host, element } from './host.test.mjs';
 import * as model from './hub-model.js';
 import { buildTree, assignSectionColors, machineId, rowId } from './model.js';
 
-function setup() {
-  const h = host(); h.overlays = [];
+function setup(existing) {
+  const h = existing ?? host(); h.overlays = [];
   const deps = { ...h.deps, ...model, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
     focused: () => ({}), layout: () => ({}), nextCommand: () => new Promise(resolve => { h.command = resolve; }),
     exec: async () => ({ code: 0, stdout: '{"runs":[],"terminals":[]}' }),
@@ -32,6 +32,13 @@ test('nexus command opens a dialog overlay and a second one closes it while open
   h.shared.set('nexus.open', false);
   h.tree.toggleNexus(true);
   assert.equal(h.overlays[2][1].props.listen, true);
+});
+
+test('init clears a stale nexus.open flag', () => {
+  const h = host({ 'nexus.open': true });
+  assert.equal(h.shared.get('nexus.open'), true);
+  const s = setup(h);
+  assert.equal(s.shared.get('nexus.open'), false);
 });
 
 test('selecting the nexus row toggles the dialog instead of the hub', () => {

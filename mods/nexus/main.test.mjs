@@ -44,3 +44,70 @@ test('empty input is ignored and errors keep the typed text', async () => {
   h.view.input.set_value('x'); h.view.submit(h.cx); await h.flush();
   assert.equal(h.view.input.value(), 'x'); assert.equal(h.view.reply.error, 'boom');
 });
+
+function voice(handler, props = { listen: true }) {
+  const h = host(); h.closed = []; h.execs = [];
+  h.cx.timer.every = (ms, fn) => { const t = { ms, fn, canceled: false, cancel() { this.canceled = true; } }; h.intervals.push(t); return t; };
+  const Nexus = load(new URL('./main.js', import.meta.url), 'Nexus', { ...h.deps, ...model, v_flex: element,
+    InputState: { new: opts => ({ ...h.deps.InputState.new(opts), focus() {} }) },
+    exec: async (_c, args) => { h.execs.push(args.slice(4)); return { code: 0, stdout: JSON.stringify(await handler(args.slice(4), h)) }; },
+    panes: () => [], terminals: () => [], props: () => ({ overlay: 'ov', ...props }), closeOverlay: id => h.closed.push(id) });
+  h.live = () => h.intervals.filter(t => !t.canceled);
+  h.view = new Nexus(); h.view.init({}, h.cx); return h;
+}
+const withClock = async (fn) => {
+  const real = Date.now; let now = 1000; Date.now = () => now;
+  try { await fn(ms => { now += ms; }); } finally { Date.now = real; }
+};
+
+test('unavailable helper hides the mic and never creates a poll timer', async () => {
+  const h = voice(async a => a[0] === 'log' ? { entries: [] } : { state: 'unavailable' });
+  await h.flush();
+  assert.equal(h.view.micHidden, true); assert.equal(h.view.listening, false);
+  assert.equal(h.live().length, 0); assert.ok(!h.execs.some(a => a[1] === 'start'));
+  assert.match(h.view.reply.info, /음성 입력을 쓸 수 없습니다/);
+});
+
+test('unavailable start reply and unavailable poll both stop polling', async () => {
+  const h = voice(async a => a[0] === 'log' ? { entries: [] } : a[1] === 'status' && h.execs.filter(x => x[1] === 'status').length < 2 ? { state: 'idle' } : { state: 'unavailable' });
+  await h.flush();
+  assert.equal(h.view.micHidden, true); assert.equal(h.live().length, 0);
+  const p = voice(async a => a[0] === 'log' ? { entries: [] } : a[1] === 'start' ? { state: 'listening' } : p.execs.filter(x => x[1] === 'status').length < 2 ? { state: 'idle' } : { state: 'unavailable' });
+  await p.flush(); assert.equal(p.live().length, 1);
+  p.view.pollStatus(p.cx); await p.flush();
+  assert.equal(p.view.listening, false); assert.equal(p.live().length, 0); assert.equal(p.view.micHidden, true);
+});
+
+test('stop during a pending start leaves no live timers and stops the helper', async () => {
+  let resolve; const pending = new Promise(r => { resolve = r; });
+  const h = voice(async a => a[0] === 'log' ? { entries: [] } : a[1] === 'start' ? pending : { state: 'idle' }, {});
+  await h.flush(); h.view.startListening(h.cx);
+  h.view.stopListening(h.cx); resolve({ state: 'listening' }); await h.flush();
+  assert.equal(h.view.listening, false); assert.equal(h.live().length, 0);
+  assert.equal(h.execs.filter(a => a[1] === 'stop').length, 2);
+});
+
+test('early idle is ignored during startup so later partials reach the input; persistent idle stops', async () => {
+  await withClock(async advance => {
+    let polls = 0;
+    const h = voice(async a => a[0] === 'log' ? { entries: [] } : a[1] === 'start' ? { state: 'listening' }
+      : a[1] === 'status' && h.view?.startedAt ? (++polls === 1 ? { state: 'idle' } : { state: 'listening', partial: '안녕' }) : { state: 'idle' });
+    await h.flush(); h.view.pollStatus(h.cx); await h.flush();
+    assert.equal(h.view.listening, true);
+    h.view.pollStatus(h.cx); await h.flush();
+    assert.equal(h.view.input.value(), '안녕');
+    const g = voice(async a => a[0] === 'log' ? { entries: [] } : a[1] === 'start' ? { state: 'listening' } : { state: 'idle' });
+    await g.flush(); g.view.pollStatus(g.cx); await g.flush();
+    assert.equal(g.view.listening, true);
+    advance(3001); g.view.pollStatus(g.cx); await g.flush();
+    assert.equal(g.view.listening, false); assert.equal(g.live().length, 0);
+  });
+});
+
+test('a send reply with a warning still succeeds and warns', async () => {
+  const h = setup({ action: 'send', target: 't1', label: 'x', sent: true, warning: '확인 필요' });
+  h.view.input.set_value('hi'); h.view.submit(h.cx); await h.flush();
+  assert.deepEqual(h.closed, ['ov']);
+  const w = h.calls.map(c => c.notify).filter(Boolean).find(n => n.level === 'warning');
+  assert.deepEqual(w, { title: 'Nexus', body: '확인 필요', level: 'warning', timeout: 6000 });
+});
