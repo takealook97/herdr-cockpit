@@ -645,3 +645,73 @@ func TestNexusVoiceRestartCleanupAndRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestNexusVoiceRecord(t *testing.T) {
+	for _, scenario := range []string{"leftover", "recording", "missing", "unlabelled", "read failure", "clear failure", "space failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			var calls [][]string
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				calls = append(calls, append([]string(nil), args...))
+				switch args[0] {
+				case "ls":
+					if scenario == "missing" {
+						return []byte(`{"terminals":[]}`), nil
+					}
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					if scenario == "unlabelled" {
+						return []byte(`{"labels":{}}`), nil
+					}
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					if scenario == "read failure" {
+						return nil, errors.New("read failed")
+					}
+					if scenario == "recording" {
+						return []byte("● REC 00:03\n❯ "), nil
+					}
+					return []byte("❯ 네. 아 이거 근데"), nil
+				case "keys":
+					if scenario == "clear failure" && args[2] == "ctrl+e" || scenario == "space failure" && args[2] == "space" {
+						return nil, errors.New("keys failed")
+					}
+					return nil, nil
+				default:
+					t.Fatalf("unexpected hc call: %v", args)
+					return nil, nil
+				}
+			}
+			r := nexusVoiceRecord(context.Background(), hc)
+			want := [][]string{{"ls", "--json"}}
+			if scenario != "missing" {
+				want = append(want, []string{"get", "t1", "--json"})
+				if scenario != "unlabelled" {
+					want = append(want, []string{"read", "t1", "--lines", "0"})
+					if scenario != "read failure" {
+						if scenario != "recording" {
+							want = append(want, []string{"keys", "t1", "ctrl+e", "ctrl+u"})
+						}
+						if scenario != "clear failure" {
+							want = append(want, []string{"keys", "t1", "space"})
+						}
+					}
+				}
+			}
+			if !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls %v, want %v", calls, want)
+			}
+			if scenario == "leftover" || scenario == "recording" {
+				raw, err := json.Marshal(r)
+				wantJSON := `{"ok":true,"recording":true}`
+				if scenario == "recording" {
+					wantJSON = `{"ok":true,"recording":false}`
+				}
+				if err != nil || string(raw) != wantJSON {
+					t.Fatal(string(raw), err)
+				}
+			} else if r.OK || r.Error == "" || r.Action != "error" || r.Recording != nil {
+				t.Fatal(r)
+			}
+		})
+	}
+}

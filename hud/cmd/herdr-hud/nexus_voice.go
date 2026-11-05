@@ -15,11 +15,12 @@ import (
 )
 
 type nexusVoiceReply struct {
-	OK       bool   `json:"ok,omitempty"`
-	Mode     string `json:"mode,omitempty"`
-	Terminal string `json:"terminal,omitempty"`
-	Action   string `json:"action,omitempty"`
-	Error    string `json:"error,omitempty"`
+	OK        bool   `json:"ok,omitempty"`
+	Recording *bool  `json:"recording,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Terminal  string `json:"terminal,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup func(string) string, hc nexusHCRunner) nexusVoiceReply {
@@ -224,6 +225,18 @@ func nexusVoiceKey(ctx context.Context, key string, hc nexusHCRunner) nexusVoice
 	if !nexusVoiceKeyPattern.MatchString(key) || strings.HasPrefix(key, "-") {
 		return nexusVoiceReply{Action: "error", Error: "올바르지 않은 음성 키입니다"}
 	}
+	address, err := nexusVoiceOwned(ctx, hc)
+	if err == nil {
+		_, err = hc(ctx, "keys", address, key)
+	}
+	if err != nil {
+		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
+	}
+	return nexusVoiceReply{OK: true}
+}
+
+// Resolve and validate ownership before sending input to the voice terminal.
+func nexusVoiceOwned(ctx context.Context, hc nexusHCRunner) (string, error) {
 	address, err := nexusVoiceLive(ctx, hc)
 	if err == nil && address == "" {
 		err = errors.New("실행 중인 음성 터미널이 없습니다")
@@ -241,13 +254,34 @@ func nexusVoiceKey(ctx context.Context, key string, hc nexusHCRunner) nexusVoice
 			err = errors.New("음성 터미널 소유 라벨을 확인하지 못했습니다")
 		}
 	}
-	if err == nil {
-		_, err = hc(ctx, "keys", address, key)
-	}
-	if err != nil {
+	return address, err
+}
+
+func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
+	fail := func(err error) nexusVoiceReply {
 		return nexusVoiceReply{Action: "error", Error: nexusError(err).Error}
 	}
-	return nexusVoiceReply{OK: true}
+	address, err := nexusVoiceOwned(ctx, hc)
+	if err != nil {
+		return fail(err)
+	}
+	// Screen only: an old REC marker in scrollback must not stop a new recording.
+	raw, err := hc(ctx, "read", address, "--lines", "0")
+	if err != nil {
+		return fail(err)
+	}
+	recording := strings.Contains(string(raw), "REC")
+	if !recording {
+		// Tap mode starts only on an empty prompt. Move to its end and clear it.
+		if _, err := hc(ctx, "keys", address, "ctrl+e", "ctrl+u"); err != nil {
+			return fail(err)
+		}
+	}
+	if _, err := hc(ctx, "keys", address, "space"); err != nil {
+		return fail(err)
+	}
+	recording = !recording
+	return nexusVoiceReply{OK: true, Recording: &recording}
 }
 
 func nexusDefaultDeps() nexusDeps {

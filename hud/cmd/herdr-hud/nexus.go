@@ -600,7 +600,7 @@ func nexusHC(ctx context.Context, args ...string) ([]byte, error) {
 }
 func cmdNexus(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: herdr-hud nexus route [--dry-run]|send|log|voice ensure|voice key [--key space]|hook-prompt|listen start|status|stop|prepare [--hints a,b,c] [--pid N]")
+		fmt.Fprintln(stderr, "usage: herdr-hud nexus route [--dry-run]|send|log|voice ensure|voice key [--key space]|voice record|hook-prompt|listen start|status|stop|prepare [--hints a,b,c] [--pid N]")
 		return 2
 	}
 	if len(args) == 0 {
@@ -622,6 +622,11 @@ func cmdNexus(args []string, stdout, stderr io.Writer) int {
 				return usage()
 			}
 			out = nexusVoiceEnsure(ctx, nexusLoadConfig(), hudCacheDir(), nexusCLIPath, nexusHC)
+		case "record":
+			if len(args) != 2 {
+				return usage()
+			}
+			out = nexusVoiceRecord(ctx, nexusHC)
 		case "key":
 			fs := flag.NewFlagSet("nexus voice key", flag.ContinueOnError)
 			fs.SetOutput(stderr)
