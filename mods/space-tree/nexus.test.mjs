@@ -62,20 +62,20 @@ test('the 400 ms focus retry is skipped when the voice terminal already has focu
   assert.equal(h.calls.filter(c => c.run).length, 1);
 });
 
-test('nexus-listen when closed opens, focuses, then sends one space key through the helper', async () => {
+test('nexus-listen when closed opens, focuses, then sends one record toggle through the helper', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(true); await settle();
   assert.equal(h.overlays.filter(o => o[0] === 'open').length, 1);
   assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure']);
   h.tick(120); h.tick(400); await settle();
-  assert.deepEqual(ensure.args.slice(-5), ['nexus', 'voice', 'key', '--key', 'space']);
+  assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'record']);
 });
 
-test('nexus-listen when open in claude mode sends the key instead of closing', async () => {
+test('nexus-listen when open in claude mode sends the record toggle instead of closing', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.overlayId', 'ov1'); h.shared.set('nexus.mode', 'claude');
   h.tree.toggleNexus(true); await settle();
-  assert.deepEqual(ensure.args.slice(-5), ['nexus', 'voice', 'key', '--key', 'space']);
+  assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'record']);
   assert.equal(h.overlays.length, 0);
 });
 
@@ -111,10 +111,18 @@ test('nexus-listen in apple mode toggles the mic while the bar is open; nexus cl
   assert.deepEqual(h.overlays, [['close', 'ovA']]);
 });
 
-test('a second press while ensure is pending opens only one dialog', async () => {
+test('a second nexus press while ensure is pending cancels that open', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(false); h.tree.toggleNexus(false); await settle();
-  assert.equal(h.overlays.filter(o => o[0] === 'open').length, 1);
+  assert.equal(h.overlays.filter(o => o[0] === 'open').length, 0);
+  h.tree.toggleNexus(false); await settle();
+  assert.equal(h.overlays.filter(o => o[0] === 'open').length, 1, 'a later press opens again');
+});
+
+test('a nexus-listen press while ensure is pending also cancels', async () => {
+  const h = setupVoice({ mode: 'claude', terminal: 't9' });
+  h.tree.toggleNexus(false); h.tree.toggleNexus(true); await settle();
+  assert.equal(h.overlays.length, 0);
 });
 
 test('a close() before ensure resolves opens no dialog and takes no focus', async () => {
@@ -122,20 +130,6 @@ test('a close() before ensure resolves opens no dialog and takes no focus', asyn
   h.tree.toggleNexus(false); h.tree.close(); await settle();
   assert.equal(h.overlays.length, 0);
   assert.deepEqual(h.calls.filter(c => c.run || c.notify), []);
-});
-
-test('a newer toggle supersedes an older pending ensure', async () => {
-  const gates = [];
-  const h = setupVoice(() => new Promise(resolve => gates.push(resolve)));
-  const base = gates.length;
-  h.tree.toggleNexus(false); h.tree.toggleNexus(false); await settle();
-  gates[base + 1]({ mode: 'claude', terminal: 't2' }); await settle();
-  gates[base]({ mode: 'claude', terminal: 't1' }); await settle();
-  const opened = h.overlays.filter(o => o[0] === 'open');
-  assert.equal(opened.length, 1);
-  assert.deepEqual(opened[0][1].layout.children[1].content, { terminal: 't2' });
-  h.tick(120);
-  assert.deepEqual(h.calls.filter(c => c.run).map(c => c.run), [['pane.focus', { terminal: 't2' }]]);
 });
 
 test('apple mode keeps the old bar and passes the listen flag', async () => {
@@ -175,7 +169,7 @@ test('main.js wires commands and live keys', () => {
 
 test('closing the dialog cancels pending focus and recording callbacks', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
-  const execs = []; h.tree.voiceKey = () => execs.push('record');
+  const execs = []; h.tree.voiceRecord = () => execs.push('record');
   h.tree.toggleNexus(true); await settle();
   h.shared.set('nexus.heartbeat', Date.now()); h.shared.set('nexus.overlayId', 'ov1');
   h.tree.toggleNexus(false);
@@ -194,7 +188,7 @@ test('header close then immediate reopen opens a new dialog', async () => {
 
 test('header close cancels pending callbacks of that dialog', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
-  const execs = []; h.tree.voiceKey = () => execs.push('record');
+  const execs = []; h.tree.voiceRecord = () => execs.push('record');
   h.tree.toggleNexus(true); await settle();
   h.shared.set('nexus.closedAt', Date.now() + 1);
   h.tick(120); h.tick(400);

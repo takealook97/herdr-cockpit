@@ -177,17 +177,25 @@ export default class SpaceTree extends Plumbing {
     if (this.nexusIsOpen()) {
       const apple = shared("nexus.mode") === "apple";
       if (listen && apple) { setShared("nexus.listenToggle", (Number(shared("nexus.listenToggle")) || 0) + 1); return; }
-      if (listen) { this.voiceKey(); return; }
+      if (listen) { this.voiceRecord(); return; }
       const id = shared("nexus.overlayId") ?? this.nexusOverlay;
       this.cancelNexusOpen();
       if (id) closeOverlay(id);
       return;
     }
+    if (this.nexusPending) {
+      // A press while ensure is still pending cancels that pending open instead of queuing another.
+      this.nexusRequest = (this.nexusRequest ?? 0) + 1;
+      this.nexusPending = false;
+      return;
+    }
     const request = this.nexusRequest = (this.nexusRequest ?? 0) + 1;
+    this.nexusPending = true;
     exec("sh", [...HUD, "nexus", "voice", "ensure"])
       .then(r => JSON.parse(r.stdout))
       .catch(error => ({ action: "error", error: `음성 터미널을 준비하지 못했습니다: ${String(error?.message ?? error)}` }))
       .then(reply => {
+        if (request === this.nexusRequest) this.nexusPending = false;
         if (this.closed || request !== this.nexusRequest) return;
         if (reply?.mode === "claude" && reply.terminal) this.openVoiceDialog(reply.terminal, !!listen);
         else if (reply?.mode === "apple") this.openAppleBar(!!listen);
@@ -216,8 +224,8 @@ export default class SpaceTree extends Plumbing {
     this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 150, props: { listen } });
     this.nexusOpenedAt = Date.now();
   }
-  voiceKey() {
-    return exec("sh", [...HUD, "nexus", "voice", "key", "--key", "space"])
+  voiceRecord() {
+    return exec("sh", [...HUD, "nexus", "voice", "record"])
       .then(r => { const reply = JSON.parse(r.stdout); if (reply?.action === "error") throw new Error(reply.error); })
       .catch(error => notify({ title: "Nexus", body: `녹음 키를 보내지 못했습니다: ${String(error?.message ?? error)}`, level: "error" }));
   }
@@ -237,7 +245,7 @@ export default class SpaceTree extends Plumbing {
       this.cx.timer.after(NEXUS_FOCUS_RETRY_MS, () => {
       if (!live()) return;
       if (focused()?.terminal !== terminal) run("pane.focus", { terminal });
-      if (record) this.voiceKey();
+      if (record) this.voiceRecord();
     })];
   }
   select(row, cx) {
