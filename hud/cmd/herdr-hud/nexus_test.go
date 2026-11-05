@@ -77,7 +77,7 @@ func TestNexusStatusForwarded(t *testing.T) {
 	calls := 0
 	d.model = func(_ context.Context, sys, p string, schema []byte) ([]byte, error) {
 		calls++
-		if strings.Contains(string(schema), `"read"`) || !strings.Contains(sys, "Never paraphrase") || !strings.Contains(sys, "pronunciation") {
+		if strings.Contains(string(schema), `"read"`) || !strings.Contains(sys, "polish the dictated message once") || !strings.Contains(sys, "pronunciation") {
 			t.Fatal(sys, string(schema))
 		}
 		return []byte(`{"action":"send","target":"t1","message":"어디까지 했어?","confidence":0.9}`), nil
@@ -476,6 +476,28 @@ func TestNexusAudioConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := nexusLoadConfig(); got.Model != "codex-low-h" || got.KeepAudio != 2 || got.LaughThreshold != 0.7 {
+		t.Fatal(got)
+	}
+}
+
+func TestNexusPolishedMultiline(t *testing.T) {
+	d := nexusFixture(t)
+	message := "넥서스 확인해.\n테스트도 돌려줘."
+	d.model = func(_ context.Context, sys, _ string, _ []byte) ([]byte, error) {
+		for _, rule := range []string{"speech-recognition errors using Head names and project context", "repetitions, duplicated sentences, fillers", "laughter", "punctuation and line breaks", "Drop the Head-naming part", "Keep the meaning, tone and language", "Never add requests, facts or politeness"} {
+			if !strings.Contains(sys, rule) {
+				t.Errorf("missing rule %q", rule)
+			}
+		}
+		return json.Marshal(map[string]any{"action": "send", "target": "t1", "message": message, "confidence": 0.99})
+	}
+	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+		if !reflect.DeepEqual(args, []string{"send", "--", "t1", message}) {
+			t.Fatal(args)
+		}
+		return nil, nil
+	}
+	if got := nexusRoute(context.Background(), d, "head 액서스 확인해 테스트도 돌려줘", nexusRoster()); !got.Sent || got.Message != message {
 		t.Fatal(got)
 	}
 }
