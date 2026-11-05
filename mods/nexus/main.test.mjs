@@ -337,3 +337,39 @@ test('init uses a wrapping multi-line textarea of up to 3 rows and warms up spee
   assert.equal(h.execs.filter(a => a[0] === 'listen' && a[1] === 'prepare').length, 1);
   h.view.input.set_value('긴 문장\n두 번째 줄'); assert.equal(h.view.input.value(), '긴 문장\n두 번째 줄');
 });
+
+function header(entries) {
+  const h = host(); h.closed = []; h.execs = []; h.intervals = [];
+  h.cx.timer.every = (ms, fn) => { const t = { ms, fn, canceled: false, cancel() { this.canceled = true; } }; h.intervals.push(t); return t; };
+  const Nexus = load(new URL('./main.js', import.meta.url), 'Nexus', { ...h.deps, ...model, v_flex: element,
+    exec: async (_c, args) => { h.execs.push(args.slice(4)); return { code: 0, stdout: JSON.stringify({ entries: entries() }) }; },
+    panes: () => [], terminals: () => [], props: () => ({ overlay: 'ov', header: true }), closeOverlay: id => h.closed.push(id) });
+  h.view = new Nexus(); h.view.init({}, h.cx); return h;
+}
+
+test('header mode marks the dialog open, skips the input and polls the latest log entry each second', async () => {
+  let entries = [];
+  const h = header(() => entries);
+  assert.equal(h.shared.get('nexus.open'), true);
+  assert.equal(h.view.input, undefined);
+  assert.equal(h.intervals[0].ms, 1000);
+  await h.flush();
+  assert.deepEqual(h.execs[0], ['log', '--limit', '1']);
+  assert.ok(JSON.stringify(h.view.render()).includes('Space를 누른 채 말하기'));
+  assert.equal(byId(h.view.render(), 'nexus-header-log'), undefined);
+  entries = [{ action: 'send', label: 'tool · wiki', target: 't1' }];
+  h.intervals[0].fn(h.cx); await h.flush();
+  assert.equal(byId(h.view.render(), 'nexus-header-log').nodes[0], '→ tool · wiki');
+  h.view.close();
+  assert.equal(h.shared.get('nexus.open'), false);
+  assert.equal(h.intervals[0].canceled, true);
+});
+
+test('logLine maps each action to one short line', () => {
+  assert.deepEqual(model.logLine({ action: 'ask', question: ' 어느\n쪽? ' }), { kind: '?', text: '? 어느 쪽?' });
+  assert.deepEqual(model.logLine({ action: 'ignore' }), { kind: 'ignore', text: '· 넘김' });
+  assert.deepEqual(model.logLine({ action: 'error', error: 'boom' }), { kind: '!', text: '! boom' });
+  assert.deepEqual(model.logLine({ action: 'send', target: 't2' }), { kind: 'send', text: '→ t2' });
+  assert.equal(model.logLine(null), null);
+  assert.equal(model.logLine({ action: 'weird' }), null);
+});

@@ -8,16 +8,19 @@ export function observerFor(info = {}) {
   return null;
 }
 
+// The dedicated Claude Code voice terminal is never a Head.
+export const isVoiceTerminal = (info = {}) => Boolean(info?.labels?.['nexus.voice']);
+
 // HUD terminals are agent-only. Keep full remote addresses and exclude all workers.
 export function headsFrom(hud = {}, panes = [], spaces = []) {
   const workers = new Set((hud.runs ?? []).flatMap(r => (r.workers ?? []).map(w => w.terminal)));
-  const agents = new Map((hud.terminals ?? []).filter(t => observerFor(t) === null).map(t => [t.address, t]));
+  const agents = new Map((hud.terminals ?? []).filter(t => observerFor(t) === null && !isVoiceTerminal(t)).map(t => [t.address, t]));
   const seen = new Set(), heads = [];
   for (const space of spaces) {
     const tabs = [...(space.tabs ?? [])].sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     for (const tab of tabs) for (const pane of panes.filter(p => p.tab === tab.id)) {
       const address = pane.terminal, info = agents.get(address);
-      if (!address || seen.has(address) || !info || workers.has(address) || observerFor(pane) !== null) continue;
+      if (!address || seen.has(address) || !info || workers.has(address) || observerFor(pane) !== null || isVoiceTerminal(pane)) continue;
       seen.add(address);
       heads.push({ address, tabName: tab.name, spaceName: space.name, status: pane.status ?? 'idle',
         machine: space.machine ?? null, space: space.id, tab: tab.id, model: info.model, effort: info.effort });

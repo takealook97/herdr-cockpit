@@ -10,6 +10,8 @@ import { treeRow, hubRow, nexusRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
 import { menuView } from "./tree-menu.js";
 
+const NEXUS_DIALOG_W = 640, NEXUS_DIALOG_H = 300, NEXUS_HEADER_PX = 26;
+
 export default class SpaceTree extends Plumbing {
   init(p, cx) {
     this.handle = cx.focus_handle();
@@ -154,14 +156,30 @@ export default class SpaceTree extends Plumbing {
   close() { this.closed = true; this.hub?.close(); this.input?.release(); }
 
   hubActive() { return this.hub?.active() ?? false; }
-  // The dialog is global: the same command (or row click) closes it while it is open.
+  // The dialog is global: either command (or a row click) closes it while it is open.
+  // Claude voice mode embeds the dedicated voice terminal; Space-hold dictation lives inside it.
   toggleNexus(listen) {
     if (shared("nexus.open") && this.nexusOverlay) {
-      // Cmd-Shift-Space inside an open dialog toggles its voice input instead of closing it.
-      if (listen) { setShared("nexus.listenToggle", (Number(shared("nexus.listenToggle")) || 0) + 1); return; }
       closeOverlay(this.nexusOverlay); this.nexusOverlay = null; return;
     }
-    this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 150, props: { listen: !!listen } });
+    if (this.nexusPending) return;
+    this.nexusPending = true;
+    exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "nexus", "voice", "ensure"])
+      .then(r => JSON.parse(r.stdout))
+      .catch(error => ({ action: "error", error: `음성 터미널을 준비하지 못했습니다: ${String(error?.message ?? error)}` }))
+      .then(reply => {
+        this.nexusPending = false;
+        if (reply?.mode === "claude" && reply.terminal) this.openVoiceDialog(reply.terminal);
+        else if (reply?.mode === "apple") this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 150, props: { listen: !!listen } });
+        else notify({ title: "Nexus", body: reply?.error || "음성 입력을 시작하지 못했습니다", level: "error" });
+      });
+  }
+  openVoiceDialog(terminal) {
+    if (shared("nexus.open") && this.nexusOverlay) return;
+    this.nexusOverlay = openOverlay({ kind: "dialog", width: NEXUS_DIALOG_W, height: NEXUS_DIALOG_H, layout: { type: "column", children: [
+      { type: "block", size: { px: NEXUS_HEADER_PX }, content: { mod: "nexus", props: { header: true } } },
+      { type: "block", content: { terminal } }] } });
+    run("pane.focus", { terminal });
   }
   select(row, cx) {
     if (this.editing || this.movingTab) return;
