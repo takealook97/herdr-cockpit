@@ -36,7 +36,7 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusLi
 	statePath := filepath.Join(dir, "listen.json")
 	pidPath := filepath.Join(dir, "listen.pid")
 	fail := func(err error) nexusListenState {
-		return nexusListenState{State: "error", Error: nexusBound(err.Error(), 300)}
+		return nexusListenState{State: "error", Error: nexusBound("음성 인식을 처리하지 못했습니다: "+err.Error(), 300)}
 	}
 	readPID := func() int {
 		raw, _ := os.ReadFile(pidPath)
@@ -79,18 +79,29 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusLi
 	}
 	if sub == "stop" {
 		pid := readPID()
-		if alive(pid) {
-			if !identity(pid) {
-				return fail(fmt.Errorf("listen pid does not belong to herdr-listen"))
-			}
+		if alive(pid) && identity(pid) {
 			if err = syscall.Kill(pid, syscall.SIGTERM); err != nil {
 				return fail(err)
 			}
+		} else {
+			raw, readErr := os.ReadFile(statePath)
+			var stale nexusListenState
+			if readErr == nil && json.Unmarshal(raw, &stale) == nil && stale.State == "listening" {
+				if err = os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+					return fail(err)
+				}
+			}
+		}
+		if err = os.Remove(pidPath); err != nil && !os.IsNotExist(err) {
+			return fail(err)
 		}
 		return nexusListenState{State: "idle"}
 	}
 	raw, err := os.ReadFile(statePath)
 	if os.IsNotExist(err) {
+		if pid := readPID(); alive(pid) && identity(pid) {
+			return nexusListenState{State: "listening", PID: pid}
+		}
 		return nexusListenState{State: "idle"}
 	}
 	if err != nil {
@@ -103,7 +114,7 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string) nexusLi
 	switch out.State {
 	case "idle", "listening", "final", "error":
 	default:
-		return fail(fmt.Errorf("invalid listen state"))
+		return fail(fmt.Errorf("음성 인식 상태가 올바르지 않습니다"))
 	}
 	pid := out.PID
 	if pid == 0 {

@@ -19,14 +19,14 @@ func nexusFixture(t *testing.T) nexusDeps {
 	return nexusDeps{model: func(context.Context, string, string, []byte) ([]byte, error) {
 		return []byte(`{"action":"send","target":"t1","message":"do it","confidence":0.9}`), nil
 	}, hc: func(context.Context, ...string) ([]byte, error) { return nil, nil }, panes: func(context.Context) HUDPanes {
-		return HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: "claude"}}}
+		return HUDPanes{Terminals: []HUDTerminal{{Address: "t1", detailLoaded: true, Program: "claude"}}}
 	}, now: func() time.Time { return time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC) }, logPath: filepath.Join(t.TempDir(), "log.json")}
 }
 func nexusRoster() []nexusRosterEntry {
 	return []nexusRosterEntry{{Address: "t1", Space: "space", Tab: "tab"}}
 }
 func TestNexusRoster(t *testing.T) {
-	panes := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: "claude"}, {Address: "t2", Program: "codex"}, {Address: "t3", Program: "claude", Labels: map[string]string{"hub.observer": ""}}, {Address: "remote/t4", Program: "claude"}, {Address: "t6", Program: "zsh"}}, Runs: []HUDRun{{Workers: []HUDWorker{{Terminal: "t2"}}}}}
+	panes := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", detailLoaded: true, Program: "claude"}, {Address: "t2", detailLoaded: true, Program: "codex"}, {Address: "t3", detailLoaded: true, Program: "claude", Labels: map[string]string{"hub.observer": ""}}, {Address: "remote/t4", detailLoaded: true, Program: "claude"}, {Address: "t6", Program: "zsh"}}, Runs: []HUDRun{{Workers: []HUDWorker{{Terminal: "t2"}}}}}
 	for _, tc := range []struct {
 		addr string
 		want int
@@ -195,6 +195,116 @@ func TestNexusClaudeOutput(t *testing.T) {
 		got, err := nexusClaudeOutput([]byte(tc.raw))
 		if (err != nil) != tc.bad || string(got) != tc.want {
 			t.Fatal(string(got), err)
+		}
+	}
+}
+
+func TestNexusLogFailurePreservesReply(t *testing.T) {
+	for _, mode := range []string{"route", "send"} {
+		t.Run(mode, func(t *testing.T) {
+			d := nexusFixture(t)
+			parent := filepath.Join(t.TempDir(), "file")
+			if err := os.WriteFile(parent, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			d.logPath = filepath.Join(parent, "log.json")
+			calls := 0
+			d.hc = func(context.Context, ...string) ([]byte, error) { calls++; return nil, nil }
+			var r nexusReply
+			if mode == "route" {
+				r = nexusRoute(context.Background(), d, "hello", nexusRoster())
+			} else {
+				r = nexusSend(context.Background(), d, "t1", "hello", nexusRoster())
+			}
+			if r.Action != "send" || !r.Sent || r.Error != "" || !strings.HasPrefix(r.Warning, "기록을 남기지 못했습니다: ") || calls != 1 {
+				t.Fatalf("%+v calls=%d", r, calls)
+			}
+		})
+	}
+}
+
+func TestNexusIncompleteRoster(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		loaded     bool
+		panesError string
+		want       int
+	}{
+		{"complete", true, "", 1}, {"unknown labels", false, "", 0}, {"panes error", true, "failed", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			panes := HUDPanes{Error: tc.panesError, Terminals: []HUDTerminal{{Address: "t1", Program: "claude", detailLoaded: tc.loaded}}}
+			if got := nexusValidRoster(nexusRoster(), panes); len(got) != tc.want {
+				t.Fatal(got)
+			}
+			if tc.panesError == "" {
+				return
+			}
+			for _, mode := range []string{"route", "send"} {
+				d := nexusFixture(t)
+				d.panes = func(context.Context) HUDPanes { return panes }
+				d.model = func(context.Context, string, string, []byte) ([]byte, error) {
+					t.Fatal("model called")
+					return nil, nil
+				}
+				d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("hc called"); return nil, nil }
+				var r nexusReply
+				if mode == "route" {
+					r = nexusRoute(context.Background(), d, "hi", nexusRoster())
+				} else {
+					r = nexusSend(context.Background(), d, "t1", "hi", nexusRoster())
+				}
+				if r.Error != "Head 목록을 확인하지 못했습니다" {
+					t.Fatal(r)
+				}
+			}
+		})
+	}
+}
+
+func TestNexusSummaryPrefix(t *testing.T) {
+	for _, text := range []string{"--help", "-p", "상태 알려줘"} {
+		t.Run(text, func(t *testing.T) {
+			d := nexusFixture(t)
+			calls := 0
+			d.model = func(_ context.Context, _, prompt string, _ []byte) ([]byte, error) {
+				calls++
+				if calls == 1 {
+					return []byte(`{"action":"read","target":"t1"}`), nil
+				}
+				if !strings.HasPrefix(prompt, nexusSummaryPrefix) {
+					t.Fatal(prompt)
+				}
+				return []byte(`{"summary":"완료"}`), nil
+			}
+			if r := nexusRoute(context.Background(), d, text, nexusRoster()); r.Action != "read" || calls != 2 {
+				t.Fatal(r, calls)
+			}
+		})
+	}
+}
+
+func TestNexusCommandWaitDelay(t *testing.T) {
+	for _, name := range []string{"claude", "codex", "hc"} {
+		t.Run(name, func(t *testing.T) {
+			if cmd := nexusCommand(context.Background(), name, "--help"); cmd.WaitDelay != 2*time.Second {
+				t.Fatal(cmd.WaitDelay)
+			}
+		})
+	}
+}
+
+func TestNexusKoreanErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{context.DeadlineExceeded, "모델 호출 시간이 초과됐습니다"},
+		{errors.New("failed"), "요청을 처리하지 못했습니다: failed"},
+		{errors.New("hc를 찾을 수 없습니다"), "hc를 찾을 수 없습니다"},
+	} {
+		if got := nexusError(tc.err); got.Error != tc.want {
+			t.Fatal(got)
 		}
 	}
 }
