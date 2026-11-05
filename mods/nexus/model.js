@@ -1,6 +1,7 @@
 // Pure helpers for the nexus dialog; the helper CLI contract lives in the herdr-hud nexus subcommand.
 export const REPORT_LIMIT = 80;
 export const DOT_COUNT = 5;
+export const HINT_LIMIT = 100, HINT_NAME_LIMIT = 64;
 const DOT_BASE = 4, DOT_RANGE = 14;
 
 const basename = path => String(path ?? "").replace(/\/+$/, "").split("/").pop() ?? "";
@@ -21,17 +22,11 @@ export function buildRoster(heads = [], panes = [], terminals = []) {
   });
 }
 
-// Log entries -> display lines: the typed text, then the outcome of that command.
-export function logLines(entries = []) {
-  return entries.flatMap(entry => {
-    const lines = [];
-    if (entry.text) lines.push({ kind: ">", text: entry.text });
-    if (entry.action === "send") lines.push({ kind: "→", text: entry.label || entry.target || "" });
-    else if (entry.action === "ask") lines.push({ kind: "?", text: entry.question || "" });
-    else if (entry.action === "read") lines.push({ kind: "·", text: entry.summary || "" });
-    else if (entry.action === "error" || entry.error) lines.push({ kind: "!", text: entry.error || "" });
-    return lines;
-  });
+// N9: unique space/tab names of the Heads, given to speech recognition as vocabulary hints.
+export function hintsFrom(heads = []) {
+  const names = heads.flatMap(head => [head?.spaceName, head?.tabName])
+    .map(name => String(name ?? "").replace(/,/g, " ").trim().slice(0, HINT_NAME_LIMIT)).filter(Boolean);
+  return [...new Set(names)].slice(0, HINT_LIMIT);
 }
 
 export function parseReply(stdout) {
@@ -54,7 +49,9 @@ export function helperArgs(sub, opts = {}) {
   const roster = JSON.stringify(opts.roster ?? []);
   if (sub === "route") return [...head, "route", "--text", opts.text, "--roster", roster];
   if (sub === "send") return [...head, "send", "--to", opts.to, "--text", opts.text, "--roster", roster];
-  if (sub === "log") return [...head, "log", "--limit", String(opts.limit ?? 6)];
-  if (sub === "listen") return [...head, "listen", opts.action, ...(opts.pid ? ["--pid", String(opts.pid)] : [])];
+  if (sub === "listen") {
+    const hints = opts.action === "start" && opts.hints?.length ? ["--hints", opts.hints.join(",")] : [];
+    return [...head, "listen", opts.action, ...(opts.pid ? ["--pid", String(opts.pid)] : []), ...hints];
+  }
   throw new Error(`unknown nexus subcommand: ${sub}`);
 }

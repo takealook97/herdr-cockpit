@@ -159,7 +159,7 @@ export default class SpaceTree extends Plumbing {
     if (shared("nexus.open") && this.nexusOverlay) {
       closeOverlay(this.nexusOverlay); this.nexusOverlay = null; return;
     }
-    this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 420, props: { listen: !!listen } });
+    this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 120, props: { listen: !!listen } });
   }
   select(row, cx) {
     if (this.editing || this.movingTab) return;

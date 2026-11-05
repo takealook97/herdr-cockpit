@@ -1,17 +1,19 @@
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex, InputState, Input } from "gpui-base";
 import { exec, panes, terminals, shared, setShared, theme, props, closeOverlay, notify, run } from "herdr";
-import { buildRoster, logLines, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
+import { buildRoster, hintsFrom, parseReply, dotHeights, helperArgs, DOT_COUNT } from "./model.js";
 
-const POLL_MS = 120, COUNTDOWN_MS = 1500, LOG_LIMIT = 6, NOTIFY_MS = 5000, WARNING_MS = 6000, STARTUP_MS = 3000;
+const POLL_MS = 120, COUNTDOWN_MS = 1000, WARNING_MS = 6000, STARTUP_MS = 3000;
 const UNAVAILABLE_TEXT = "이 기기에서는 음성 입력을 쓸 수 없습니다";
+const NO_SPEECH_TEXT = "말을 알아듣지 못했습니다";
+const IGNORED_TEXT = "명령으로 들리지 않아 넘겼습니다";
 const PLACEHOLDER = "Head에게 보낼 말 · ⌘⇧Space 말하기";
 
 export default class Nexus extends View {
   init(_p, cx) {
     setShared("nexus.open", true);
     this.handle = cx.focus_handle();
-    this.entries = []; this.reply = null; this.pending = false; this.micHidden = false;
+    this.reply = null; this.pending = false; this.micHidden = false;
     this.listening = false; this.laughing = false; this.polling = false; this.levels = []; this.countdown = null; this.voiceValue = null;
     this.listenGen = 0; this.sawActive = false; this.startIdle = false; this.startedAt = 0; this.closed = false;
     this.listenPid = null; this.userTouched = false; this.typedSinceListen = false;
@@ -25,7 +27,6 @@ export default class Nexus extends View {
         if (this.countdown) this.cancelCountdown(cx);
       }
     });
-    this.loadLog(cx);
     const gen = this.listenGen;
     cx.spawn(async cx => {
       const status = await this.helper("listen", { action: "status" });
@@ -42,14 +43,6 @@ export default class Nexus extends View {
   }
   roster() { return buildRoster(shared("hub.heads") ?? [], panes(), terminals()); }
 
-  loadLog(cx) {
-    cx.spawn(async cx => {
-      const log = await this.helper("log", { limit: LOG_LIMIT });
-      this.entries = Array.isArray(log.entries) ? log.entries.slice(-LOG_LIMIT) : [];
-      cx.notify();
-    });
-  }
-
   submit(cx) {
     const text = this.input.value().trim();
     if (!text || this.pending) return;
@@ -60,7 +53,6 @@ export default class Nexus extends View {
       this.pending = false;
       this.handleReply(reply, cx);
       if (reply.action !== "error" && (reply.action !== "ignore" || reply.local)) this.clearInput();
-      this.loadLog(cx);
       cx.notify();
     });
   }
@@ -73,7 +65,6 @@ export default class Nexus extends View {
       const reply = await this.helper("send", { to: candidate.address, text: message, roster: this.roster() });
       this.pending = false;
       this.handleReply(reply, cx);
-      this.loadLog(cx);
       cx.notify();
     });
   }
@@ -88,14 +79,17 @@ export default class Nexus extends View {
     cx.notify();
   }
 
-  // D11: record the send, close, then take the user to the Head (or toast when the hub is closed).
+  // N8: record the send, close the bar, then take the user to the Head's session.
   afterSend(reply) {
     const terminal = reply.target, label = reply.label || terminal;
     setShared("nexus.last", { label, at: Date.now() });
     closeOverlay(props().overlay);
-    if (shared("hub.open")) run("pane.focus", { terminal });
-    else notify({ title: "Nexus", body: `→ ${label}`, level: "success", timeout: NOTIFY_MS,
-      action: { name: "pane.focus", args: { terminal } } });
+    const head = (shared("hub.heads") ?? []).find(h => h.address === terminal);
+    if (!shared("hub.open") && head) {
+      if (head.space != null) run("space.select", { id: head.space });
+      if (head.tab != null) run("tab.select", { id: head.tab });
+    }
+    run("pane.focus", { terminal });
   }
 
   clearInput() { this.voiceValue = null; this.input.set_value(""); }
@@ -114,7 +108,7 @@ export default class Nexus extends View {
     this.listening = true; this.laughing = false; this.levels = []; this.sawActive = false; this.startIdle = false;
     this.startedAt = Date.now(); this.cancelCountdown(cx); cx.notify();
     cx.spawn(async cx => {
-      const started = await this.helper("listen", { action: "start" });
+      const started = await this.helper("listen", { action: "start", hints: hintsFrom(shared("hub.heads") ?? []) });
       if (gen !== this.listenGen || !this.listening || this.closed) {
         if (started.state === "listening" && Number.isInteger(started.pid) && started.pid > 0) {
           this.helper("listen", { action: "stop", pid: started.pid });
@@ -148,6 +142,7 @@ export default class Nexus extends View {
       else if (status.state === "idle" && this.idleSettled()) {
         if (this.voiceValue !== null && !this.typedSinceListen) this.clearInput();
         this.stopPolling(cx);
+        this.noSpeech(cx);
       }
       cx.notify();
     });
@@ -159,7 +154,7 @@ export default class Nexus extends View {
   finishListening(text, cx) {
     this.stopPolling(cx);
     if (this.typedSinceListen) return;
-    if (!text.trim()) { if (this.voiceValue !== null) this.clearInput(); return; }
+    if (!text.trim()) { if (this.voiceValue !== null) this.clearInput(); this.noSpeech(cx); return; }
     this.setVoiceText(text);
     const gen = this.listenGen;
     this.countdown = cx.timer.after(COUNTDOWN_MS, cx => {
@@ -167,6 +162,11 @@ export default class Nexus extends View {
       if (gen !== this.listenGen || this.closed) return;
       this.submit(cx); cx.notify();
     });
+  }
+  noSpeech(cx) {
+    if (this.typedSinceListen || this.input.value().trim()) return;
+    this.reply = { action: "info", info: NO_SPEECH_TEXT };
+    cx.notify();
   }
   failListening(status, cx) {
     this.stopPolling(cx);
@@ -202,30 +202,31 @@ export default class Nexus extends View {
     this.input?.release();
   }
 
-  lineColor(kind, t) {
-    return kind === ">" ? t.foreground : kind === "→" ? t.done ?? t.accent : kind === "?" ? t.blocked ?? t.accent
-      : kind === "!" ? t.ansi1 ?? t.accent : t.muted;
+  statusColor(kind, t) {
+    return kind === "?" ? t.blocked ?? t.accent : kind === "!" ? t.ansi1 ?? t.accent : kind === "listen" ? t.accent : t.dim;
   }
 
-  logView(t) {
-    const lines = logLines(this.entries);
+  // Row 2: one dim status line; ask adds candidate chips inline.
+  statusView(t) {
     const reply = this.reply;
-    const body = v_flex().id("nexus-log").flex_1().min_h(0).gap(4).overflow_y_scroll().text_size(12);
-    lines.forEach((line, i) => body.child(div().id(`nexus-line-${i}`).flex_none()
-      .text_color(this.lineColor(line.kind, t)).child(`${line.kind} ${line.text}`)));
+    const row = h_flex().id("nexus-status").flex_none().items_center().gap(6).flex_wrap().text_size(11.5).text_color(t.dim)
+      .child(div().text_size(11.5).font_bold().text_color(t.accent).child("NEXUS"));
+    const text = (kind, value) => row.child(div().text_color(this.statusColor(kind, t)).child(value));
+    if (this.pending) return row.child(div().text_color(t.dim).child("· 판단 중"))
+      .child(div().loop("opacity", { from: 0.2, to: 1, period: 900 }).text_color(t.dim).child("···"));
+    if (this.countdown) return text("", "· 1초 뒤 보냄 · Esc 취소");
+    if (this.listening) return text("listen", "· 듣는 중");
     if (reply?.action === "ask") {
-      body.child(div().flex_none().text_color(this.lineColor("?", t)).child(`? ${reply.question ?? ""}`));
-      body.child(h_flex().flex_none().gap(6).flex_wrap().children((reply.candidates ?? []).map(c =>
-        div().id(`nexus-chip-${c.address}`).h(24).px(8).rounded(6).border(1).border_color(t.border)
+      text("?", `? ${reply.question ?? ""}`);
+      return row.children((reply.candidates ?? []).map(c =>
+        div().id(`nexus-chip-${c.address}`).h(22).px(8).rounded(6).border(1).border_color(t.border)
           .flex().items_center().text_size(11.5).text_color(t.foreground).hover(s => s.bg(t.hover))
-          .on_click((_e, cx) => this.chooseCandidate(c, cx)).child(c.label || c.address))));
-    } else if (reply?.action === "info") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.info ?? ""}`));
-    else if (reply?.action === "ignore") body.child(div().flex_none().text_color(t.dim).child(`· ${reply.summary || "명령으로 들리지 않아 넘겼습니다"}`));
-    else if (reply?.action === "read") body.child(div().flex_none().text_color(t.muted).child(`· ${reply.summary ?? ""}`));
-    else if (reply?.action === "error") body.child(div().flex_none().text_color(this.lineColor("!", t)).child(`! ${reply.error ?? ""}`));
-    if (this.pending) body.child(h_flex().flex_none().gap(4).text_color(t.dim).child("판단 중")
-      .child(div().loop("opacity", { from: 0.2, to: 1, period: 900 }).child("···")));
-    return body;
+          .on_click((_e, cx) => this.chooseCandidate(c, cx)).child(c.label || c.address)));
+    }
+    if (reply?.action === "info") return text("", `· ${reply.info ?? ""}`);
+    if (reply?.action === "ignore") return text("", `· ${reply.summary || IGNORED_TEXT}`);
+    if (reply?.action === "error") return text("!", `! ${reply.error ?? ""}`);
+    return text("", "· 대기");
   }
 
   dots(t) {
@@ -236,22 +237,15 @@ export default class Nexus extends View {
 
   render() {
     const t = theme();
-    const heads = (shared("hub.heads") ?? []).length;
     return v_flex().id("nexus").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
-      .size_full().min_h(0).bg(t.background).p(16).gap(10).text_size(12)
-      .child(h_flex().flex_none().items_center().gap(8)
-        .child(div().text_size(12).font_bold().text_color(t.accent).child("NEXUS"))
-        .child(div().text_color(t.dim).child(`Head ${heads}`))
-        .child(div().flex_1())
-        .child(div().text_color(t.dim).child("Esc")))
-      .child(this.logView(t))
-      .when(Boolean(this.countdown), el => el.child(div().flex_none().text_size(11).text_color(t.muted).child("1.5초 뒤 보냄 · Esc 취소")))
+      .size_full().min_h(0).bg(t.background).p(12).gap(6).text_size(12)
       .child(h_flex().flex_none().gap(8).items_center()
         .child(div().flex_1().min_w(0).child(Input.new(this.input)))
         .child(this.dots(t))
         .when(!this.micHidden, el => el.child(div().id("nexus-mic").size(24).flex_none().flex().items_center().justify_center()
           .rounded(6).border(1).border_color(this.listening ? t.accent : t.border).text_size(11)
           .text_color(this.listening ? t.accent : t.muted).tooltip(this.listening ? "듣기 중지" : "말하기")
-          .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.toggleMic(cx)).child("●"))));
+          .hover(s => s.bg(t.hover)).on_click((_e, cx) => this.toggleMic(cx)).child("●"))))
+      .child(this.statusView(t));
   }
 }
