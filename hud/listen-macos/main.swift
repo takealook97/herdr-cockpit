@@ -11,6 +11,8 @@ struct Options {
     var silence = 1.2
     var laughThreshold = 0.5
     var laughFilter = true
+    var keepAudio = 0
+    var debugJSON = false
     var file: String?
     var explicitState = false
 
@@ -22,11 +24,12 @@ struct Options {
         var args = CommandLine.arguments.dropFirst().makeIterator()
         while let flag = args.next() {
             if flag == "--help" || flag == "-h" {
-                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO]")
+                print("Usage: herdr-listen [--state PATH] [--locale ko-KR] [--max-seconds 30] [--silence 1.2] [--laugh-threshold 0.1..0.99] [--no-laugh-filter] [--file AUDIO] [--debug-json] [--keep-audio 0..100]")
                 exit(0)
             }
+            if flag == "--debug-json" { debugJSON = true; continue }
             if flag == "--no-laugh-filter" { laughFilter = false; continue }
-            guard ["--state", "--locale", "--max-seconds", "--silence", "--laugh-threshold", "--file"].contains(flag),
+            guard ["--state", "--locale", "--max-seconds", "--silence", "--laugh-threshold", "--file", "--keep-audio"].contains(flag),
                   let value = args.next(), !value.isEmpty else {
                 throw ListenError.message("Invalid argument: \(flag)")
             }
@@ -34,6 +37,11 @@ struct Options {
             case "--state": statePath = value; explicitState = true
             case "--locale": locale = value
             case "--file": file = value
+            case "--keep-audio":
+                guard let count = Int(value), (0...100).contains(count) else {
+                    throw ListenError.message("--keep-audio must be an integer between 0 and 100")
+                }
+                keepAudio = count
             case "--laugh-threshold":
                 guard let score = Double(value), score.isFinite, (0.1...0.99).contains(score) else {
                     throw ListenError.message("--laugh-threshold must be between 0.1 and 0.99")
@@ -73,6 +81,8 @@ final class LaughObserver: NSObject, SNResultsObserving {
     let tracker: LaughTracker
     let identifiers: Set<String>
     let lock = NSLock()
+    var windows: [[String: Double]] = []
+    var recordWindows = false
     var update: (([LaughRange], Bool, Double) -> Void)?
     var ended: (() -> Void)?
     var failed: (() -> Void)?
@@ -87,6 +97,7 @@ final class LaughObserver: NSObject, SNResultsObserving {
         let start = CMTimeGetSeconds(result.timeRange.start)
         let end = CMTimeGetSeconds(CMTimeRangeGetEnd(result.timeRange))
         lock.lock()
+        if recordWindows { windows.append(["start": start, "end": end, "score": score]) }
         tracker.observe(windowStart: start, windowEnd: end, score: score)
         let ranges = tracker.ranges, laughing = tracker.isLaughing
         lock.unlock()
@@ -133,6 +144,11 @@ final class Listener {
     var lastActivity = ProcessInfo.processInfo.systemUptime
     let started = ProcessInfo.processInfo.systemUptime
     let speechThreshold = 0.15
+    // Only opt-in sessions retain PCM. The tap owns insertion and stopAudio()
+    // removes the tap before finalization consumes these copies.
+    let sampleLock = NSLock()
+    var sampleBuffers: [AVAudioPCMBuffer] = []
+    let created = Date()
 
     init(_ options: Options) throws {
         self.options = options
@@ -275,8 +291,15 @@ final class Listener {
             request.append(buffer)
             let position = framePosition
             framePosition += AVAudioFramePosition(buffer.frameLength)
-            if let analyzer, let copy = Self.copyBuffer(buffer) {
-                self.analysisQueue.async { analyzer.analyze(copy, atAudioFramePosition: position) }
+            if analyzer != nil || self.options.keepAudio > 0, let copy = Self.copyBuffer(buffer) {
+                if self.options.keepAudio > 0 {
+                    self.sampleLock.lock()
+                    self.sampleBuffers.append(copy)
+                    self.sampleLock.unlock()
+                }
+                if let analyzer {
+                    self.analysisQueue.async { analyzer.analyze(copy, atAudioFramePosition: position) }
+                }
             }
             var sum = 0.0
             let count = Int(buffer.frameLength)
@@ -354,6 +377,7 @@ final class Listener {
             let identifiers = names.intersection(request.knownClassifications)
             guard !identifiers.isEmpty else { return nil }
             let observer = LaughObserver(threshold: options.laughThreshold, identifiers: identifiers)
+            observer.recordWindows = options.debugJSON || options.keepAudio > 0
             observer.update = { ranges, laughing, end in
                 DispatchQueue.main.async {
                     guard !self.completed, self.observer != nil else { return }
@@ -483,13 +507,137 @@ final class Listener {
         state.state = state.final.isEmpty ? "idle" : "final"
         state.level = 0
         write(immediate: true)
+        saveSample()
         printOfflineState()
         exit(0)
     }
 
+    func sampleMetadata() -> [String: Any] {
+        var windows: [[String: Double]] = []
+        if let observer {
+            observer.lock.lock()
+            windows = observer.windows
+            observer.lock.unlock()
+        }
+        return ["created": ISO8601DateFormatter().string(from: created),
+                "locale": options.locale, "threshold": options.laughThreshold,
+                "final": state.final, "formatted": formattedTranscript, "trimmed": state.trimmed,
+                "classifier_available": observer != nil,
+                "laugh_ranges": laughRanges.map { ["start": $0.start, "end": $0.end] },
+                "windows": windows,
+                "segments": segments.map { ["text": $0.text, "start": $0.start, "duration": $0.duration,
+                    "kept": keepSegment(start: $0.start, duration: $0.duration, ranges: laughRanges)] as [String: Any] }]
+    }
+
     func printOfflineState() {
-        if options.file != nil, let data = try? JSONEncoder().encode(state), let json = String(data: data, encoding: .utf8) {
-            print(json)
+        guard options.file != nil else { return }
+        do {
+            let encoded = try JSONEncoder().encode(state)
+            var fields = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+            if options.debugJSON { fields.merge(sampleMetadata()) { _, new in new } }
+            let data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+            print(String(decoding: data, as: UTF8.self))
+        } catch { fputs("herdr-listen: debug JSON failed: \(error)\n", stderr) }
+    }
+
+    func saveSample() {
+        guard options.keepAudio > 0 else { return }
+        let env = ProcessInfo.processInfo.environment
+        let cache = env["XDG_CACHE_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? (NSHomeDirectory() + "/.cache")
+        let dir = URL(fileURLWithPath: cache).appendingPathComponent("herdr-hud/listen-samples", isDirectory: true)
+        let fm = FileManager.default
+        var wav: URL?, json: URL?, temporary: URL?
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+            // Serialize pair publication and pruning across concurrent offline runs.
+            let lockFD = open(dir.appendingPathComponent(".lock").path, O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
+            guard lockFD >= 0 else { throw ListenError.message("cannot lock sample directory") }
+            defer { flock(lockFD, LOCK_UN); close(lockFD) }
+            guard flock(lockFD, LOCK_EX) == 0 else { throw ListenError.message("cannot lock sample directory") }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+            let stem = formatter.string(from: created) + "-" + UUID().uuidString
+            let waveURL = dir.appendingPathComponent(stem + ".wav")
+            let jsonURL = dir.appendingPathComponent(stem + ".json")
+            let tempURL = dir.appendingPathComponent("." + stem + ".json.tmp")
+            wav = waveURL; json = jsonURL; temporary = tempURL
+            // Reserve with 0600 BEFORE AVAudioFile opens the path.
+            let fd = open(waveURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            guard fd >= 0 else { throw ListenError.message("cannot create sample WAV") }
+            close(fd)
+            sampleLock.lock()
+            let buffers = sampleBuffers
+            sampleLock.unlock()
+            try Self.writeSampleWAV(to: waveURL, buffers: buffers, source: options.file)
+            let data = try JSONSerialization.data(withJSONObject: sampleMetadata(), options: [.sortedKeys])
+            let jsonFD = open(tempURL.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+            guard jsonFD >= 0 else { throw ListenError.message("cannot create sample JSON") }
+            let handle = FileHandle(fileDescriptor: jsonFD, closeOnDealloc: true)
+            try handle.write(contentsOf: data)
+            try handle.close()
+            guard rename(tempURL.path, jsonURL.path) == 0 else { throw ListenError.message("cannot publish sample JSON") }
+            // The UTC prefix sorts chronologically; suffixes prevent same-second collisions.
+            let pairs = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "json" && fm.fileExists(atPath: $0.deletingPathExtension().appendingPathExtension("wav").path) }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            for old in pairs.prefix(max(0, pairs.count - options.keepAudio)) {
+                try fm.removeItem(at: old.deletingPathExtension().appendingPathExtension("wav"))
+                try fm.removeItem(at: old)
+            }
+        } catch {
+            // Retention is diagnostic: never turn a successful command into an error.
+            if let temporary { try? fm.removeItem(at: temporary) }
+            // Preserve a published pair if only pruning failed.
+            if let json, !fm.fileExists(atPath: json.path), let wav { try? fm.removeItem(at: wav) }
+            fputs("herdr-listen: sample retention failed: \(error)\n", stderr)
+        }
+    }
+
+    static func writeSampleWAV(to url: URL, buffers: [AVAudioPCMBuffer], source: String?) throws {
+        let inputFile = try source.map { try AVAudioFile(forReading: URL(fileURLWithPath: $0)) }
+        guard let format = inputFile?.processingFormat ?? buffers.first?.format,
+              let outputFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16_000, channels: 1, interleaved: true),
+              let converter = AVAudioConverter(from: format, to: outputFormat),
+              let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: 4096) else {
+            throw ListenError.message("no captured audio or unsupported sample format")
+        }
+        let file = try AVAudioFile(forWriting: url, settings: outputFormat.settings,
+                                   commonFormat: .pcmFormatInt16, interleaved: true)
+        var index = 0
+        var readError: Error?
+        while true {
+            var error: NSError?
+            let status = converter.convert(to: output, error: &error) { _, inputStatus in
+                if let inputFile {
+                    do {
+                        if inputFile.framePosition >= inputFile.length {
+                            inputStatus.pointee = .endOfStream
+                            return nil
+                        }
+                        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) else {
+                            throw ListenError.message("cannot allocate sample buffer")
+                        }
+                        try inputFile.read(into: buffer)
+                        if buffer.frameLength > 0 { inputStatus.pointee = .haveData; return buffer }
+                    } catch { readError = error }
+                } else if index < buffers.count {
+                    let buffer = buffers[index]; index += 1
+                    inputStatus.pointee = .haveData
+                    return buffer
+                }
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            if let readError { throw ListenError.message("sample input read: \(readError)") }
+            if status == .error { throw ListenError.message("sample converter: \(String(describing: error))") }
+            if output.frameLength > 0 {
+                do { try file.write(from: output) }
+                catch { throw ListenError.message("sample output write: \(error)") }
+            }
+            if status == .endOfStream { break }
         }
     }
 

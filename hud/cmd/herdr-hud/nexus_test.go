@@ -458,3 +458,39 @@ func TestNexusIgnoreSummaryBound(t *testing.T) {
 		t.Fatalf("model reply local marker: %s, %v", raw, err)
 	}
 }
+
+func TestNexusAudioConfig(t *testing.T) {
+	for _, tc := range []struct {
+		raw       string
+		keep      int
+		threshold float64
+		model     string
+	}{
+		{`{}`, 0, 0, ""},
+		{`{"model":"codex-low-h","keepAudio":2,"laughThreshold":0.7}`, 2, 0.7, "codex-low-h"},
+		{`{"keepAudio":100,"laughThreshold":0.99}`, 100, 0.99, ""},
+		{`{"keepAudio":0,"laughThreshold":0.1}`, 0, 0.1, ""},
+		{`{"keepAudio":-1,"laughThreshold":0.09}`, 0, 0, ""},
+		{`{"keepAudio":101,"laughThreshold":1}`, 0, 0, ""},
+		{`{"model":"claude-medium-m","keepAudio":1.5,"laughThreshold":"0.7"}`, 0, 0, "claude-medium-m"},
+		{`{"model":"codex-low-h","keepAudio":"2","laughThreshold":0.5}`, 0, 0.5, "codex-low-h"},
+		{`{"model":false,"keepAudio":2,"laughThreshold":null}`, 2, 0, ""},
+		{`{`, 0, 0, ""},
+	} {
+		got := nexusParseConfig([]byte(tc.raw))
+		if got.KeepAudio != tc.keep || got.LaughThreshold != tc.threshold || got.Model != tc.model {
+			t.Fatalf("%s: %+v", tc.raw, got)
+		}
+	}
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "herdr-hud"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "herdr-hud/nexus.json"), []byte(`{"model":"codex-low-h","keepAudio":2,"laughThreshold":0.7}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := nexusLoadConfig(); got.Model != "codex-low-h" || got.KeepAudio != 2 || got.LaughThreshold != 0.7 {
+		t.Fatal(got)
+	}
+}

@@ -407,20 +407,49 @@ func nexusCLIPath(name string) string {
 	}
 	return ""
 }
+
+// Parse fields independently: a malformed optional audio setting must not hide
+// a valid model key (or the other valid audio setting).
+type nexusConfig struct {
+	Model          string
+	KeepAudio      int
+	LaughThreshold float64
+}
+
+func nexusParseConfig(raw []byte) nexusConfig {
+	var fields map[string]json.RawMessage
+	var cfg nexusConfig
+	if json.Unmarshal(raw, &fields) != nil {
+		return cfg
+	}
+	_ = json.Unmarshal(fields["model"], &cfg.Model)
+	var keep int
+	if json.Unmarshal(fields["keepAudio"], &keep) == nil && keep >= 0 && keep <= 100 {
+		cfg.KeepAudio = keep
+	}
+	var threshold float64
+	if json.Unmarshal(fields["laughThreshold"], &threshold) == nil && threshold >= 0.1 && threshold <= 0.99 {
+		cfg.LaughThreshold = threshold
+	}
+	return cfg
+}
+
+func nexusLoadConfig() nexusConfig {
+	root := os.Getenv("XDG_CONFIG_HOME")
+	if root == "" {
+		home, _ := os.UserHomeDir()
+		root = filepath.Join(home, ".config")
+	}
+	raw, _ := os.ReadFile(filepath.Join(root, "herdr-hud/nexus.json"))
+	return nexusParseConfig(raw)
+}
+
 func nexusCLIModel(key string) (nexusModelRunner, error) {
 	if key == "" {
 		key = os.Getenv("HERDR_NEXUS_MODEL")
 	}
 	if key == "" {
-		root := os.Getenv("XDG_CONFIG_HOME")
-		if root == "" {
-			home, _ := os.UserHomeDir()
-			root = filepath.Join(home, ".config")
-		}
-		raw, _ := os.ReadFile(filepath.Join(root, "herdr-hud/nexus.json"))
-		var cfg struct{ Model string }
-		_ = json.Unmarshal(raw, &cfg)
-		key = cfg.Model
+		key = nexusLoadConfig().Model
 	}
 	if key == "" {
 		key = "claude-medium-m"

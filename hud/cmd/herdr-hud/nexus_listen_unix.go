@@ -63,7 +63,7 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expecte
 		if err = os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 			return fail(err)
 		}
-		cmd := exec.Command(binary, "--state", statePath)
+		cmd := exec.Command(binary, nexusListenArgs(statePath, nexusLoadConfig())...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err = cmd.Start(); err != nil {
 			return fail(err)
@@ -132,4 +132,15 @@ func nexusListenWith(ctx context.Context, sub, goos, binary, dir string, expecte
 		out.Error = "음성 인식 프로세스가 종료되었습니다"
 	}
 	return out
+}
+
+func nexusListenArgs(statePath string, cfg nexusConfig) []string {
+	args := []string{"--state", statePath}
+	if cfg.KeepAudio > 0 && cfg.KeepAudio <= 100 {
+		args = append(args, "--keep-audio", strconv.Itoa(cfg.KeepAudio))
+	}
+	if cfg.LaughThreshold >= 0.1 && cfg.LaughThreshold <= 0.99 {
+		args = append(args, "--laugh-threshold", strconv.FormatFloat(cfg.LaughThreshold, 'g', -1, 64))
+	}
+	return args
 }

@@ -241,3 +241,20 @@ func TestNexusListenLaughStatus(t *testing.T) {
 		t.Fatal(string(raw))
 	}
 }
+
+func TestNexusListenAudioArgs(t *testing.T) {
+	for _, tc := range []struct {
+		cfg  nexusConfig
+		want string
+	}{
+		{nexusConfig{}, "--state /tmp/listen.json"},
+		{nexusConfig{KeepAudio: 2, LaughThreshold: 0.7}, "--state /tmp/listen.json --keep-audio 2 --laugh-threshold 0.7"},
+		{nexusConfig{KeepAudio: 100, LaughThreshold: 0.1}, "--state /tmp/listen.json --keep-audio 100 --laugh-threshold 0.1"},
+		{nexusConfig{KeepAudio: -1, LaughThreshold: 1}, "--state /tmp/listen.json"},
+		{nexusConfig{KeepAudio: 101, LaughThreshold: 0.09}, "--state /tmp/listen.json"},
+	} {
+		if got := strings.Join(nexusListenArgs("/tmp/listen.json", tc.cfg), " "); got != tc.want {
+			t.Fatalf("%+v: %s", tc.cfg, got)
+		}
+	}
+}
