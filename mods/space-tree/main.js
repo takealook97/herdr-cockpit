@@ -162,13 +162,12 @@ export default class SpaceTree extends Plumbing {
     if (shared("nexus.open") && this.nexusOverlay) {
       closeOverlay(this.nexusOverlay); this.nexusOverlay = null; return;
     }
-    if (this.nexusPending) return;
-    this.nexusPending = true;
+    const request = this.nexusRequest = (this.nexusRequest ?? 0) + 1;
     exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "nexus", "voice", "ensure"])
       .then(r => JSON.parse(r.stdout))
       .catch(error => ({ action: "error", error: `음성 터미널을 준비하지 못했습니다: ${String(error?.message ?? error)}` }))
       .then(reply => {
-        this.nexusPending = false;
+        if (this.closed || request !== this.nexusRequest) return;
         if (reply?.mode === "claude" && reply.terminal) this.openVoiceDialog(reply.terminal);
         else if (reply?.mode === "apple") this.nexusOverlay = openOverlay({ mod: "nexus", kind: "dialog", width: 560, height: 150, props: { listen: !!listen } });
         else notify({ title: "Nexus", body: reply?.error || "음성 입력을 시작하지 못했습니다", level: "error" });
