@@ -650,6 +650,7 @@ func TestNexusVoiceRecord(t *testing.T) {
 	for _, scenario := range []string{"leftover", "recording", "missing", "unlabelled", "read failure", "clear failure", "space failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			var calls [][]string
+			reads := 0
 			hc := func(_ context.Context, args ...string) ([]byte, error) {
 				calls = append(calls, append([]string(nil), args...))
 				switch args[0] {
@@ -668,6 +669,10 @@ func TestNexusVoiceRecord(t *testing.T) {
 						return nil, errors.New("read failed")
 					}
 					if scenario == "recording" {
+						reads++
+						if reads > 1 {
+							return []byte("❯ "), nil
+						}
 						return []byte("● REC 00:03\n❯ "), nil
 					}
 					return []byte("❯ 네. 아 이거 근데"), nil
@@ -697,6 +702,9 @@ func TestNexusVoiceRecord(t *testing.T) {
 					}
 				}
 			}
+			if scenario == "recording" {
+				want = append(want, []string{"read", "t1", "--lines", "0"})
+			}
 			if !reflect.DeepEqual(calls, want) {
 				t.Fatalf("calls %v, want %v", calls, want)
 			}
@@ -704,13 +712,68 @@ func TestNexusVoiceRecord(t *testing.T) {
 				raw, err := json.Marshal(r)
 				wantJSON := `{"ok":true,"recording":true}`
 				if scenario == "recording" {
-					wantJSON = `{"ok":true,"recording":false}`
+					wantJSON = `{"ok":true,"recording":false,"submitted":true}`
 				}
 				if err != nil || string(raw) != wantJSON {
 					t.Fatal(string(raw), err)
 				}
 			} else if r.OK || r.Error == "" || r.Action != "error" || r.Recording != nil {
 				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestNexusVoiceRecordStopSubmission(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		screen string
+		enter  int
+		sent   bool
+	}{
+		{"auto submitted hook", "UserPromptSubmit hook\n❯ short phrase", 0, true},
+		{"auto submitted empty", "❯ ", 0, true},
+		{"short phrase", "❯ 짧은 말", 1, true},
+		{"timeout", "● REC 00:04\n❯ pending", 0, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			reads, enters, spaces := 0, 0, 0
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				switch args[0] {
+				case "ls":
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "0"}) {
+						t.Fatalf("unexpected read: %v", args)
+					}
+					reads++
+					if reads <= 2 {
+						return []byte("● REC 00:03\n❯ pending"), nil
+					}
+					return []byte(scenario.screen), nil
+				case "keys":
+					switch args[2] {
+					case "space":
+						spaces++
+					case "enter":
+						enters++
+					default:
+						t.Fatalf("unexpected keys: %v", args)
+					}
+				default:
+					t.Fatalf("unexpected hc: %v", args)
+				}
+				return nil, nil
+			}
+			started := time.Now()
+			r := nexusVoiceRecord(context.Background(), hc)
+			if !r.OK || r.Recording == nil || *r.Recording || r.Submitted == nil || *r.Submitted != scenario.sent || enters != scenario.enter || spaces != 1 || reads < 3 {
+				t.Fatalf("reply %+v, reads %d, enters %d, spaces %d", r, reads, enters, spaces)
+			}
+			if scenario.name == "timeout" && time.Since(started) < 4*time.Second {
+				t.Fatal("returned before polling timeout")
 			}
 		})
 	}

@@ -17,6 +17,7 @@ import (
 type nexusVoiceReply struct {
 	OK        bool   `json:"ok,omitempty"`
 	Recording *bool  `json:"recording,omitempty"`
+	Submitted *bool  `json:"submitted,omitempty"`
 	Mode      string `json:"mode,omitempty"`
 	Terminal  string `json:"terminal,omitempty"`
 	Action    string `json:"action,omitempty"`
@@ -280,8 +281,56 @@ func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 	if _, err := hc(ctx, "keys", address, "space"); err != nil {
 		return fail(err)
 	}
-	recording = !recording
-	return nexusVoiceReply{OK: true, Recording: &recording}
+	if !recording {
+		recording = true
+		return nexusVoiceReply{OK: true, Recording: &recording}
+	}
+	recording = false
+	submitted := false
+	pollCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-pollCtx.Done():
+			return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted}
+		case <-ticker.C:
+		}
+		raw, err := hc(pollCtx, "read", address, "--lines", "0")
+		if pollCtx.Err() != nil {
+			return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted}
+		}
+		if err != nil {
+			return fail(err)
+		}
+		screen := string(raw)
+		if strings.Contains(screen, "REC") {
+			continue
+		}
+		if strings.Contains(screen, "UserPromptSubmit hook") {
+			submitted = true
+		} else {
+			found := false
+			input := ""
+			for _, line := range strings.Split(screen, "\n") {
+				if strings.HasPrefix(line, "❯ ") {
+					found = true
+					input = strings.TrimSpace(strings.TrimPrefix(line, "❯ "))
+				}
+			}
+			if !found {
+				continue
+			}
+			if input != "" {
+				if _, err := hc(pollCtx, "keys", address, "enter"); err != nil {
+					return fail(err)
+				}
+			}
+			submitted = true
+		}
+		return nexusVoiceReply{OK: true, Recording: &recording, Submitted: &submitted}
+	}
 }
 
 func nexusDefaultDeps() nexusDeps {
