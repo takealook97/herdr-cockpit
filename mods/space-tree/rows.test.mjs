@@ -275,3 +275,18 @@ test("model text is accent semibold on head rows and dim on workers", () => {
     assert.ok(!("font_semibold" in dim.style));
   }
 });
+
+test("tree pane row dot matches hub: ring when idle, pulse when working", () => {
+  const h = host(), t = h.deps.theme();
+  const render = load(new URL("./rows.js", import.meta.url), "treeRow", {
+    ...h.deps, svg: retainedElement, image: retainedElement, nameElement: () => "Name",
+    tabIconColor, machineConnected, rowDisplay,
+  });
+  const dotOf = status => walk(render({}, { key: "p", kind: "pane", status, data: {}, depth: 1 }, t))
+    .filter(n => n?.style?.size === 6 && n.style.rounded === 3).pop();
+  const idle = dotOf("idle");
+  assert.equal(idle.style.border, 1); assert.equal(idle.style.border_color, "dim"); assert.equal(idle.style.bg, undefined);
+  const working = dotOf("working");
+  assert.equal(working.style.bg, "working"); assert.equal(working.style.loop, "opacity");
+  assert.equal(dotOf("blocked").style.loop, undefined);
+});

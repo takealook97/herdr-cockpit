@@ -7,7 +7,11 @@ import { tabIconColor, machineConnected, rowDisplay } from "./model.js";
 
 const asset = name => `mods/space-tree/${name}.svg`;
 const tone = (t, status) => t[status] ?? t.dim;
-const dot = (row, t) => div().size(6).rounded(3).flex_none().bg(tone(t, row.status));
+// Shared by hub and tree rows: hollow ring when idle, filled tone otherwise, pulsing while working.
+const statusIndicator = (status, t) => div().size(6).rounded(3).flex_none()
+  .when(status === "idle", e => e.border(1).border_color(t.dim))
+  .when(status !== "idle", e => e.bg(tone(t, status)))
+  .when(status === "working", e => e.loop("opacity", { from: 0.35, to: 1, period: 1800 }));
 const glyph = (name, t) => svg(asset(name)).size(13).flex_none().text_color(t.dim);
 
 // Palette hex values are used as stored; the hub rail and unknown values fall back to theme colors.
@@ -58,7 +62,7 @@ export function treeRow(view, row, t) {
     if (rowDisplay(row, connected, view.hoveredMachine === row.key).add) main.child(div().id(`add-${row.key}`).px(3).text_color(t.dim).hover(s => s.text_color(t.foreground))
       .on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: row.id ?? "" }); }).child("+"));
     if (!connected) main.child(div().size(6).flex_none().rounded(3).bg(t.dim));
-  } else if (display.dot) main.child(dot(row, t));
+  } else if (display.dot) main.child(statusIndicator(row.status ?? "idle", t));
   const el = h_flex().id(row.key).relative().h(row.kind === "space" && !row.data.parentId ? 26 : 24)
     .flex_none().pl(2 + row.depth * 12).pr(6).items_center().rounded(5).text_size(12)
     .text_color(row.kind === "machine" ? t.muted : row.orch && view.orchStale ? t.dim : t.foreground)
@@ -116,15 +120,11 @@ export function hubRow(view, row, t) {
       .child(div().flex_1().h(1).bg(t.border));
   }
   const status = row.status ?? "idle";
-  const indicator = div().size(6).rounded(3).flex_none()
-    .when(status === "idle", e => e.border(1).border_color(t.dim))
-    .when(status !== "idle", e => e.bg(tone(t, status)))
-    .when(status === "working", e => e.loop("opacity", { from: 0.35, to: 1, period: 1800 }));
   return el.mx(6).px(8).rounded(7).text_size(12)
     .opacity(status === "idle" || status === "done" ? 0.62 : 1)
     .when(row.active, e => e.bg(t.background).border(1).border_color(t.border))
     .hover(s => s.bg(t.hover))
-    .child(indicator)
+    .child(statusIndicator(status, t))
     .child(h_flex().flex_1().min_w(0).truncate()
       .child(div().flex_none().text_color(t.dim).child(`${row.spaceName} · `))
       .child(div().min_w(0).truncate().text_color(t.foreground).child(row.tabName)));
