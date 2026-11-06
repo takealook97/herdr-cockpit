@@ -2,22 +2,38 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { assignSectionColors, SECTION_PALETTE, tabIconColor, aggregateStatus, hubRowStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
 
+function seededRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 test("stored rail colors never change, new spaces prefer unused colors", () => {
-  const stored = { a: SECTION_PALETTE[0], b: SECTION_PALETTE[0] };
-  const kept = assignSectionColors(["a", "b"], stored);
-  assert.deepEqual(kept, stored);
-  const inserted = assignSectionColors(["new", "a", "b"], stored);
-  assert.equal(inserted.a, stored.a);
-  assert.equal(inserted.b, stored.b);
-  assert.notEqual(inserted.new, SECTION_PALETTE[0]);
-  const many = Array.from({ length: 25 }, (_, i) => `space${i}`);
-  const assigned = assignSectionColors(many, {});
-  for (const id of many) assert.ok(SECTION_PALETTE.includes(assigned[id]));
-  const usage = SECTION_PALETTE.map(c => many.filter(id => assigned[id] === c).length);
-  assert.ok(Math.max(...usage) - Math.min(...usage) <= 1);
-  assert.deepEqual(assignSectionColors(["x", ...many], assigned), { ...assigned, x: assignSectionColors(["x", ...many], assigned).x });
-  const ten = many.slice(0, 10), all = assignSectionColors(ten, {});
-  assert.equal(new Set(Object.values(all)).size, 10);
+  for (const seed of [1, 2, 3, 42, 1234]) {
+    const assign = (ids, stored) => assignSectionColors(ids, stored, SECTION_PALETTE, seededRng(seed));
+    const stored = { a: SECTION_PALETTE[0], b: SECTION_PALETTE[0] };
+    assert.deepEqual(assign(["a", "b"], stored), stored);
+    const inserted = assign(["new", "a", "b"], stored);
+    assert.equal(inserted.a, stored.a);
+    assert.equal(inserted.b, stored.b);
+    assert.notEqual(inserted.new, SECTION_PALETTE[0]);
+    const many = Array.from({ length: 25 }, (_, i) => `space${i}`);
+    const assigned = assign(many, {});
+    for (const id of many) assert.ok(SECTION_PALETTE.includes(assigned[id]));
+    const usage = SECTION_PALETTE.map(c => many.filter(id => assigned[id] === c).length);
+    assert.ok(Math.max(...usage) - Math.min(...usage) <= 1);
+    const withX = assign(["x", ...many], assigned);
+    for (const id of many) assert.equal(withX[id], assigned[id]);
+    const counts = SECTION_PALETTE.map(c => many.filter(id => assigned[id] === c).length);
+    assert.equal(counts[SECTION_PALETTE.indexOf(withX.x)], Math.min(...counts));
+    const all = assign(many.slice(0, 10), {});
+    assert.equal(new Set(Object.values(all)).size, 10);
+  }
 });
 
 test("old theme-key rail colors are re-assigned once to palette colors", () => {
