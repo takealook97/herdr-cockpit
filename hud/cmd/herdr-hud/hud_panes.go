@@ -366,15 +366,16 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 	procs := hudParseProcesses(string(raw))
 	nodeArgs := hudNodeArgs(ctx, procs)
 	type result struct {
-		index         int
-		model, effort string
+		index                 int
+		model, effort         string
+		liveModel, liveEffort string
 	}
 	results := make(chan result, len(indices))
 	sem := make(chan struct{}, 6)
 	for _, i := range indices {
 		go func(i int, terminal HUDTerminal) {
-			model, effort := "", ""
-			defer func() { results <- result{i, model, effort} }()
+			model, effort, liveModel, liveEffort := "", "", "", ""
+			defer func() { results <- result{i, model, effort, liveModel, liveEffort} }()
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -388,25 +389,26 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 					PID int    `json:"pid"`
 					Cwd string `json:"cwd"`
 				}
-				if err == nil && json.Unmarshal(raw, &detail) == nil {
-					detailPID, cwd = detail.PID, detail.Cwd
+				if err != nil || json.Unmarshal(raw, &detail) != nil {
+					return
 				}
+				detailPID, cwd = detail.PID, detail.Cwd
 			}
 			pid, provider := hudFindAgent(detailPID, procs, func(pid int) string { return nodeArgs[pid] })
 			env := ""
-			if provider == "claude" {
-				// ps already supplies the config directory; use the same bounded
-				// process query for optional model environment overrides.
-				raw, err := exec.CommandContext(ctx, "ps", "eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-				if err == nil {
-					env = string(raw)
-				}
-			} else {
-				pid = 0
+			if pid <= 0 || provider != "claude" {
+				return
 			}
+			// Use the identified process environment for config and model overrides.
+			raw, err := exec.CommandContext(ctx, "ps", "eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+			if err == nil {
+				env = string(raw)
+			}
+
 			if ctx.Err() != nil {
 				return
 			}
+			liveModel, liveEffort = hudClaudeTranscript(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid)
 			model, effort = hudClaudeResolve(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid, cwd, env, terminal.Model, terminal.Effort)
 			if model == "" {
 				resolved := hudClaudeCatalogModel(ctx, terminal.Model)
@@ -421,11 +423,17 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 	for range indices {
 		select {
 		case r := <-results:
+			terminal := &out.Terminals[r.index]
+			// Only transcript evidence may replace an orch worker's catalog values.
+			hudApplyClaudeModel(out, terminal.Address, r.liveModel)
+			if r.liveEffort != "" {
+				hudApplyClaudeEffort(out, terminal.Address, r.liveEffort)
+			}
 			if r.model != "" {
-				hudApplyClaudeModel(out, out.Terminals[r.index].Address, r.model)
+				terminal.Model = hudModelDisplay(r.model)
 			}
 			if r.effort != "" {
-				hudApplyClaudeEffort(out, out.Terminals[r.index].Address, r.effort)
+				terminal.Effort = r.effort
 			}
 		case <-ctx.Done():
 			return

@@ -312,9 +312,10 @@ func TestHUDClaudeBeforeFirstTurn(t *testing.T) {
 		{name: "malformed local ignored", project: `{"model":"sonnet"}`, local: `{"model":`, model: "sonnet"},
 		{name: "wrong types ignored", user: `{"model":"opus"}`, project: `{"model":42}`, model: "opus"},
 		{name: "anthropic env", user: `{"model":"opus"}`, env: "claude ANTHROPIC_MODEL=claude-haiku-5-5", model: "claude-haiku-5-5"},
-		{name: "claude env", env: "claude ANTHROPIC_MODEL=haiku CLAUDE_MODEL=sonnet OTHER=value", model: "sonnet"},
+		{name: "claude env", env: "claude ANTHROPIC_MODEL=haiku CLAUDE_MODEL=sonnet OTHER=value", model: "haiku"},
 		{name: "argv wins defaults", local: `{"model":"haiku","effortLevel":"low"}`, env: "CLAUDE_MODEL=opus", argvModel: "sonnet", argvEffort: "max"},
-		{name: "session metadata wins", session: `{"pid":901,"model":"claude-opus-5-5","effortLevel":"high"}`, env: "CLAUDE_MODEL=haiku", argvModel: "sonnet", argvEffort: "low", model: "claude-opus-5-5", effort: "high"},
+		{name: "argv wins session metadata", session: `{"pid":901,"model":"claude-opus-5-5","effortLevel":"high"}`, env: "CLAUDE_MODEL=haiku", argvModel: "sonnet", argvEffort: "low"},
+		{name: "argv wins session effort", session: `{"pid":901,"effort":"high"}`, argvEffort: "low"},
 		{name: "session effort", session: `{"pid":901,"model":"sonnet","effort":"medium"}`, model: "sonnet", effort: "medium"},
 		{name: "session pid mismatch", session: `{"pid":902,"model":"haiku","effort":"max"}`, user: `{"model":"opus"}`, model: "opus"},
 		{name: "malformed session", session: `{"pid":901,`, user: `{"model":"opus"}`, model: "opus"},
@@ -408,18 +409,18 @@ func TestHUDClaudeResolverFallbackIntegration(t *testing.T) {
 	for _, tc := range []struct{ name, script, want string }{
 		{"process environment", "#!/bin/sh\nif [ \"$1\" = \"-A\" ]; then\nprintf '%s\\n' '100 1 zsh' '101 100 claude'\nelse\nprintf '%s\\n' \"claude CLAUDE_CONFIG_DIR=$FIXTURE_HOME CLAUDE_MODEL=claude-sonnet-5-5\"\nfi\n", "sonnet-5.5"},
 		{"environment unreadable", "#!/bin/sh\nif [ \"$1\" = \"-A\" ]; then\nprintf '%s\\n' '100 1 zsh' '101 100 claude'\nelse\nexit 1\nfi\n", "opus-5.5"},
-		{"process listing unavailable", "#!/bin/sh\nexit 1\n", "opus-5.5"},
+		{"process listing unavailable", "#!/bin/sh\nexit 1\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(tc.script), 0700); err != nil {
 				t.Fatal(err)
 			}
-			out := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: "claude-code", Cwd: cwd, pid: 100, detailLoaded: true}}, Runs: []HUDRun{{Workers: []HUDWorker{{Terminal: "t1"}}}}}
+			out := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: "claude-code", Cwd: cwd, pid: 100, detailLoaded: true}}, Runs: []HUDRun{{Workers: []HUDWorker{{Terminal: "t1", Model: "catalog", Effort: "medium"}}}}}
 			hudResolveClaudeModels(context.Background(), &out)
-			if got := out.Terminals[0]; got.Model != tc.want || got.Effort != "high" {
+			if got := out.Terminals[0]; got.Model != tc.want || (tc.want != "" && got.Effort != "high") || (tc.want == "" && got.Effort != "") {
 				t.Fatalf("terminal: %+v", got)
 			}
-			if got := out.Runs[0].Workers[0]; got.Model != tc.want || got.Effort != "high" {
+			if got := out.Runs[0].Workers[0]; got.Model != "catalog" || got.Effort != "medium" {
 				t.Fatalf("worker: %+v", got)
 			}
 		})
@@ -446,7 +447,7 @@ printf '%s\n' '[{"key":"claude-high-m","model":"claude-opus-5-5","effort":"mediu
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ env, cli, want string }{{"", "", "high"}, {"CLAUDE_CODE_EFFORT_LEVEL=max", "", "max"}, {"CLAUDE_CODE_EFFORT_LEVEL=max", "low", "low"}} {
-		model, effort := hudClaudeResolve(home, 0, "", tc.env, "", tc.cli)
+		model, effort := hudClaudeResolve(home, 901, "", tc.env, "", tc.cli)
 		if effort == "" {
 			effort = tc.cli
 		}
@@ -457,5 +458,65 @@ printf '%s\n' '[{"key":"claude-high-m","model":"claude-opus-5-5","effort":"mediu
 	hudCatalogCache = map[string]hudCatalogModel{}
 	if got := hudClaudeCatalogModel(context.Background(), "opus"); got != "opus" {
 		t.Fatal(got)
+	}
+}
+
+func TestHUDClaudeSettingsModelSanitization(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{"claude-opus-5-5", "claude-opus-5-5"},
+		{"op\x00us\n\x1b", "opus"},
+		{"opus[31m", ""}, {"bad model", ""}, {"模型", ""},
+		{"a.Z_0:-", "a.Z_0:-"}, {strings.Repeat("a", 41), strings.Repeat("a", 40)},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			home := t.TempDir()
+			raw, _ := json.Marshal(map[string]string{"model": tc.raw})
+			if err := os.WriteFile(filepath.Join(home, "settings.json"), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			model, _ := hudClaudeResolve(home, 901, "", "", "", "")
+			if model != tc.want {
+				t.Fatalf("got %q want %q", model, tc.want)
+			}
+			if model, effort := hudClaudeResolve(home, 0, "", "ANTHROPIC_MODEL=opus", "", ""); model != "" || effort != "" {
+				t.Fatal("pid zero used fallback")
+			}
+		})
+	}
+}
+
+func TestHUDClaudeFallbackRequiresDetailAndProcess(t *testing.T) {
+	home, bin := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", bin)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"model":"opus"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "hc"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, processes string
+		pid             int
+		loaded          bool
+	}{
+		{"detail failed", "100 1 claude", 0, false},
+		{"no pid", "100 1 claude", 0, true},
+		{"other provider", "100 1 codex", 100, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			script := "#!/bin/sh\nprintf '%s\\n' '" + tc.processes + "'\n"
+			if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			out := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: "claude", pid: tc.pid, detailLoaded: tc.loaded}}, Runs: []HUDRun{{Workers: []HUDWorker{{Terminal: "t1", Model: "catalog"}}}}}
+			hudResolveClaudeModels(context.Background(), &out)
+			if out.Terminals[0].Model != "" || out.Runs[0].Workers[0].Model != "catalog" {
+				t.Fatalf("unexpected fallback: %+v", out)
+			}
+		})
 	}
 }

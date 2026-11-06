@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"unicode"
 )
 
 var hudClaudeProjectChar = regexp.MustCompile(`[^A-Za-z0-9]`)
@@ -104,11 +105,33 @@ func hudClaudeReadSession(home string, pid int) hudClaudeSession {
 	return session
 }
 
+// Settings models are display identifiers, never terminal control sequences.
+func hudClaudeSettingsModel(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._:-", r)) {
+			return ""
+		}
+	}
+	if len(value) > 40 {
+		value = value[:40]
+	}
+	return value
+}
+
 // Resolve each field independently. Live transcript metadata wins; launch argv
 // stays ahead of process env and settings, which only fill missing information.
 // An unchanged argv field returns empty so worker catalog values stay intact.
 // The caller resolves family aliases through the optional model catalog.
 func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort string) (model, effort string) {
+	if pid <= 0 {
+		return "", ""
+	}
 	home = hudClaudeHome(home)
 	session := hudClaudeReadSession(home, pid)
 	if session.Cwd != "" {
@@ -125,8 +148,8 @@ func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort 
 				EffortLevel string `json:"effortLevel"`
 			}
 			if hudClaudeReadMetadata(path, &settings) {
-				if settings.Model != "" {
-					model = settings.Model
+				if safe := hudClaudeSettingsModel(settings.Model); safe != "" {
+					model = safe
 				}
 				if settings.EffortLevel != "" {
 					effort = settings.EffortLevel
@@ -134,13 +157,10 @@ func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort 
 			}
 		}
 	}
-	for _, value := range []string{hudEnvValue(env, "ANTHROPIC_MODEL"), hudEnvValue(env, "CLAUDE_MODEL")} {
+	for _, value := range []string{hudEnvValue(env, "CLAUDE_MODEL"), hudEnvValue(env, "ANTHROPIC_MODEL")} {
 		if value != "" {
 			model = value
 		}
-	}
-	if launchModel != "" {
-		model = ""
 	}
 	if session.Model != "" {
 		model = session.Model
@@ -148,13 +168,16 @@ func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort 
 	if value := hudEnvValue(env, "CLAUDE_CODE_EFFORT_LEVEL"); value != "" {
 		effort = value
 	}
-	if launchEffort != "" {
-		effort = ""
-	}
 	for _, value := range []string{session.EffortLevel, session.Effort} {
 		if value != "" {
 			effort = value
 		}
+	}
+	if launchModel != "" {
+		model = ""
+	}
+	if launchEffort != "" {
+		effort = ""
 	}
 	liveModel, liveEffort := hudClaudeTranscript(home, pid)
 	if liveModel != "" {
