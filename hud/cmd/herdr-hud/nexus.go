@@ -550,7 +550,7 @@ func nexusCLIModel(key string) (nexusModelRunner, error) {
 			args = append(args, nexusRouterEffortArgs(key, m.Effort)...)
 			args = append(args, sys+"\n\n"+prompt)
 		}
-		cmd := nexusCommand(ctx, path, args...)
+		cmd := nexusModelCommand(ctx, name, path, args...)
 		cmd.Dir = dir
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -600,6 +600,26 @@ func nexusLastObject(raw []byte) ([]byte, error) {
 		}
 	}
 	return nil, errors.New("모델 응답이 올바르지 않습니다")
+}
+
+// Independent Claude calls must not inherit the parent Claude session identity.
+func nexusModelCommand(ctx context.Context, name, path string, args ...string) *exec.Cmd {
+	cmd := nexusCommand(ctx, path, args...)
+	if name == "claude" {
+		cmd.Env = make([]string, 0, len(os.Environ()))
+		for _, entry := range os.Environ() {
+			key, _, _ := strings.Cut(entry, "=")
+			switch key {
+			case "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID",
+				"CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN",
+				"CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH",
+				"CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_PID":
+				continue
+			}
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	return cmd
 }
 
 // Bound inherited output pipes as well as the process lifetime.
