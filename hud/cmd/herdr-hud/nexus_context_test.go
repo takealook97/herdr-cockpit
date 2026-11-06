@@ -21,9 +21,23 @@ func TestNexusRecentContext(t *testing.T) {
 		{strings.Repeat("old\n", 2000) + "하나\n둘\n셋", "하나 / 둘 / 셋"},
 		{strings.Repeat("가", 200), strings.Repeat("가", 160)},
 		{"\x00\n", ""},
+		{"older\nFirst real content\nSecond real content\nThird real content\n────────────────\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n✻ Baked for 58s · done 오전 10:09\nshells still running\n", "First real content / Second real content / Third real content"},
+		{"content\n✶ working\n✳ working\n⏺ thinking...\nauto mode\nfor agents\n123 tokens\nChurned for 2s\nCooked for 2s\n██──", "content"},
+		{"⏺ A useful answer", "⏺ A useful answer"},
 	} {
 		if got := nexusRecent(tc.screen); got != tc.want {
 			t.Fatalf("got %q, want %q", got, tc.want)
+		}
+	}
+}
+
+func TestNexusContextReport(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"Claude Code", ""}, {"codex", ""}, {"claude", ""},
+		{" CLAUDE ", ""}, {"Claude Code investigation", "Claude Code investigation"},
+	} {
+		if got := nexusContextReport(tc.input); got != tc.want {
+			t.Errorf("report %q: got %q, want %q", tc.input, got, tc.want)
 		}
 	}
 }

@@ -28,22 +28,54 @@ func nexusContextCwd(path string) string {
 }
 
 func nexusRecent(screen string) string {
-	screen = strings.Map(func(r rune) rune {
-		if r >= 0x2500 && r <= 0x259f {
-			return -1
+	lines := strings.Split(nexusSanitizeScreen(screen), "\n")
+	content := make([]string, 0, 3)
+	for i := len(lines) - 1; i >= 0 && len(content) < 3; i-- {
+		line := strings.TrimSpace(strings.Map(func(r rune) rune {
+			if r >= 0x2500 && r <= 0x259f {
+				return -1
+			}
+			return r
+		}, lines[i]))
+		if line == "" || nexusChromeLine(line) {
+			continue
 		}
-		return r
-	}, nexusSanitizeScreen(screen))
-	lines := []string{}
-	for _, line := range strings.Split(screen, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
+		content = append(content, line)
+	}
+	for i, j := 0, len(content)-1; i < j; i, j = i+1, j-1 {
+		content[i], content[j] = content[j], content[i]
+	}
+	return nexusBound(strings.Join(content, " / "), 160)
+}
+
+func nexusChromeLine(line string) bool {
+	if strings.ContainsAny(string([]rune(line)[0]), "❯⏵✻✶✳") {
+		return true
+	}
+	lower := strings.ToLower(line)
+	for _, phrase := range []string{"bypass permissions", "shift+tab", "esc to interrupt", "auto mode", "shells still running", "for agents", "tokens", "baked for", "churned for", "cooked for"} {
+		if strings.Contains(lower, phrase) {
+			return true
 		}
 	}
-	if len(lines) > 3 {
-		lines = lines[len(lines)-3:]
+	if strings.HasPrefix(line, "⏺") {
+		status := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "⏺")))
+		for _, word := range []string{"working", "thinking", "running", "loading", "waiting", "processing", "done", "completed", "idle"} {
+			if status == word || strings.HasPrefix(status, word+" ") || strings.HasPrefix(status, word+"…") || strings.HasPrefix(status, word+"...") {
+				return true
+			}
+		}
 	}
-	return nexusBound(strings.Join(lines, " / "), 160)
+	return false
+}
+
+func nexusContextReport(report string) string {
+	report = nexusBound(nexusSanitize(report), 160)
+	switch strings.ToLower(strings.TrimSpace(report)) {
+	case "claude code", "codex", "claude":
+		return ""
+	}
+	return report
 }
 
 // Sanitize each line without the command's 4000-rune prefix bound: we need the
@@ -74,7 +106,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 			}
 		}
 		out[i].Cwd = nexusContextCwd(out[i].Cwd)
-		out[i].Report = nexusBound(nexusSanitize(out[i].Report), 160)
+		out[i].Report = nexusContextReport(out[i].Report)
 		out[i].Recent = nexusRecent(out[i].Recent)
 	}
 	if hc == nil || n == 0 {
@@ -140,15 +172,11 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 			if cwd != "" {
 				out[r.index].Cwd = nexusContextCwd(cwd)
 			}
-			report := detail.Status.Report
-			if report == "" {
-				report = detail.Report
-			}
-			if report == "" {
-				report = detail.Title
-			}
-			if report != "" {
-				out[r.index].Report = nexusBound(nexusSanitize(report), 160)
+			for _, candidate := range []string{detail.Status.Report, detail.Report, detail.Title} {
+				if report := nexusContextReport(candidate); report != "" {
+					out[r.index].Report = report
+					break
+				}
 			}
 		}
 	}
