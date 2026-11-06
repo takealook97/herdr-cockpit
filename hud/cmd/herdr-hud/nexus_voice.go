@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -392,10 +393,7 @@ func nexusVoiceCancel(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 				return fail(err)
 			}
 		}
-		if _, err := hc(ctx, "keys", address, "esc"); err != nil {
-			return fail(err)
-		}
-		if _, err := hc(ctx, "keys", address, "ctrl+e", "ctrl+u"); err != nil {
+		if err := nexusVoiceCancelLocked(ctx, address, hc); err != nil {
 			return fail(err)
 		}
 		cancelled = true
@@ -404,6 +402,10 @@ func nexusVoiceCancel(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 }
 
 func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
+	return nexusVoiceRecordWithSpawn(ctx, hc, nexusLoadConfig().AutoSendSilenceMs, nexusVoiceSpawnWatch)
+}
+
+func nexusVoiceRecordWithSpawn(ctx context.Context, hc nexusHCRunner, silenceMs int, spawn func() error) nexusVoiceReply {
 	fail := func(err error) nexusVoiceReply { return nexusVoiceReply{Action: "error", Error: nexusError(err).Error} }
 	unlock, err := nexusVoiceLock(ctx)
 	if err != nil {
@@ -448,8 +450,19 @@ func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 		if err != nil {
 			return fail(err)
 		}
+		if silenceMs != 0 {
+			if err := spawn(); err != nil {
+				return fail(err)
+			}
+		}
 		return nexusVoiceReply{OK: true, Recording: &recording, Pending: !recording}
 	}
+	return nexusVoiceStopLocked(ctx, address, screen, hc, nexusVoiceRealClock())
+}
+
+// Caller owns voice.lock and has already checked the live recording screen.
+func nexusVoiceStopLocked(ctx context.Context, address, screen string, hc nexusHCRunner, clock nexusVoiceClock) nexusVoiceReply {
+	fail := func(err error) nexusVoiceReply { return nexusVoiceReply{Action: "error", Error: nexusError(err).Error} }
 	defer os.Remove(nexusVoiceStatePath())
 	blocked := strings.Count(screen, nexusVoiceBlocked)
 	if _, err := hc(ctx, "keys", address, "space"); err != nil {
@@ -462,7 +475,7 @@ func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 	stableText := ""
 	var stableSince time.Time
 	for {
-		if err := nexusVoicePause(pollCtx, 200*time.Millisecond); err != nil {
+		if err := clock.pause(pollCtx, 200*time.Millisecond); err != nil {
 			if ctx.Err() != nil {
 				return fail(ctx.Err())
 			}
@@ -489,10 +502,10 @@ func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 			continue
 		}
 		if input != stableText {
-			stableText, stableSince = input, time.Now()
+			stableText, stableSince = input, clock.now()
 			continue
 		}
-		if time.Since(stableSince) < 400*time.Millisecond {
+		if clock.now().Sub(stableSince) < 400*time.Millisecond {
 			continue
 		}
 		if _, err := hc(pollCtx, "keys", address, "enter"); err != nil {
@@ -501,6 +514,146 @@ func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 		submitted = true
 		return reply()
 	}
+}
+
+// Caller owns voice.lock.
+func nexusVoiceCancelLocked(ctx context.Context, address string, hc nexusHCRunner) error {
+	if _, err := hc(ctx, "keys", address, "esc"); err != nil {
+		return err
+	}
+	_, err := hc(ctx, "keys", address, "ctrl+e", "ctrl+u")
+	return err
+}
+
+type nexusVoiceClock struct {
+	now   func() time.Time
+	pause func(context.Context, time.Duration) error
+}
+
+func nexusVoiceRealClock() nexusVoiceClock {
+	return nexusVoiceClock{time.Now, nexusVoicePause}
+}
+
+func nexusVoiceSpawnWatch() error {
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer null.Close()
+	cmd := exec.Command(binary, "nexus", "voice", "watch")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = null, null, null
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+func nexusVoiceHeartbeat() int64 {
+	raw, err := os.ReadFile(nexusSharedPath())
+	var shared nexusShared
+	if err != nil || json.Unmarshal(raw, &shared) != nil {
+		return 0
+	}
+	return shared.Heartbeat
+}
+
+// A separate nonblocking lock makes repeated starts harmless. Keep its inode in
+// place, just like voice.lock, so competing watchers always lock the same file.
+func nexusVoiceWatch(ctx context.Context, silenceMs int, hc nexusHCRunner, clock nexusVoiceClock, heartbeat func() int64) error {
+	if silenceMs == 0 {
+		return nil
+	}
+	dir := filepath.Join(hudCacheDir(), "nexus-voice")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "watch.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil
+		}
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	ctx, cancel := context.WithTimeout(ctx, 130*time.Second)
+	defer cancel()
+	address, err := nexusVoiceOwned(ctx, hc)
+	if err != nil {
+		return err
+	}
+	deadline := clock.now().Add(130 * time.Second)
+	stableText := ""
+	var stableSince time.Time
+	for clock.now().Before(deadline) {
+		raw, err := hc(ctx, "read", address, "--lines", "0")
+		if err != nil {
+			return err
+		}
+		screen := string(raw)
+		if !nexusVoiceRecording(screen) {
+			return nil
+		}
+		input, found := nexusVoiceInput(screen)
+		if !found || input == "" {
+			stableText, stableSince = "", time.Time{}
+		} else if input != stableText {
+			stableText, stableSince = input, clock.now()
+		}
+		stale := clock.now().UnixMilli()-heartbeat() > 2500
+		if stale || (input != "" && found && clock.now().Sub(stableSince) >= time.Duration(silenceMs)*time.Millisecond) {
+			// Manual stop/cancel may have completed while we waited for the lock.
+			done, err := nexusVoiceWatchAct(ctx, address, stableText, hc, clock, heartbeat)
+			if err != nil || done {
+				return err
+			}
+			stableText, stableSince = "", time.Time{}
+		}
+		if err := clock.pause(ctx, 300*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func nexusVoiceWatchAct(ctx context.Context, address, expected string, hc nexusHCRunner, clock nexusVoiceClock, heartbeat func() int64) (bool, error) {
+	unlock, err := nexusVoiceLock(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	if err := nexusVoiceCheckOwner(ctx, address, hc); err != nil {
+		return false, err
+	}
+	raw, err := hc(ctx, "read", address, "--lines", "0")
+	if err != nil {
+		return false, err
+	}
+	screen := string(raw)
+	if !nexusVoiceRecording(screen) {
+		return true, nil
+	}
+	if clock.now().UnixMilli()-heartbeat() > 2500 {
+		defer os.Remove(nexusVoiceStatePath())
+		return true, nexusVoiceCancelLocked(ctx, address, hc)
+	}
+	input, found := nexusVoiceInput(screen)
+	if !found || input == "" || input != expected {
+		return false, nil
+	}
+	reply := nexusVoiceStopLocked(ctx, address, screen, hc, clock)
+	if reply.Error != "" {
+		return true, errors.New(reply.Error)
+	}
+	return true, nil
 }
 
 func nexusDefaultDeps() nexusDeps {

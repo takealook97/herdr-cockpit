@@ -392,18 +392,19 @@ func nexusCLIPath(name string) string {
 // Parse fields independently: a malformed optional audio setting must not hide
 // a valid model key (or the other valid audio setting).
 type nexusConfig struct {
-	VoiceInput     string
-	Model          string
-	KeepAudio      int
-	LaughThreshold float64
-	SpeechEngine   string
-	ServerSpeech   bool
-	ListenTrace    bool
+	VoiceInput        string
+	AutoSendSilenceMs int
+	Model             string
+	KeepAudio         int
+	LaughThreshold    float64
+	SpeechEngine      string
+	ServerSpeech      bool
+	ListenTrace       bool
 }
 
 func nexusParseConfig(raw []byte) nexusConfig {
 	var fields map[string]json.RawMessage
-	var cfg nexusConfig
+	cfg := nexusConfig{AutoSendSilenceMs: 1800}
 	if json.Unmarshal(raw, &fields) != nil {
 		return cfg
 	}
@@ -421,6 +422,10 @@ func nexusParseConfig(raw []byte) nexusConfig {
 	}
 	_ = json.Unmarshal(field("model"), &cfg.Model)
 	_ = json.Unmarshal(field("voiceInput"), &cfg.VoiceInput)
+	var silence *int
+	if json.Unmarshal(field("autoSendSilenceMs"), &silence) == nil && silence != nil && (*silence == 0 || *silence >= 800 && *silence <= 10000) {
+		cfg.AutoSendSilenceMs = *silence
+	}
 	var keep int
 	if json.Unmarshal(field("keepAudio"), &keep) == nil && keep >= 0 && keep <= 100 {
 		cfg.KeepAudio = keep
@@ -627,6 +632,18 @@ func cmdNexus(args []string, stdout, stderr io.Writer) int {
 				return usage()
 			}
 			out = nexusVoiceCancel(ctx, nexusHC)
+		case "watch":
+			if len(args) != 2 {
+				return usage()
+			}
+			// The internal watcher outlives the normal 45 s CLI request budget.
+			watchCtx, stop := context.WithTimeout(context.Background(), 130*time.Second)
+			defer stop()
+			if err := nexusVoiceWatch(watchCtx, nexusLoadConfig().AutoSendSilenceMs, nexusHC, nexusVoiceRealClock(), nexusVoiceHeartbeat); err != nil {
+				fmt.Fprintln(stderr, nexusError(err).Error)
+				return 1
+			}
+			return 0
 		case "record":
 			if len(args) != 2 {
 				return usage()

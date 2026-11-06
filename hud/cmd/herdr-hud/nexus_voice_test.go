@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -734,7 +735,7 @@ func TestNexusVoiceScreenSequences(t *testing.T) {
 			if tt.action == "cancel" {
 				reply = nexusVoiceCancel(context.Background(), hc)
 			} else {
-				reply = nexusVoiceRecord(context.Background(), hc)
+				reply = voiceTestRecord(context.Background(), hc)
 			}
 			if !reflect.DeepEqual(keys, tt.keys) {
 				t.Fatalf("keys %v, want %v", keys, tt.keys)
@@ -821,7 +822,7 @@ func TestNexusVoiceRecordFailures(t *testing.T) {
 				t.Fatalf("unexpected command %v", args)
 				return nil, nil
 			}
-			reply := nexusVoiceRecord(context.Background(), hc)
+			reply := voiceTestRecord(context.Background(), hc)
 			if reply.OK || reply.Action != "error" || reply.Error == "" {
 				t.Fatalf("reply %+v", reply)
 			}
@@ -909,7 +910,7 @@ func TestNexusVoiceConcurrentActions(t *testing.T) {
 				}
 				return nil, errors.New("unexpected command")
 			}
-			go func() { firstDone <- nexusVoiceRecord(context.Background(), firstHC) }()
+			go func() { firstDone <- voiceTestRecord(context.Background(), firstHC) }()
 			<-started
 			secondEntered := make(chan struct{}, 1)
 			secondReads := 0
@@ -942,7 +943,7 @@ func TestNexusVoiceConcurrentActions(t *testing.T) {
 			go func() {
 				switch action {
 				case "record":
-					secondDone <- nexusVoiceRecord(context.Background(), secondHC)
+					secondDone <- voiceTestRecord(context.Background(), secondHC)
 				case "cancel":
 					secondDone <- nexusVoiceCancel(context.Background(), secondHC)
 				case "key":
@@ -1053,5 +1054,245 @@ func TestNexusVoiceCancel(t *testing.T) {
 				t.Fatalf("expected error: %+v", r)
 			}
 		})
+	}
+}
+
+// Existing action fixtures exercise start/stop without launching a subprocess.
+func voiceTestRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
+	return nexusVoiceRecordWithSpawn(ctx, hc, 0, nil)
+}
+
+func TestNexusAutoSendConfig(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{`{}`, 1800}, {`broken`, 1800}, {`{"autoSendSilenceMs":null}`, 1800},
+		{`{"autoSendSilenceMs":0}`, 0}, {`{"AUTOSENDSILENCEMS":800}`, 800},
+		{`{"autoSendSilenceMs":10000}`, 10000}, {`{"autoSendSilenceMs":799}`, 1800},
+		{`{"autoSendSilenceMs":10001}`, 1800}, {`{"autoSendSilenceMs":-1}`, 1800},
+		{`{"autoSendSilenceMs":"1800"}`, 1800}, {`{"autoSendSilenceMs":1800.5}`, 1800},
+	} {
+		if got := nexusParseConfig([]byte(tc.raw)).AutoSendSilenceMs; got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+}
+
+func TestNexusVoiceWatchScreens(t *testing.T) {
+	for _, scenario := range []string{"pause", "changing", "empty", "missing input", "manual stop", "stale heartbeat", "auto submitted", "disabled", "stop wins lock", "text changes under lock", "empty under lock"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("XDG_CACHE_HOME", t.TempDir())
+			now := time.Unix(1000, 0)
+			start := now
+			clock := nexusVoiceClock{now: func() time.Time { return now }, pause: func(ctx context.Context, d time.Duration) error {
+				now = now.Add(d)
+				return ctx.Err()
+			}}
+			var keys []string
+			reads, ownerChecks := 0, 0
+			stopped := false
+			hc := func(_ context.Context, args ...string) ([]byte, error) {
+				switch args[0] {
+				case "ls":
+					return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+				case "get":
+					ownerChecks++
+					return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+				case "read":
+					if !reflect.DeepEqual(args, []string{"read", "t1", "--lines", "0"}) {
+						t.Fatalf("not screen only: %v", args)
+					}
+					reads++
+					if stopped {
+						if scenario == "auto submitted" {
+							return []byte(nexusVoiceBlocked + "\n❯"), nil
+						}
+						return []byte("❯ final text"), nil
+					}
+					if ownerChecks >= 2 {
+						switch scenario {
+						case "stop wins lock":
+							return []byte("❯ manual text"), nil
+						case "text changes under lock":
+							return []byte(fmt.Sprintf("⏺ REC\n❯ new text %d", reads)), nil
+						case "empty under lock":
+							return []byte("⏺ REC\n❯"), nil
+						}
+					}
+					if scenario == "manual stop" && now.Sub(start) >= time.Second {
+						return []byte("❯"), nil
+					}
+					input := "growing"
+					if now.Sub(start) >= 600*time.Millisecond {
+						input = "final text"
+					}
+					if scenario == "changing" {
+						input = fmt.Sprint(reads)
+					}
+					if scenario == "empty" {
+						input = ""
+					}
+					if scenario == "missing input" {
+						return []byte("⏺ REC"), nil
+					}
+					return []byte("⏺ REC\n❯ " + input), nil
+				case "keys":
+					key := strings.Join(args[2:], " ")
+					keys = append(keys, key)
+					if key == "space" {
+						if now.Sub(start) != 2400*time.Millisecond {
+							t.Fatalf("stopped at %v", now.Sub(start))
+						}
+						stopped = true
+					}
+					return nil, nil
+				}
+				t.Fatalf("unexpected command %v", args)
+				return nil, nil
+			}
+			heartbeat := func() int64 {
+				if scenario == "stale heartbeat" {
+					return now.Add(-2501 * time.Millisecond).UnixMilli()
+				}
+				return now.UnixMilli()
+			}
+			silence := 1800
+			if scenario == "disabled" {
+				silence = 0
+			}
+			if err := nexusVoiceWatch(context.Background(), silence, hc, clock, heartbeat); err != nil {
+				t.Fatal(err)
+			}
+			var want []string
+			switch scenario {
+			case "pause":
+				want = []string{"space", "enter"}
+			case "auto submitted":
+				want = []string{"space"}
+			case "stale heartbeat":
+				want = []string{"esc", "ctrl+e ctrl+u"}
+			case "disabled":
+				if reads != 0 || ownerChecks != 0 {
+					t.Fatal("disabled watcher read screen")
+				}
+			}
+			if !reflect.DeepEqual(keys, want) {
+				t.Fatalf("keys %v, want %v", keys, want)
+			}
+			if now.Sub(start) > 130*time.Second+300*time.Millisecond {
+				t.Fatal("watch exceeded lifetime")
+			}
+		})
+	}
+}
+
+func TestNexusVoiceWatchSingleInstance(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	path := filepath.Join(hudCacheDir(), "nexus-voice", "watch.lock")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	hc := func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("second watcher read screen")
+		return nil, nil
+	}
+	if err := nexusVoiceWatch(context.Background(), 1800, hc, nexusVoiceRealClock(), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNexusVoiceRecordSpawnsWatch(t *testing.T) {
+	for _, silence := range []int{0, 1800} {
+		for _, pending := range []bool{false, true} {
+			t.Run(fmt.Sprintf("silence=%d/pending=%v", silence, pending), func(t *testing.T) {
+				t.Setenv("XDG_CACHE_HOME", t.TempDir())
+				reads, spawned := 0, 0
+				hc := func(_ context.Context, args ...string) ([]byte, error) {
+					switch args[0] {
+					case "ls":
+						return []byte(`{"terminals":[{"address":"t1","name":"nexus-voice"}]}`), nil
+					case "get":
+						return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+					case "read":
+						reads++
+						if reads > 1 && !pending {
+							return []byte("⏺ REC\n❯"), nil
+						}
+						return []byte("❯"), nil
+					case "keys":
+						return nil, nil
+					}
+					return nil, errors.New("unexpected command")
+				}
+				reply := nexusVoiceRecordWithSpawn(context.Background(), hc, silence, func() error {
+					spawned++
+					if reads < 2 {
+						t.Fatal("spawned before REC confirmation")
+					}
+					return nil
+				})
+				want := 1
+				if silence == 0 {
+					want = 0
+				}
+				if !reply.OK || reply.Pending != pending || spawned != want {
+					t.Fatalf("reply %+v, spawned %d", reply, spawned)
+				}
+			})
+		}
+	}
+}
+
+func TestNexusVoiceWatchWaitsForManualAction(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	unlock, err := nexusVoiceLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	hc := func(_ context.Context, args ...string) ([]byte, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		switch args[0] {
+		case "get":
+			return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+		case "read":
+			// The manual stop completed while watch was waiting for voice.lock.
+			return []byte("❯ final text"), nil
+		}
+		return nil, fmt.Errorf("watch sent input after manual stop: %v", args)
+	}
+	go func() {
+		exited, err := nexusVoiceWatchAct(context.Background(), "t1", "final text", hc, nexusVoiceRealClock(), nil)
+		if err == nil && !exited {
+			err = errors.New("watch did not exit after manual stop")
+		}
+		done <- err
+	}()
+	premature := false
+	select {
+	case <-entered:
+		premature = true
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if premature {
+		t.Fatal("watch bypassed voice.lock")
 	}
 }
