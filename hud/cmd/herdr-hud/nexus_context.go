@@ -27,7 +27,7 @@ func nexusContextCwd(path string) string {
 	return filepath.Join(filepath.Base(parent), filepath.Base(path))
 }
 
-func nexusRecent(screen string) string {
+func nexusRecent(screen, report string) string {
 	lines := strings.Split(nexusSanitizeScreen(screen), "\n")
 	content := make([]string, 0, 3)
 	for i := len(lines) - 1; i >= 0 && len(content) < 3; i-- {
@@ -37,7 +37,7 @@ func nexusRecent(screen string) string {
 			}
 			return r
 		}, lines[i]))
-		if line == "" || nexusChromeLine(line) {
+		if line == "" || line == report || nexusChromeLine(line) {
 			continue
 		}
 		content = append(content, line)
@@ -49,11 +49,14 @@ func nexusRecent(screen string) string {
 }
 
 func nexusChromeLine(line string) bool {
-	if strings.ContainsAny(string([]rune(line)[0]), "❯⏵✻✶✳") {
+	if strings.ContainsAny(string([]rune(line)[0]), "❯⏵✻✶✳⎿") {
+		return true
+	}
+	if strings.HasPrefix(line, "Tip:") {
 		return true
 	}
 	lower := strings.ToLower(line)
-	for _, phrase := range []string{"bypass permissions", "shift+tab", "esc to interrupt", "auto mode", "shells still running", "for agents", "tokens", "baked for", "churned for", "cooked for"} {
+	for _, phrase := range []string{"bypass permissions", "shift+tab", "esc to interrupt", "auto mode", "shells still running", "for agents", "tokens", "baked for", "churned for", "cooked for", "⎿  tip:", "ctrl+b to run in background", "running…", "thinking…"} {
 		if strings.Contains(lower, phrase) {
 			return true
 		}
@@ -94,6 +97,12 @@ func nexusSanitizeScreen(screen string) string {
 func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRosterEntry, panes HUDPanes) []nexusRosterEntry {
 	out := append([]nexusRosterEntry(nil), roster...)
 	n := min(len(out), nexusContextHeads)
+	screens := make([]string, n)
+	defer func() {
+		for i := range screens {
+			out[i].Recent = nexusRecent(screens[i], out[i].Report)
+		}
+	}()
 	for i := range out {
 		if i >= n {
 			out[i].Cwd, out[i].Report, out[i].Recent = "", "", ""
@@ -107,7 +116,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 		}
 		out[i].Cwd = nexusContextCwd(out[i].Cwd)
 		out[i].Report = nexusContextReport(out[i].Report)
-		out[i].Recent = nexusRecent(out[i].Recent)
+		screens[i] = out[i].Recent
 	}
 	if hc == nil || n == 0 {
 		return out
@@ -148,7 +157,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 				continue
 			}
 			if !r.detail {
-				out[r.index].Recent = nexusRecent(string(r.raw))
+				screens[r.index] = string(r.raw)
 				continue
 			}
 			var detail struct {

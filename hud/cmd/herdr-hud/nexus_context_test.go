@@ -24,9 +24,40 @@ func TestNexusRecentContext(t *testing.T) {
 		{"older\nFirst real content\nSecond real content\nThird real content\n────────────────\n❯\n⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt\n✻ Baked for 58s · done 오전 10:09\nshells still running\n", "First real content / Second real content / Third real content"},
 		{"content\n✶ working\n✳ working\n⏺ thinking...\nauto mode\nfor agents\n123 tokens\nChurned for 2s\nCooked for 2s\n██──", "content"},
 		{"⏺ A useful answer", "⏺ A useful answer"},
+		{"content\n⎿  Running…", "content"},
+		{"content\n⎿  Tip: Send messages to Claude while it works to steer Claude in real-time", "content"},
+		{"content\n(ctrl+b to run in background)", "content"},
+		{"content\n⎿  Tip: Use /clear to start fresh when", "content"},
+		{"content\n  ⎿ anything\nTip: hint\nprefix ⎿  Tip: hint\nprefix Running…\nprefix Thinking…", "content"},
 	} {
-		if got := nexusRecent(tc.screen); got != tc.want {
+		if got := nexusRecent(tc.screen, ""); got != tc.want {
 			t.Fatalf("got %q, want %q", got, tc.want)
+		}
+	}
+}
+
+func TestNexusRecentExcludesReport(t *testing.T) {
+	for _, tc := range []struct{ screen, report, want string }{
+		{"first\nsecond\nthird\nSession title", "Session title", "first / second / third"},
+		{"Session title\nother", "Session title", "other"},
+	} {
+		if got := nexusRecent(tc.screen, tc.report); got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
+	}
+	for _, delayRead := range []bool{false, true} {
+		hc := func(_ context.Context, args ...string) ([]byte, error) {
+			if (args[0] == "read") == delayRead {
+				time.Sleep(20 * time.Millisecond)
+			}
+			if args[0] == "get" {
+				return []byte(`{"title":"Session title"}`), nil
+			}
+			return []byte("first\nsecond\nthird\nSession title"), nil
+		}
+		got := nexusEnrichRoster(context.Background(), hc, []nexusRosterEntry{{Address: "t1"}}, HUDPanes{})
+		if got[0].Report != "Session title" || got[0].Recent != "first / second / third" {
+			t.Fatal(got[0])
 		}
 	}
 }
