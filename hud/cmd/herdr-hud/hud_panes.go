@@ -348,6 +348,12 @@ func hudPanes(ctx context.Context) HUDPanes {
 func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
+	workers := map[string]bool{}
+	for _, run := range out.Runs {
+		for _, worker := range run.Workers {
+			workers[worker.Terminal] = true
+		}
+	}
 	indices := []int{}
 	for i := range out.Terminals {
 		t := &out.Terminals[i]
@@ -410,6 +416,17 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 			}
 			liveModel, liveEffort = hudClaudeTranscript(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid)
 			model, effort = hudClaudeResolve(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid, cwd, env, terminal.Model, terminal.Effort)
+			// hc get succeeded before reaching here. Banner evidence is only for
+			// Heads before their first transcript metadata, never orch workers.
+			if liveModel == "" && liveEffort == "" && !workers[terminal.Address] && hudEnvValue(env, "ORCH_ROLE") != "worker" {
+				bannerModel, bannerEffort := hudClaudeStartupBanner(ctx, pid, terminal.Address)
+				if terminal.Model == "" && bannerModel != "" {
+					model = bannerModel
+				}
+				if terminal.Effort == "" && bannerEffort != "" {
+					effort = bannerEffort
+				}
+			}
 			if model == "" {
 				resolved := hudClaudeCatalogModel(ctx, terminal.Model)
 				if resolved != terminal.Model {
