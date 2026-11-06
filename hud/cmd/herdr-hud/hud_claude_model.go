@@ -33,6 +33,108 @@ func hudModelDisplay(id string) string {
 	return name
 }
 
+type hudClaudeSession struct {
+	PID         int    `json:"pid"`
+	SessionID   string `json:"sessionId"`
+	Cwd         string `json:"cwd"`
+	Model       string `json:"model"`
+	Effort      string `json:"effort"`
+	EffortLevel string `json:"effortLevel"`
+}
+
+func hudClaudeHome(home string) string {
+	if home == "" {
+		user, err := os.UserHomeDir()
+		if err == nil {
+			return filepath.Join(user, ".claude")
+		}
+	}
+	return home
+}
+
+// Settings and session metadata are small local files; reject oversized or
+// non-regular inputs rather than letting fallback discovery read unbounded data.
+func hudClaudeReadMetadata(path string, value any) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 64*1024 {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 64*1024+1))
+	return err == nil && len(raw) <= 64*1024 && json.Unmarshal(raw, value) == nil
+}
+
+func hudClaudeReadSession(home string, pid int) hudClaudeSession {
+	var session hudClaudeSession
+	if pid <= 0 || !hudClaudeReadMetadata(filepath.Join(home, "sessions", strconv.Itoa(pid)+".json"), &session) || session.PID != pid {
+		return hudClaudeSession{}
+	}
+	return session
+}
+
+// Resolve each field independently. Live transcript metadata wins; launch argv
+// stays ahead of process env and settings, which only fill missing information.
+// An unchanged argv field returns empty so worker catalog values stay intact.
+// Aliases such as "opus" stay aliases until the session records an exact id.
+func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort string) (model, effort string) {
+	home = hudClaudeHome(home)
+	session := hudClaudeReadSession(home, pid)
+	if session.Cwd != "" {
+		cwd = session.Cwd
+	}
+	if home != "" {
+		paths := []string{filepath.Join(home, "settings.json")}
+		if filepath.IsAbs(cwd) {
+			paths = append(paths, filepath.Join(cwd, ".claude", "settings.json"), filepath.Join(cwd, ".claude", "settings.local.json"))
+		}
+		for _, path := range paths {
+			var settings struct {
+				Model       string `json:"model"`
+				EffortLevel string `json:"effortLevel"`
+			}
+			if hudClaudeReadMetadata(path, &settings) {
+				if settings.Model != "" {
+					model = settings.Model
+				}
+				if settings.EffortLevel != "" {
+					effort = settings.EffortLevel
+				}
+			}
+		}
+	}
+	for _, value := range []string{hudEnvValue(env, "ANTHROPIC_MODEL"), hudEnvValue(env, "CLAUDE_MODEL")} {
+		if value != "" {
+			model = value
+		}
+	}
+	if launchModel != "" {
+		model = ""
+	}
+	if session.Model != "" {
+		model = session.Model
+	}
+	if launchEffort != "" {
+		effort = ""
+	}
+	for _, value := range []string{session.EffortLevel, session.Effort} {
+		if value != "" {
+			effort = value
+		}
+	}
+	liveModel, liveEffort := hudClaudeTranscript(home, pid)
+	if liveModel != "" {
+		model = liveModel
+	}
+	if liveEffort != "" {
+		effort = liveEffort
+	}
+	return model, effort
+}
+
 // Read a bounded tail only; incomplete JSON written by the running agent is ignored.
 func hudClaudeTranscriptModel(home string, pid int) string {
 	model, _ := hudClaudeTranscript(home, pid)
@@ -45,23 +147,12 @@ func hudClaudeTranscript(home string, pid int) (model, effort string) {
 	if pid <= 0 {
 		return "", ""
 	}
+	home = hudClaudeHome(home)
 	if home == "" {
-		user, err := os.UserHomeDir()
-		if err != nil {
-			return "", ""
-		}
-		home = filepath.Join(user, ".claude")
-	}
-	rawSession, err := os.ReadFile(filepath.Join(home, "sessions", strconv.Itoa(pid)+".json"))
-	if err != nil {
 		return "", ""
 	}
-	var session struct {
-		PID       int    `json:"pid"`
-		SessionID string `json:"sessionId"`
-		Cwd       string `json:"cwd"`
-	}
-	if json.Unmarshal(rawSession, &session) != nil || session.PID != pid || session.Cwd == "" || session.SessionID == "" || strings.ContainsAny(session.SessionID, `/\`) || session.SessionID == "." || session.SessionID == ".." {
+	session := hudClaudeReadSession(home, pid)
+	if session.Cwd == "" || session.SessionID == "" || strings.ContainsAny(session.SessionID, `/\`) || session.SessionID == "." || session.SessionID == ".." {
 		return "", ""
 	}
 	dir := filepath.Join(home, "projects", hudClaudeProjectChar.ReplaceAllString(session.Cwd, "-"))
