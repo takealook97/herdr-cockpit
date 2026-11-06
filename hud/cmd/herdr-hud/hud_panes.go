@@ -346,8 +346,18 @@ func hudPanes(ctx context.Context) HUDPanes {
 
 // Resolve live Claude sessions concurrently with a shared deadline and a fixed fanout.
 func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	hudResolveClaudeModelsWithin(ctx, out, 2*time.Second)
+}
+
+func hudResolveClaudeModelsWithin(ctx context.Context, out *HUDPanes, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	workers := map[string]bool{}
+	for _, run := range out.Runs {
+		for _, worker := range run.Workers {
+			workers[worker.Terminal] = true
+		}
+	}
 	indices := []int{}
 	for i := range out.Terminals {
 		t := &out.Terminals[i]
@@ -410,6 +420,7 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 			}
 			liveModel, liveEffort = hudClaudeTranscript(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid)
 			model, effort = hudClaudeResolve(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid, cwd, env, terminal.Model, terminal.Effort)
+
 			if model == "" {
 				resolved := hudClaudeCatalogModel(ctx, terminal.Model)
 				if resolved != terminal.Model {
@@ -417,6 +428,18 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 				}
 			} else {
 				model = hudClaudeCatalogModel(ctx, model)
+			}
+			// hc get succeeded before reaching here. Banner evidence is only for
+			// Heads before their first transcript metadata, never orch workers.
+			launchModelKnown := terminal.Model != "" || hudEnvValue(env, "CLAUDE_MODEL") != "" || hudEnvValue(env, "ANTHROPIC_MODEL") != "" || hudClaudeReadSession(hudClaudeHome(hudEnvValue(env, "CLAUDE_CONFIG_DIR")), pid).Model != ""
+			if !launchModelKnown && liveModel == "" && liveEffort == "" && !workers[terminal.Address] && hudEnvValue(env, "ORCH_ROLE") != "worker" {
+				bannerModel, bannerEffort := hudClaudeStartupBanner(ctx, pid, terminal.Address)
+				if terminal.Model == "" && bannerModel != "" {
+					model = bannerModel
+				}
+				if terminal.Effort == "" && bannerEffort != "" {
+					effort = bannerEffort
+				}
 			}
 		}(i, out.Terminals[i])
 	}

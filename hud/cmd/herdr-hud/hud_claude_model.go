@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode"
 )
 
@@ -371,4 +373,90 @@ type hudClaudeCacheEntry struct {
 
 func hudClaudeCachePath() string {
 	return filepath.Join(hudCacheDir(), "claude-models.json")
+}
+
+var hudClaudeBannerPattern = regexp.MustCompile(`(?i)\b(Opus|Sonnet|Haiku)\s+(\d+(?:\.\d+)?)(?:\s+with\s+(low|medium|high|max|xhigh)\s+effort)?`)
+
+func hudClaudeBanner(screen string) (model, effort string) {
+	lines := strings.SplitN(screen, "\n", 16)
+	if len(lines) > 15 {
+		lines = lines[:15]
+	}
+	if match := hudClaudeBannerPattern.FindStringSubmatch(strings.Join(lines, "\n")); match != nil {
+		return strings.ToLower(match[1]) + "-" + match[2], strings.ToLower(match[3])
+	}
+	return "", ""
+}
+
+// Keep consuming stdout while retaining only a bounded screen prefix.
+type hudClaudeScreenBuffer struct{ buffer bytes.Buffer }
+
+func (b *hudClaudeScreenBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := 64*1024 - b.buffer.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.buffer.Write(p)
+	}
+	return n, nil
+}
+
+// Keep banner I/O separate from the transcript cache so a slow hc read cannot
+// block live model resolution. The HUD may restart each refresh.
+var hudClaudeBannerCacheMu sync.Mutex
+
+// Empty results are cached too, so a missing banner never causes repeated reads.
+func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (string, string) {
+	if pid <= 0 || address == "" || ctx.Err() != nil {
+		return "", ""
+	}
+	hudClaudeBannerCacheMu.Lock()
+	defer hudClaudeBannerCacheMu.Unlock()
+	path := hudClaudeCachePath() + ".banner"
+	cache := map[string]hudClaudeCacheEntry{}
+	if f, err := os.Open(path); err == nil {
+		raw, err := io.ReadAll(io.LimitReader(f, 1024*1024))
+		f.Close()
+		if err == nil {
+			_ = json.Unmarshal(raw, &cache)
+		}
+	}
+	if cache == nil {
+		cache = map[string]hudClaudeCacheEntry{}
+	}
+	key := fmt.Sprintf("banner:%d:%s", pid, address)
+	if entry, ok := cache[key]; ok {
+		return entry.Model, entry.Effort
+	}
+	if ctx.Err() != nil {
+		return "", ""
+	}
+	child, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancel()
+	cmd := exec.CommandContext(child, hudHCPath(), "read", address, "--lines", "0")
+	var screen hudClaudeScreenBuffer
+	cmd.Stdout = &screen
+	cmd.WaitDelay = 100 * time.Millisecond
+	model, effort := "", ""
+	if cmd.Run() == nil {
+		model, effort = hudClaudeBanner(screen.buffer.String())
+	}
+	entry := hudClaudeCacheEntry{Model: model, Effort: effort}
+	if len(cache) >= 256 {
+		cache = map[string]hudClaudeCacheEntry{}
+	}
+	cache[key] = entry
+	raw, err := json.Marshal(cache)
+	if err == nil && os.MkdirAll(filepath.Dir(path), 0700) == nil {
+		if f, err := os.CreateTemp(filepath.Dir(path), ".claude-models-*"); err == nil {
+			defer os.Remove(f.Name())
+			_, err := f.Write(raw)
+			closeErr := f.Close()
+			if err == nil && closeErr == nil {
+				_ = os.Rename(f.Name(), path)
+			}
+		}
+	}
+	return model, effort
 }
