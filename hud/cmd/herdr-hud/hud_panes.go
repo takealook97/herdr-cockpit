@@ -437,6 +437,9 @@ func hudResolveClaudeModelsWithin(ctx context.Context, out *HUDPanes, timeout ti
 				if terminal.Model == "" && bannerModel != "" {
 					model = bannerModel
 				}
+				if bannerModel != "" && bannerEffort == "" && strings.HasPrefix(bannerModel, "haiku-") {
+					effort = ""
+				}
 				if terminal.Effort == "" && bannerEffort != "" {
 					effort = bannerEffort
 				}

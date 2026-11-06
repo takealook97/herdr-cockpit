@@ -382,8 +382,16 @@ func hudClaudeBanner(screen string) (model, effort string) {
 	if len(lines) > 15 {
 		lines = lines[:15]
 	}
-	if match := hudClaudeBannerPattern.FindStringSubmatch(strings.Join(lines, "\n")); match != nil {
-		return strings.ToLower(match[1]) + "-" + match[2], strings.ToLower(match[3])
+	header := -4
+	for i, line := range lines {
+		if i > header && i-header <= 3 {
+			if match := hudClaudeBannerPattern.FindStringSubmatch(line); match != nil {
+				return strings.ToLower(match[1]) + "-" + match[2], strings.ToLower(match[3])
+			}
+		}
+		if strings.Contains(line, "Claude Code") {
+			header = i
+		}
 	}
 	return "", ""
 }
@@ -406,7 +414,10 @@ func (b *hudClaudeScreenBuffer) Write(p []byte) (int, error) {
 // block live model resolution. The HUD may restart each refresh.
 var hudClaudeBannerCacheMu sync.Mutex
 
-// Empty results are cached too, so a missing banner never causes repeated reads.
+// Negative reads are throttled in memory only, so startup and transient failures
+// can recover without leaving persistent negative evidence.
+var hudClaudeBannerRetryAfter = map[string]time.Time{}
+
 func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (string, string) {
 	if pid <= 0 || address == "" || ctx.Err() != nil {
 		return "", ""
@@ -426,13 +437,26 @@ func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (strin
 		cache = map[string]hudClaudeCacheEntry{}
 	}
 	key := fmt.Sprintf("banner:%d:%s", pid, address)
+	for cachedKey, entry := range cache {
+		if entry.Model == "" {
+			delete(cache, cachedKey)
+		}
+	}
 	if entry, ok := cache[key]; ok {
 		return entry.Model, entry.Effort
 	}
 	if ctx.Err() != nil {
 		return "", ""
 	}
-	child, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
+	retryKey := path + ":" + key
+	if time.Now().Before(hudClaudeBannerRetryAfter[retryKey]) {
+		return "", ""
+	}
+	const readTimeout = 300 * time.Millisecond
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < readTimeout {
+		return "", ""
+	}
+	child, cancel := context.WithTimeout(context.Background(), readTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(child, hudHCPath(), "read", address, "--lines", "0")
 	var screen hudClaudeScreenBuffer
@@ -442,6 +466,11 @@ func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (strin
 	if cmd.Run() == nil {
 		model, effort = hudClaudeBanner(screen.buffer.String())
 	}
+	if model == "" {
+		hudClaudeBannerRetryAfter[retryKey] = time.Now().Add(15 * time.Second)
+		return "", ""
+	}
+	delete(hudClaudeBannerRetryAfter, retryKey)
 	entry := hudClaudeCacheEntry{Model: model, Effort: effort}
 	if len(cache) >= 256 {
 		cache = map[string]hudClaudeCacheEntry{}

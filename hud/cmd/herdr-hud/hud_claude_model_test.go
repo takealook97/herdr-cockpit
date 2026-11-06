@@ -526,11 +526,14 @@ func TestHUDClaudeFallbackRequiresDetailAndProcess(t *testing.T) {
 func TestHUDClaudeBanner(t *testing.T) {
 	for _, tc := range []struct{ screen, model, effort string }{
 		{"Claude Code v2\n  Opus 5.5 with high effort · Claude Ultra\n", "opus-5.5", "high"},
-		{"Haiku 5.5 · Claude Ultra", "haiku-5.5", ""},
-		{"SONNET 5 with XHIGH effort", "sonnet-5", "xhigh"},
+		{"Claude Code\nHaiku 5.5 · Claude Ultra", "haiku-5.5", ""},
+		{"Claude Code\nSONNET 5 with XHIGH effort", "sonnet-5", "xhigh"},
 		{"Welcome to Claude Code", "", ""},
+		{"Sonnet 4 with low effort", "", ""},
+		{"Claude Code\nline\nline\nline\nSonnet 4 with low effort", "", ""},
+		{"Claude Code\nline\nline\nSonnet 4 with low effort", "sonnet-4", "low"},
 		{strings.Repeat("line\n", 15) + "Opus 5.5 with high effort", "", ""},
-		{strings.Repeat("line\n", 14) + "Opus 5.5 with max effort", "opus-5.5", "max"},
+		{strings.Repeat("line\n", 13) + "Claude Code\nOpus 5.5 with max effort", "opus-5.5", "max"},
 	} {
 		if m, e := hudClaudeBanner(tc.screen); m != tc.model || e != tc.effort {
 			t.Errorf("%q: got %q/%q, want %q/%q", tc.screen, m, e, tc.model, tc.effort)
@@ -539,7 +542,7 @@ func TestHUDClaudeBanner(t *testing.T) {
 }
 
 func TestHUDClaudeStartupBannerFallback(t *testing.T) {
-	for _, mode := range []string{"head", "argv", "worker", "env-worker", "transcript", "absent", "no-effort", "get-failed"} {
+	for _, mode := range []string{"head", "argv", "worker", "env-worker", "transcript", "absent", "no-effort", "sonnet-no-effort", "get-failed"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			home, bin := t.TempDir(), t.TempDir()
@@ -547,12 +550,15 @@ func TestHUDClaudeStartupBannerFallback(t *testing.T) {
 				t.Fatal(err)
 			}
 			count := filepath.Join(t.TempDir(), "reads")
-			screen := "Opus 5.5 with high effort · Claude Ultra"
+			screen := "Claude Code\nOpus 5.5 with high effort · Claude Ultra"
 			if mode == "absent" {
 				screen = "Welcome"
 			}
 			if mode == "no-effort" {
-				screen = "Haiku 5.5 · Claude Ultra"
+				screen = "Claude Code\nHaiku 5.5 · Claude Ultra"
+			}
+			if mode == "sonnet-no-effort" {
+				screen = "Claude Code\nSonnet 4 · Claude Ultra"
 			}
 			scripts := map[string]string{
 				"hc": "#!/bin/sh\nif [ \"$1\" = read ]; then\n echo read >> \"$READ_COUNT\"\n printf '%s\\n' \"$SCREEN\"\nelse\n if [ \"$MODE\" = get-failed ]; then exit 1; fi\n printf '%s\\n' '{\"pid\":100,\"cwd\":\"/fixture\"}'\nfi\n",
@@ -600,7 +606,9 @@ func TestHUDClaudeStartupBannerFallback(t *testing.T) {
 				case "transcript":
 					wantModel, wantEffort = "sonnet-5.5", "max"
 				case "no-effort":
-					wantModel, wantEffort = "haiku-5.5", "low"
+					wantModel, wantEffort = "haiku-5.5", ""
+				case "sonnet-no-effort":
+					wantModel, wantEffort = "sonnet-4", "low"
 				case "get-failed":
 					wantModel, wantEffort = "", ""
 				}
@@ -657,16 +665,77 @@ func TestHUDClaudeBannerDeadlineAndCache(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > time.Second {
 		t.Fatalf("banner extended caller deadline: %v", elapsed)
 	}
-	// Under load hc may time out before its shell starts. Check the cache
-	// directly, then verify a fresh context cannot retry the failed read.
+	// Failed reads must stay off disk and be throttled until the retry time.
 	cached, err := os.ReadFile(hudClaudeCachePath() + ".banner")
-	if err != nil || !strings.Contains(string(cached), "banner:987:t1") {
-		t.Fatalf("missing negative cache: %q, error: %v", cached, err)
+	if !os.IsNotExist(err) {
+		t.Fatalf("negative cache persisted: %q, error: %v", cached, err)
 	}
 	before, _ := os.ReadFile(count)
 	hudClaudeStartupBanner(context.Background(), 987, "t1")
 	after, _ := os.ReadFile(count)
 	if string(before) != string(after) {
 		t.Fatalf("cached banner retried hc: before %q, after %q", before, after)
+	}
+}
+
+func TestHUDClaudeBannerRetry(t *testing.T) {
+	for _, first := range []string{"empty", "failure"} {
+		t.Run(first, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			bin := t.TempDir()
+			t.Setenv("PATH", bin)
+			marker := filepath.Join(t.TempDir(), "read")
+			t.Setenv("BANNER_MARKER", marker)
+			t.Setenv("FIRST_READ", first)
+			script := "#!/bin/sh\nif [ ! -f \"$BANNER_MARKER\" ]; then\n : > \"$BANNER_MARKER\"\n if [ \"$FIRST_READ\" = failure ]; then exit 1; fi\n exit 0\nfi\nprintf 'Claude Code\\nSonnet 4 with low effort\\n'\n"
+			if err := os.WriteFile(filepath.Join(bin, "hc"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if m, e := hudClaudeStartupBanner(context.Background(), 123, "retry"); m != "" || e != "" {
+				t.Fatalf("first read: %q/%q", m, e)
+			}
+			if _, err := os.Stat(hudClaudeCachePath() + ".banner"); !os.IsNotExist(err) {
+				t.Fatalf("negative result persisted: %v", err)
+			}
+			key := hudClaudeCachePath() + ".banner:banner:123:retry"
+			hudClaudeBannerCacheMu.Lock()
+			retry := hudClaudeBannerRetryAfter[key]
+			hudClaudeBannerCacheMu.Unlock()
+			if remaining := time.Until(retry); remaining < 14*time.Second || remaining > 15*time.Second {
+				t.Fatalf("retry delay: %v", remaining)
+			}
+			if m, _ := hudClaudeStartupBanner(context.Background(), 123, "retry"); m != "" {
+				t.Fatal("retried before retry time")
+			}
+			hudClaudeBannerCacheMu.Lock()
+			hudClaudeBannerRetryAfter[key] = time.Now().Add(-time.Second)
+			hudClaudeBannerCacheMu.Unlock()
+			if m, e := hudClaudeStartupBanner(context.Background(), 123, "retry"); m != "sonnet-4" || e != "low" {
+				t.Fatalf("second read: %q/%q", m, e)
+			}
+		})
+	}
+}
+
+func TestHUDClaudeBannerParentDeadline(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bin := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "read")
+	t.Setenv("PATH", bin)
+	t.Setenv("BANNER_MARKER", marker)
+	script := "#!/bin/sh\n: > \"$BANNER_MARKER\"\nprintf 'Claude Code\\nOpus 5.5 with high effort\\n'\n"
+	if err := os.WriteFile(filepath.Join(bin, "hc"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if m, _ := hudClaudeStartupBanner(ctx, 456, "deadline"); m != "" {
+		t.Fatal("read despite insufficient parent deadline")
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("hc called despite insufficient budget: %v", err)
+	}
+	if m, e := hudClaudeStartupBanner(context.Background(), 456, "deadline"); m != "opus-5.5" || e != "high" {
+		t.Fatalf("healthy poll: %q/%q", m, e)
 	}
 }
