@@ -11,7 +11,7 @@ const IGNORED_TEXT = "명령으로 들리지 않아 넘겼습니다";
 const INPUT_MAX_ROWS = 3;
 const LOG_POLL_MS = 1000;
 const HEARTBEAT_MS = 1000;
-const HEADER_HINT = "Space 녹음 · ⌘⇧Space 시작/끝 · × 또는 ⌘⇧N 닫기";
+const HEADER_HINT = "말하기 ⌘⇧Space · 입력은 클릭 · × 또는 ⌘⇧N 닫기";
 const PLACEHOLDER = "Head에게 보낼 말 · ⌘⇧Space 말하기";
 
 export default class Nexus extends View {

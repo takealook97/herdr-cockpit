@@ -40,7 +40,7 @@ function setupVoice(reply, existing) {
   return h;
 }
 
-test('claude mode opens a layout dialog with the header mod and the voice terminal, then focuses it', async () => {
+test('claude mode opens a layout dialog with the header mod and the voice terminal, and never focuses it', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(false); await settle();
   assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure']);
@@ -48,27 +48,21 @@ test('claude mode opens a layout dialog with the header mod and the voice termin
     { type: 'block', size: { px: 26 }, content: { mod: 'nexus', props: { header: true } } },
     { type: 'block', content: { terminal: 't9' } }] } }]);
   assert.deepEqual(h.calls.filter(c => c.run), []);
-  h.tick(120);
-  assert.deepEqual(h.calls.filter(c => c.run).map(c => c.run), [['pane.focus', { terminal: 't9' }]]);
-  h.tick(400);
-  assert.equal(h.calls.filter(c => c.run).length, 2, 'retries once when the voice terminal is not focused');
+  h.tick(120); h.tick(400);
+  assert.deepEqual(h.calls.filter(c => c.run), [], 'no pane.focus for the overlay voice terminal');
   assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure'], 'plain open does not record');
 });
 
-test('the 400 ms focus retry is skipped when the voice terminal already has focus', async () => {
-  const h = setupVoice({ mode: 'claude', terminal: 't9' }); h.focusedTerminal = 't9';
-  h.tree.toggleNexus(false); await settle();
-  h.tick(120); h.tick(400);
-  assert.equal(h.calls.filter(c => c.run).length, 1);
-});
-
-test('nexus-listen when closed opens, focuses, then sends one record toggle through the helper', async () => {
+test('nexus-listen when closed opens without focusing, then sends one record toggle through the helper', async () => {
   const h = setupVoice({ mode: 'claude', terminal: 't9' });
   h.tree.toggleNexus(true); await settle();
   assert.equal(h.overlays.filter(o => o[0] === 'open').length, 1);
   assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure']);
-  h.tick(120); h.tick(400); await settle();
+  h.tick(120); await settle();
+  assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'ensure'], 'recording waits for the 400 ms timer');
+  h.tick(400); await settle();
   assert.deepEqual(ensure.args.slice(-3), ['nexus', 'voice', 'record']);
+  assert.deepEqual(h.calls.filter(c => c.run), []);
 });
 
 test('nexus-listen when open in claude mode sends the record toggle instead of closing', async () => {

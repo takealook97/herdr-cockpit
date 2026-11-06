@@ -1,6 +1,6 @@
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, closeOverlay, nextCommand, props, notify, focused } from "herdr";
+import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme, openOverlay, closeOverlay, nextCommand, props, notify } from "herdr";
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
@@ -11,7 +11,7 @@ import { initRename, startRename, finishRename, renameId } from "./rename.js";
 import { menuView } from "./tree-menu.js";
 
 const NEXUS_DIALOG_W = 640, NEXUS_DIALOG_H = 420, NEXUS_HEADER_PX = 26;
-const NEXUS_HEARTBEAT_MS = 2500, NEXUS_OPEN_GRACE_MS = 1500, NEXUS_FOCUS_MS = 120, NEXUS_FOCUS_RETRY_MS = 400;
+const NEXUS_HEARTBEAT_MS = 2500, NEXUS_OPEN_GRACE_MS = 1500, NEXUS_RECORD_MS = 400;
 const HUD = ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud"];
 
 export default class SpaceTree extends Plumbing {
@@ -241,15 +241,13 @@ export default class SpaceTree extends Plumbing {
     this.nexusOpenedAt = Date.now();
     const overlay = this.nexusOverlay;
     this.nexusRecordPending = !!record;
-    // The overlay mounts after openOverlay returns; focus the terminal once it is visible, then verify.
+    // The voice terminal lives only inside the overlay layout, so Herdr has no pane to focus; recording is driven by the helper.
     const live = () => !this.closed && gen === this.nexusGen && shared("nexus.closedOverlay") !== overlay;
     this.nexusTimers = [
-      this.cx.timer.after(NEXUS_FOCUS_MS, () => { if (live()) run("pane.focus", { terminal }); }),
-      this.cx.timer.after(NEXUS_FOCUS_RETRY_MS, () => {
-      if (!live()) return;
-      if (focused()?.terminal !== terminal) run("pane.focus", { terminal });
-      if (record && this.nexusRecordPending) { this.nexusRecordPending = false; this.voiceRecord(); }
-    })];
+      this.cx.timer.after(NEXUS_RECORD_MS, () => {
+        if (!live()) return;
+        if (record && this.nexusRecordPending) { this.nexusRecordPending = false; this.voiceRecord(); }
+      })];
   }
   select(row, cx) {
     if (this.editing || this.movingTab) return;

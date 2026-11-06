@@ -355,7 +355,7 @@ test('header mode marks the dialog open, skips the input and polls the latest lo
   assert.equal(h.intervals[1].ms, 1000);
   await h.flush();
   assert.deepEqual(h.execs[0], ['log', '--limit', '1']);
-  assert.ok(JSON.stringify(h.view.render()).includes('Space 녹음'));
+  assert.ok(JSON.stringify(h.view.render()).includes('말하기 ⌘⇧Space'));
   assert.equal(byId(h.view.render(), 'nexus-header-log'), undefined);
   entries = [{ action: 'send', label: 'tool · wiki', target: 't1' }];
   h.intervals[1].fn(h.cx); await h.flush();
@@ -386,7 +386,7 @@ test('header × stops propagation and closes the overlay; hint explains the keys
   const h = header(() => []); let stopped = 0;
   const row = h.view.render();
   const text = JSON.stringify(row);
-  assert.ok(text.includes('Space 녹음 · ⌘⇧Space 시작/끝 · × 또는 ⌘⇧N 닫기'));
+  assert.ok(text.includes('말하기 ⌘⇧Space · 입력은 클릭 · × 또는 ⌘⇧N 닫기'));
   const close = byId(row, 'nexus-header-close');
   assert.equal(close.nodes[0], '×');
   close.handlers.mouseDown({}, { stop_propagation() { stopped++; } });
