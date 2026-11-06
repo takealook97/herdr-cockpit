@@ -402,15 +402,18 @@ func (b *hudClaudeScreenBuffer) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-// Use the existing persistent per-process cache: the HUD may restart each refresh.
+// Keep banner I/O separate from the transcript cache so a slow hc read cannot
+// block live model resolution. The HUD may restart each refresh.
+var hudClaudeBannerCacheMu sync.Mutex
+
 // Empty results are cached too, so a missing banner never causes repeated reads.
 func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (string, string) {
 	if pid <= 0 || address == "" || ctx.Err() != nil {
 		return "", ""
 	}
-	hudClaudeCacheMu.Lock()
-	defer hudClaudeCacheMu.Unlock()
-	path := hudClaudeCachePath()
+	hudClaudeBannerCacheMu.Lock()
+	defer hudClaudeBannerCacheMu.Unlock()
+	path := hudClaudeCachePath() + ".banner"
 	cache := map[string]hudClaudeCacheEntry{}
 	if f, err := os.Open(path); err == nil {
 		raw, err := io.ReadAll(io.LimitReader(f, 1024*1024))
@@ -429,7 +432,7 @@ func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (strin
 	if ctx.Err() != nil {
 		return "", ""
 	}
-	child, cancel := context.WithTimeout(ctx, 750*time.Millisecond)
+	child, cancel := context.WithTimeout(ctx, 150*time.Millisecond)
 	defer cancel()
 	cmd := exec.CommandContext(child, hudHCPath(), "read", address, "--lines", "0")
 	var screen hudClaudeScreenBuffer

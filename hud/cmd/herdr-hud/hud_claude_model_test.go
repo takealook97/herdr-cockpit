@@ -71,6 +71,8 @@ func TestHUDClaudeTranscriptModel(t *testing.T) {
 }
 
 func TestHUDClaudeLiveOverride(t *testing.T) {
+	// Race-enabled suites can delay fixture subprocess startup under load.
+	// Keep the production deadline separate from this source-precedence test.
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	dir := filepath.Join(home, "projects", "-fixture")
@@ -94,7 +96,7 @@ func TestHUDClaudeLiveOverride(t *testing.T) {
 	t.Setenv("PATH", bin)
 	t.Setenv("FIXTURE_HOME", home)
 	out := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: "claude-code", Model: "sonnet"}}, Runs: []HUDRun{{Workers: []HUDWorker{{Terminal: "t1", Model: "opus", Effort: "high"}, {Terminal: "t2", Model: "catalog-fallback"}}}}}
-	hudResolveClaudeModels(context.Background(), &out)
+	hudResolveClaudeModelsWithin(context.Background(), &out, 10*time.Second)
 	if got := out.Terminals[0].Model; got != "opus-5.5" {
 		t.Fatalf("terminal: %q", got)
 	}
@@ -114,7 +116,7 @@ func TestHUDClaudeLiveOverride(t *testing.T) {
 	for i := 0; i < 13; i++ {
 		bounded.Terminals = append(bounded.Terminals, HUDTerminal{Address: fmt.Sprintf("t%d", i), Program: "claude", Model: "sonnet"})
 	}
-	hudResolveClaudeModels(context.Background(), &bounded)
+	hudResolveClaudeModelsWithin(context.Background(), &bounded, 10*time.Second)
 	for i, terminal := range bounded.Terminals {
 		want := "opus-5.5"
 		if i == 12 {
@@ -128,7 +130,7 @@ func TestHUDClaudeLiveOverride(t *testing.T) {
 	t.Setenv("FIXTURE_HOME", t.TempDir())
 	out.Terminals[0].Model = "sonnet"
 	out.Runs[0].Workers[0].Model = "opus"
-	hudResolveClaudeModels(context.Background(), &out)
+	hudResolveClaudeModelsWithin(context.Background(), &out, 10*time.Second)
 	if out.Terminals[0].Model != "sonnet" || out.Runs[0].Workers[0].Model != "opus" {
 		t.Fatal("missing transcript replaced fallback")
 	}
@@ -611,7 +613,7 @@ func TestHUDClaudeStartupBannerFallback(t *testing.T) {
 			}
 			raw, _ := os.ReadFile(count)
 			expected := 1
-			if mode == "worker" || mode == "env-worker" || mode == "transcript" || mode == "get-failed" {
+			if mode == "argv" || mode == "worker" || mode == "env-worker" || mode == "transcript" || mode == "get-failed" {
 				expected = 0
 			}
 			if got := strings.Count(string(raw), "read\n"); got != expected {
@@ -630,5 +632,41 @@ func TestHUDClaudeScreenBufferBounded(t *testing.T) {
 	}
 	if n, err := screen.Write([]byte("discard")); n != 7 || err != nil || screen.buffer.Len() != 64*1024 {
 		t.Fatal("full buffer did not discard subsequent output")
+	}
+}
+
+func TestHUDClaudeBannerDeadlineAndCache(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	bin := t.TempDir()
+	count := filepath.Join(t.TempDir(), "reads")
+	t.Setenv("READ_COUNT", count)
+	if err := os.WriteFile(filepath.Join(bin, "hc"), []byte("#!/bin/sh\necho read >> \"$READ_COUNT\"\nexec /bin/sleep 10\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+
+	// A banner must not wait for the transcript cache, even while hc stalls.
+	hudClaudeCacheMu.Lock()
+	defer hudClaudeCacheMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if model, effort := hudClaudeStartupBanner(ctx, 987, "t1"); model != "" || effort != "" {
+		t.Fatalf("unexpected banner: %q/%q", model, effort)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("banner extended caller deadline: %v", elapsed)
+	}
+	// Under load hc may time out before its shell starts. Check the cache
+	// directly, then verify a fresh context cannot retry the failed read.
+	cached, err := os.ReadFile(hudClaudeCachePath() + ".banner")
+	if err != nil || !strings.Contains(string(cached), "banner:987:t1") {
+		t.Fatalf("missing negative cache: %q, error: %v", cached, err)
+	}
+	before, _ := os.ReadFile(count)
+	hudClaudeStartupBanner(context.Background(), 987, "t1")
+	after, _ := os.ReadFile(count)
+	if string(before) != string(after) {
+		t.Fatalf("cached banner retried hc: before %q, after %q", before, after)
 	}
 }
