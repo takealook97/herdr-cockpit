@@ -17,6 +17,12 @@ test("compact rows use one-line pane details and aligned indentation", () => {
   assert.doesNotMatch(rows, /v_flex/);
 });
 
+test("space rows are muted and regular weight like the hub, tab rows keep foreground", () => {
+  assert.match(rows, /text_size\(12\.5\)\.text_color\(t\.muted \?\? t\.dim\)\.child\(name\)/);
+  assert.doesNotMatch(rows, /text_size\(12\.5\)\.font_semibold\(\)/);
+  assert.match(rows, /row\.orch && view\.orchStale \? t\.dim : t\.foreground/);
+});
+
 // Render the actual row handlers with a minimal retained-element host.
 function element() {
   const node = { handlers: {} };

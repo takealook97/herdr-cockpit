@@ -45,7 +45,7 @@ export function treeRow(view, row, t) {
       .on_click((_e, cx) => { cx.stop_propagation(); view.toggle(row, cx); })
       .child(svg(asset(row.open ? "chevron-down" : "chevron-right")).size(12).text_color(t.dim)) : div().w(12).flex_none())
     .when(row.kind !== "space" || !!row.data.parentId, el => el.child(icon(row, t)))
-    .child(row.kind === "pane" ? div().flex_none().min_w(0).max_w_3_5().truncate().text_size(12).text_color(t.foreground).child(name) : row.kind === "space" ? div().flex_1().min_w(0).text_size(12.5).font_semibold().text_color(t.foreground).child(name) : name)
+    .child(row.kind === "pane" ? div().flex_none().min_w(0).max_w_3_5().truncate().text_size(12).text_color(t.foreground).child(name) : row.kind === "space" ? div().flex_1().min_w(0).text_size(12.5).text_color(t.muted ?? t.dim).child(name) : name)
     .when(row.kind === "pane", el => el.child(subLabel(row, t)));
   const display = rowDisplay(row);
   if (display.count) main.child(div().text_size(11).text_color(t.dim).child(display.count));
