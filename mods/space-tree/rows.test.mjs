@@ -218,16 +218,16 @@ function loadRows(names) {
 // Head tag: rendered through the real head-tag.js with the retained-element host.
 const tagHost = () => { const h = host(); return { h, t: h.deps.theme() }; };
 const tagModule = () => load(new URL("./head-tag.js", import.meta.url), "({ headTag, headColor, withAlpha, mixColor })",
-  { ...host().deps, svg: retainedElement });
+  host().deps);
 const { headColor, withAlpha, mixColor } = tagModule();
 const renderTag = (row, t) => tagModule().headTag(row, t);
 
-test("head rows render a HEAD tag with the diamond glyph", () => {
+test("head rows render a HEAD tag without a glyph", () => {
   const { t } = tagHost();
   const tag = renderTag({ key: "p", status: "idle", data: { program: { key: "claude" } } }, t);
   const nodes = walk(tag);
   assert.ok(nodes.includes("HEAD"));
-  assert.ok(nodes.some(n => n?.style?.size === 11));
+  assert.ok(!nodes.some(n => n?.style?.size === 11));
   assert.ok(!nodes.some(n => n?.style?.loop));
 });
 
