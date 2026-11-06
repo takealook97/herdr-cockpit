@@ -99,7 +99,7 @@ func nexusVoiceEnsure(ctx context.Context, cfg nexusConfig, cache string, lookup
 		_, _ = hc(ctx, "rm", address)
 	}
 	create := func() ([]byte, error) {
-		return hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", "nexus.voice.rev="+rev, "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
+		return hc(ctx, "run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", "nexus.voice.rev="+rev, "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", "-u", "CLAUDECODE", "-u", "CLAUDE_CODE_CHILD_SESSION", "-u", "CLAUDE_CODE_SESSION_ID", "-u", "CLAUDE_CODE_MESSAGING_SOCKET", "-u", "CLAUDE_CODE_MESSAGING_TOKEN", "-u", "CLAUDE_CODE_ENTRYPOINT", "-u", "CLAUDE_CODE_EXECPATH", "-u", "CLAUDE_CODE_SESSION_ATTENDED", "-u", "CLAUDE_PID", claude, "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku")
 	}
 	raw, err = create()
 	if err != nil && address != "" && nexusVoiceNameTaken(string(raw)+" "+err.Error()) {

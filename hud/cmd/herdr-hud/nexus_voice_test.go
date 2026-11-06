@@ -127,12 +127,81 @@ func TestNexusVoiceEnsure(t *testing.T) {
 					t.Fatal(calls)
 				}
 			} else {
-				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", calls[1][10], "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", voiceTestClaude(t), "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
+				want := []string{"run", "--bg", "--json", "--name", "nexus-voice", "--cwd", dir, "--label", "nexus.voice=1", "--label", calls[1][10], "--no-parent", "--no-notify", "--outlive-parent", "--", "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "CLAUDE_CODE_USE_BEDROCK", "-u", "CLAUDE_CODE_USE_VERTEX", "-u", "CLAUDECODE", "-u", "CLAUDE_CODE_CHILD_SESSION", "-u", "CLAUDE_CODE_SESSION_ID", "-u", "CLAUDE_CODE_MESSAGING_SOCKET", "-u", "CLAUDE_CODE_MESSAGING_TOKEN", "-u", "CLAUDE_CODE_ENTRYPOINT", "-u", "CLAUDE_CODE_EXECPATH", "-u", "CLAUDE_CODE_SESSION_ATTENDED", "-u", "CLAUDE_PID", voiceTestClaude(t), "--setting-sources", "", "--settings", path, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--model", "haiku"}
 				if len(calls) != 3 || !reflect.DeepEqual(calls[1], want) {
 					t.Fatal(calls)
 				}
 			}
 		})
+	}
+}
+
+// Exercise the captured launch environment with synthetic values, without starting Claude or hc.
+func TestNexusVoiceLaunchEnvironment(t *testing.T) {
+	markers := []string{"CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_PID", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX"}
+	var launch []string
+	hc := func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "ls":
+			return []byte(`{"terminals":[]}`), nil
+		case "run":
+			launch = append([]string(nil), args...)
+			return []byte(`{"address":"t1"}`), nil
+		case "read":
+			return []byte("❯"), nil
+		default:
+			t.Fatalf("unexpected hc operation %q", args[0])
+			return nil, nil
+		}
+	}
+	cache := t.TempDir()
+	reply := nexusVoiceEnsure(context.Background(), nexusConfig{}, cache, func(string) string { return voiceTestClaude(t) }, hc)
+	if reply.Error != "" || reply.Terminal != "t1" {
+		t.Fatalf("ensure: %+v", reply)
+	}
+	start := -1
+	for i, arg := range launch {
+		if arg == "--" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 || launch[start] != "env" {
+		t.Fatal("missing env launch")
+	}
+	args := launch[start+1:]
+	for len(args) >= 2 && args[0] == "-u" {
+		args = args[2:]
+	}
+	if len(args) == 0 || args[0] != voiceTestClaude(t) {
+		t.Fatal("missing Claude executable")
+	}
+	n := len(launch[start+1:]) - len(args)
+	cmd := exec.Command("/usr/bin/env", append(append([]string{}, launch[start+1:start+1+n]...), "/usr/bin/env")...)
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "HOME=/synthetic-home", "CLAUDE_CONFIG_DIR=/synthetic-config", "CLAUDE_FUTURE_OPTION=preserved"}
+	for _, key := range markers {
+		cmd.Env = append(cmd.Env, key+"=synthetic")
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if ok {
+			got[k] = v
+		}
+	}
+	for _, key := range markers {
+		if _, ok := got[key]; ok {
+			t.Errorf("%s leaked", key)
+		}
+	}
+	for key, want := range map[string]string{"PATH": "/usr/bin:/bin", "HOME": "/synthetic-home", "CLAUDE_CONFIG_DIR": "/synthetic-config", "CLAUDE_FUTURE_OPTION": "preserved"} {
+		if got[key] != want {
+			t.Errorf("%s not preserved", key)
+		}
 	}
 }
 func TestNexusVoiceAppleAndMissing(t *testing.T) {
