@@ -328,13 +328,24 @@ func nexusVoiceRecording(screen string) bool { return strings.Contains(screen, "
 
 const nexusVoiceBlocked = "UserPromptSubmit operation blocked by hook"
 
+func nexusVoiceInputText(line string) string {
+	line = strings.TrimPrefix(strings.TrimSpace(line), "❯")
+	line = strings.Map(func(r rune) rune {
+		if r >= '\u2580' && r <= '\u259f' {
+			return -1
+		}
+		return r
+	}, line)
+	return strings.TrimSpace(strings.TrimRight(strings.TrimSpace(line), "│"))
+}
+
 // A missing prompt is not evidence that the editor is empty.
 func nexusVoiceInput(screen string) (string, bool) {
 	input, found := "", false
 	for _, line := range strings.Split(screen, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "❯" || strings.HasPrefix(line, "❯ ") {
-			input, found = strings.TrimSpace(strings.TrimPrefix(line, "❯")), true
+			input, found = nexusVoiceInputText(line), true
 		}
 	}
 	return input, found

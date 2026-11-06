@@ -18,6 +18,37 @@ import (
 	"time"
 )
 
+func TestNexusVoiceInputText(t *testing.T) {
+	tests := []struct{ line, want string }{
+		{"❯ ▁", ""},
+		{"❯ ▂", ""},
+		{"❯ ▃", ""},
+		{"❯ ▄", ""},
+		{"❯ symlink MCP 끊기는 원인▂", "symlink MCP 끊기는 원인"},
+		{"❯ text │ ", "text"},
+		{"❯ text │ middle", "text │ middle"},
+		{"❯ ▁text█ inside▟", "text inside"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			if got := nexusVoiceInputText(tt.line); got != tt.want {
+				t.Fatalf("input = %q, want %q", got, tt.want)
+			}
+			if got, found := nexusVoiceInput("header\n" + tt.line); !found || got != tt.want {
+				t.Fatalf("screen input = %q, %v, want %q, true", got, found, tt.want)
+			}
+		})
+	}
+	for cursor := rune(0x2580); cursor <= 0x259f; cursor++ {
+		for _, want := range []string{"", "symlink MCP 끊기는 원인"} {
+			line := "❯ " + want + string(cursor)
+			if got, found := nexusVoiceInput(line); !found || got != want {
+				t.Fatalf("cursor %U: input = %q, %v, want stable %q", cursor, got, found, want)
+			}
+		}
+	}
+}
+
 func TestNexusVoiceEnsure(t *testing.T) {
 	for _, reuse := range []bool{false, true} {
 		t.Run(map[bool]string{false: "create", true: "reuse"}[reuse], func(t *testing.T) {
