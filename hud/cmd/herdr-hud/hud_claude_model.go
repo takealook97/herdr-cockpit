@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +33,32 @@ func hudModelDisplay(id string) string {
 		return parts[1] + "-" + parts[2] + "." + parts[3]
 	}
 	return name
+}
+
+// Resolve only family aliases; exact IDs and unknown aliases stay unchanged.
+func hudClaudeCatalogModel(ctx context.Context, model string) string {
+	family := strings.ToLower(model)
+	family = strings.TrimSuffix(family, "[1m]")
+	family = strings.TrimPrefix(family, "claude-")
+	if family == "opusplan" {
+		family = "opus"
+	}
+	if family != "opus" && family != "sonnet" && family != "haiku" {
+		return model
+	}
+	catalog := hudCatalog(ctx)
+	keys := make([]string, 0, len(catalog))
+	for key := range catalog {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		id := catalog[key].Model
+		if strings.HasPrefix(id, "claude-"+family+"-") && hudClaudeVersion.MatchString(hudClaudeDate.ReplaceAllString(id, "")) {
+			return id
+		}
+	}
+	return model
 }
 
 type hudClaudeSession struct {
@@ -79,7 +107,7 @@ func hudClaudeReadSession(home string, pid int) hudClaudeSession {
 // Resolve each field independently. Live transcript metadata wins; launch argv
 // stays ahead of process env and settings, which only fill missing information.
 // An unchanged argv field returns empty so worker catalog values stay intact.
-// Aliases such as "opus" stay aliases until the session records an exact id.
+// The caller resolves family aliases through the optional model catalog.
 func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort string) (model, effort string) {
 	home = hudClaudeHome(home)
 	session := hudClaudeReadSession(home, pid)
@@ -116,6 +144,9 @@ func hudClaudeResolve(home string, pid int, cwd, env, launchModel, launchEffort 
 	}
 	if session.Model != "" {
 		model = session.Model
+	}
+	if value := hudEnvValue(env, "CLAUDE_CODE_EFFORT_LEVEL"); value != "" {
+		effort = value
 	}
 	if launchEffort != "" {
 		effort = ""

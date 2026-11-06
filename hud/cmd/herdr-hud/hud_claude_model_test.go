@@ -390,6 +390,7 @@ func TestHUDClaudeMetadataBounds(t *testing.T) {
 }
 
 func TestHUDClaudeResolverFallbackIntegration(t *testing.T) {
+	resetHUDCatalog(t)
 	home, cwd, bin := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)
 	home = filepath.Join(home, ".claude")
@@ -397,8 +398,11 @@ func TestHUDClaudeResolverFallbackIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin)
+	if err := os.WriteFile(filepath.Join(bin, "orch"), []byte("#!/bin/sh\nprintf '%s\\n' '[{\"key\":\"claude-high-m\",\"model\":\"claude-opus-5-5\"}]'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("FIXTURE_HOME", home)
-	if err := os.WriteFile(filepath.Join(home, "settings.json"), []byte(`{"model":"claude-opus-5-5","effortLevel":"high"}`), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "settings.json"), []byte(`{"model":"opus","effortLevel":"high"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, script, want string }{
@@ -419,5 +423,39 @@ func TestHUDClaudeResolverFallbackIntegration(t *testing.T) {
 				t.Fatalf("worker: %+v", got)
 			}
 		})
+	}
+}
+
+func TestHUDClaudeCatalogAliases(t *testing.T) {
+	resetHUDCatalog(t)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin)
+	script := `#!/bin/sh
+printf '%s\n' '[{"key":"claude-high-m","model":"claude-opus-5-5","effort":"medium"},{"key":"claude-sonnet","model":"claude-sonnet-5-5"},{"key":"claude-haiku","model":"claude-haiku-4-5-20251001"}]'
+`
+	if err := os.WriteFile(filepath.Join(bin, "orch"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for alias, want := range map[string]string{"opus": "opus-5.5", "opusplan": "opus-5.5", "sonnet": "sonnet-5.5", "haiku": "haiku-4.5", "opus[1m]": "opus-5.5", "unknown": "unknown", "claude-opus-4-6": "opus-4.6"} {
+		if got := hudModelDisplay(hudClaudeCatalogModel(context.Background(), alias)); got != want {
+			t.Fatalf("%s: got %s want %s", alias, got, want)
+		}
+	}
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "settings.json"), []byte(`{"model":"opus","effortLevel":"high"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ env, cli, want string }{{"", "", "high"}, {"CLAUDE_CODE_EFFORT_LEVEL=max", "", "max"}, {"CLAUDE_CODE_EFFORT_LEVEL=max", "low", "low"}} {
+		model, effort := hudClaudeResolve(home, 0, "", tc.env, "", tc.cli)
+		if effort == "" {
+			effort = tc.cli
+		}
+		if got := hudModelDisplay(hudClaudeCatalogModel(context.Background(), model)) + "-" + effort; got != "opus-5.5-"+tc.want {
+			t.Fatal(got)
+		}
+	}
+	hudCatalogCache = map[string]hudCatalogModel{}
+	if got := hudClaudeCatalogModel(context.Background(), "opus"); got != "opus" {
+		t.Fatal(got)
 	}
 }

@@ -408,6 +408,14 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 				return
 			}
 			model, effort = hudClaudeResolve(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid, cwd, env, terminal.Model, terminal.Effort)
+			if model == "" {
+				resolved := hudClaudeCatalogModel(ctx, terminal.Model)
+				if resolved != terminal.Model {
+					model = resolved
+				}
+			} else {
+				model = hudClaudeCatalogModel(ctx, model)
+			}
 		}(i, out.Terminals[i])
 	}
 	for range indices {
