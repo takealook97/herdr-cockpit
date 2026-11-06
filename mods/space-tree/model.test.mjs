@@ -2,16 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { assignSectionColors, SECTION_PALETTE, tabIconColor, aggregateStatus, hubRowStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
 
-test("section colors use only palette hex values, repair collisions and remain stable", () => {
-  const ids = ["Monday", "Meeting"];
-  const colors = assignSectionColors(ids, { Monday: SECTION_PALETTE[0], Meeting: SECTION_PALETTE[0] });
-  assert.notEqual(colors.Monday, colors.Meeting);
-  assert.deepEqual(assignSectionColors(ids, colors), colors);
+test("stored rail colors never change, new spaces prefer unused colors", () => {
+  const stored = { a: SECTION_PALETTE[0], b: SECTION_PALETTE[0] };
+  const kept = assignSectionColors(["a", "b"], stored);
+  assert.deepEqual(kept, stored);
+  const inserted = assignSectionColors(["new", "a", "b"], stored);
+  assert.equal(inserted.a, stored.a);
+  assert.equal(inserted.b, stored.b);
+  assert.notEqual(inserted.new, SECTION_PALETTE[0]);
   const many = Array.from({ length: 25 }, (_, i) => `space${i}`);
   const assigned = assignSectionColors(many, {});
   for (const id of many) assert.ok(SECTION_PALETTE.includes(assigned[id]));
-  for (let i = 1; i < many.length; i++) assert.notEqual(assigned[many[i]], assigned[many[i - 1]]);
-  assert.deepEqual(assignSectionColors(many, assigned), assigned);
+  const usage = SECTION_PALETTE.map(c => many.filter(id => assigned[id] === c).length);
+  assert.ok(Math.max(...usage) - Math.min(...usage) <= 1);
+  assert.deepEqual(assignSectionColors(["x", ...many], assigned), { ...assigned, x: assignSectionColors(["x", ...many], assigned).x });
+  const ten = many.slice(0, 10), all = assignSectionColors(ten, {});
+  assert.equal(new Set(Object.values(all)).size, 10);
 });
 
 test("old theme-key rail colors are re-assigned once to palette colors", () => {

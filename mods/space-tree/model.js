@@ -21,26 +21,22 @@ export const aliasKey = (kind, id) => `space-tree.alias.${kind}.${id}`;
 export const SECTION_PALETTE = ["#1f8f86", "#4f5ad8", "#7c4fe0", "#c43d55", "#b9791a",
   "#2a9462", "#4a76ab", "#a1488e", "#1a7f9a", "#b4532f"];
 
-// Keeps stored palette colors that are still valid (so they stay put); anything else, such as the
-// old theme keys, is re-drawn at random among the least used colors that differ from the row above.
+// Stored palette colors never change, even when two spaces share one. Only spaces without a valid
+// stored color (new spaces, old theme keys) get a random pick among the least used palette colors.
 export function assignSectionColors(orderedSpaceIds, stored = {}, palette = SECTION_PALETTE, random = Math.random) {
   const colors = { ...stored }, counts = new Map(palette.map(c => [c, 0]));
-  let previous;
+  const fresh = [];
   for (const id of orderedSpaceIds) {
-    const current = colors[id];
-    const valid = palette.includes(current) && current !== previous &&
-      (orderedSpaceIds.length > palette.length || counts.get(current) === 0);
-    let color = current;
-    if (!valid) {
-      const choices = palette.filter(c => c !== previous);
-      const least = Math.min(...choices.map(c => counts.get(c)));
-      const pool = choices.filter(c => counts.get(c) === least);
-      color = pool[Math.floor(random() * pool.length)];
-    }
+    if (palette.includes(colors[id])) counts.set(colors[id], counts.get(colors[id]) + 1);
+    else fresh.push(id);
+  }
+  for (const id of fresh) {
+    const least = Math.min(...counts.values());
+    const pool = palette.filter(c => counts.get(c) === least);
+    const color = pool[Math.floor(random() * pool.length)];
     if (color == null) continue;
     colors[id] = color;
-    counts.set(color, counts.get(color) + 1);
-    previous = color;
+    counts.set(color, least + 1);
   }
   return colors;
 }
