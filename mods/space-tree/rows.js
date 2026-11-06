@@ -10,6 +10,9 @@ const tone = (t, status) => t[status] ?? t.dim;
 const dot = (row, t) => div().size(6).rounded(3).flex_none().bg(tone(t, row.status));
 const glyph = (name, t) => svg(asset(name)).size(13).flex_none().text_color(t.dim);
 
+// Palette hex values are used as stored; the hub rail and unknown values fall back to theme colors.
+const sectionRailColor = (key, t, stored) => key === "hub" ? t.ansi5 : /^#[0-9a-f]{6}$/i.test(stored[key] ?? "") ? stored[key] : t.accent;
+
 function icon(row, t) {
   if (row.kind === "machine") return glyph(row.id ? "server" : "monitor", t);
   if (row.kind === "space") return row.data.parentId ? glyph("branch", t) : null;
@@ -18,6 +21,12 @@ function icon(row, t) {
   if (program?.icon) return program.tint ? svg(program.icon).size(14).flex_none().text_color(t.muted) : image(program.icon).size(14).flex_none();
   return div().w(14).text_color(t.dim).child("›_");
 }
+// Head rows highlight the model text in the accent color; workers keep the dim style.
+const subLabel = (row, t) => {
+  const isHead = row.head && !row.hub;
+  const label = div().flex_1().min_w(0).truncate().text_size(11).text_color(isHead ? t.accent : t.dim);
+  return (isHead ? label.font_semibold() : label).child(row.sub);
+};
 export function treeRow(view, row, t) {
   const stop = (_e, cx) => cx.stop_propagation();
   const editing = view.editing?.kind === row.kind && view.editing?.id === renameId(row);
@@ -33,7 +42,7 @@ export function treeRow(view, row, t) {
       .child(svg(asset(row.open ? "chevron-down" : "chevron-right")).size(12).text_color(t.dim)) : div().w(12).flex_none())
     .when(row.kind !== "space" || !!row.data.parentId, el => el.child(icon(row, t)))
     .child(row.kind === "pane" ? div().flex_none().min_w(0).max_w_3_5().truncate().text_size(12).text_color(t.foreground).child(name) : row.kind === "space" ? div().flex_1().min_w(0).text_size(12.5).font_semibold().text_color(t.foreground).child(name) : name)
-    .when(row.kind === "pane", el => el.child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(row.sub)));
+    .when(row.kind === "pane", el => el.child(subLabel(row, t)));
   const display = rowDisplay(row);
   if (display.count) main.child(div().text_size(11).text_color(t.dim).child(display.count));
   if (row.kind === "machine") {
@@ -59,7 +68,7 @@ export function treeRow(view, row, t) {
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })
     .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); if (!row.hub) view.contextMenu(row); })
     .when(row.sectionColorKey != null, e => e.child(div().absolute().left(2 + row.sectionDepth * 12).top(0).bottom(0).w(2)
-      .bg(row.sectionColorKey === "hub" ? t.ansi5 : t[(shared("space.colors") ?? {})[row.sectionColorKey]] ?? t.accent)))
+      .bg(sectionRailColor(row.sectionColorKey, t, shared("space.colors") ?? {}))))
     .when(row.guide === "├", e => e.child(div().absolute().top(0).bottom(0)
       .left(2 + row.depth * 12).border_l(1).border_color(t.border)))
     .child(main)

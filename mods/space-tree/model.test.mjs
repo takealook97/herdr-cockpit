@@ -1,17 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { assignSectionColors, tabIconColor, aggregateStatus, hubRowStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
+import { assignSectionColors, SECTION_PALETTE, tabIconColor, aggregateStatus, hubRowStatus, machineConnected, rowDisplay, buildTree, paneName, paneSub, foldDefault, pruneFolded, orchIndexes, aliasKey, machineId, renameAction, rowId } from "./model.js";
 
-test("section colors repair collisions and remain stable", () => {
-  const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1", "ansi14", "ansi11", "ansi12", "ansi13"];
+test("section colors use only palette hex values, repair collisions and remain stable", () => {
   const ids = ["Monday", "Meeting"];
-  const colors = assignSectionColors(ids, { Monday: "ansi3", Meeting: "ansi3" }, palette);
+  const colors = assignSectionColors(ids, { Monday: SECTION_PALETTE[0], Meeting: SECTION_PALETTE[0] });
   assert.notEqual(colors.Monday, colors.Meeting);
-  assert.deepEqual(assignSectionColors(ids, colors, palette), colors);
+  assert.deepEqual(assignSectionColors(ids, colors), colors);
   const many = Array.from({ length: 25 }, (_, i) => `space${i}`);
-  const assigned = assignSectionColors(many, {}, palette);
+  const assigned = assignSectionColors(many, {});
+  for (const id of many) assert.ok(SECTION_PALETTE.includes(assigned[id]));
   for (let i = 1; i < many.length; i++) assert.notEqual(assigned[many[i]], assigned[many[i - 1]]);
-  assert.deepEqual(assignSectionColors(many, assigned, palette), assigned);
+  assert.deepEqual(assignSectionColors(many, assigned), assigned);
+});
+
+test("old theme-key rail colors are re-assigned once to palette colors", () => {
+  const ids = ["a", "b", "c"];
+  const migrated = assignSectionColors(ids, { a: "ansi6", b: "ansi3", c: "ansi4" });
+  for (const id of ids) assert.ok(SECTION_PALETTE.includes(migrated[id]), id);
+  assert.deepEqual(assignSectionColors(ids, migrated), migrated);
+});
+
+test("rail palette is dark-mode jewel tones, not pastel", () => {
+  const lightness = hex => { const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255); return (Math.max(r, g, b) + Math.min(r, g, b)) / 2; };
+  assert.equal(SECTION_PALETTE.length, 10);
+  for (const c of SECTION_PALETTE) { assert.match(c, /^#[0-9a-f]{6}$/); assert.ok(lightness(c) >= 0.25 && lightness(c) <= 0.6, c); }
 });
 
 test("agent heads depend on orch availability", () => {

@@ -1,46 +1,36 @@
 import { div } from "gpui-kit";
-import { h_flex } from "gpui-base";
 
-// Approximate rendered width (text + px 5 each side + border); the tag itself sizes from padding.
-const SHEEN_RANGE = 40;
+const TAG_H = 16;
+const LIGHT_TEXT = "#f5f5f5";
+const DARK_FALLBACK = "#0b0b0b";
+const MIN_CONTRAST = 4.5;
 
-// "#rgb" / "#rrggbb" + alpha 0..1 -> "#rrggbbaa". gpui colors carry no separate opacity.
-export function withAlpha(color, alpha) {
-  const hex = String(color ?? "").replace("#", "");
-  const full = hex.length === 3 ? [...hex].map(c => c + c).join("") : hex.slice(0, 6);
-  if (!/^[0-9a-fA-F]{6}$/.test(full)) return color;
-  return `#${full}${Math.round(Math.max(0, Math.min(1, alpha)) * 255).toString(16).padStart(2, "0")}`;
+const isHex = value => /^#[0-9a-f]{6}/i.test(value ?? "");
+const channels = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+const linear = c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+const luminance = hex => {
+  const [r, g, b] = channels(hex).map(linear);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+};
+export function contrast(a, b) {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
 }
 
-const channels = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
-export function mixColor(a, b, k = 0.5) {
-  if (!/^#[0-9a-f]{6}/i.test(a ?? "") || !/^#[0-9a-f]{6}/i.test(b ?? "")) return a;
-  const [x, y] = [channels(a), channels(b)];
-  return `#${x.map((v, i) => Math.round(v * (1 - k) + y[i] * k).toString(16).padStart(2, "0")).join("")}`;
+// Text color for a solid accent pill: the theme background, unless near-white reads better on it.
+export function headTagTextColor(accent, background) {
+  const dark = isHex(background) ? background : DARK_FALLBACK;
+  if (!isHex(accent)) return dark;
+  if (contrast(dark, accent) >= MIN_CONTRAST) return dark;
+  return contrast(LIGHT_TEXT, accent) > contrast(dark, accent) ? LIGHT_TEXT : dark;
 }
 
-// Claude heads read warm orange (red blended into yellow), Codex heads read blue; others use the accent.
-export function headColor(program, t) {
-  const id = `${program?.key ?? ""} ${program?.name ?? ""}`.toLowerCase();
-  if (id.includes("claude")) return t.ansi1 && t.ansi3 ? mixColor(t.ansi1, t.ansi3) : t.accent;
-  if (id.includes("codex")) return t.ansi4 ?? t.accent;
-  return t.accent;
-}
-
-// Glossy pill: tinted base, brighter upper half, 1px top highlight, darker bottom edge.
-// A sheen strip crosses it only while the Head works.
+// Flat pill: one solid accent background and a single text child. Child overlays are not clipped to
+// rounded corners in this toolkit, so the tag carries no layers. Same style for every Head.
 export function headTag(row, t, onRename) {
-  const color = headColor(row.data?.program, t);
-  const working = row.status === "working";
-  const tag = h_flex().id(`head-${row.key}`).relative().flex_none().h(16).px(5)
-    .items_center().rounded(8).overflow_hidden().border_1().border_color(withAlpha(color, 0.5))
-    .bg(withAlpha(color, 0.2))
-    .child(div().absolute().top(0).left(0).right(0).h(8).bg(withAlpha(color, 0.2)))
-    .child(div().absolute().top(0).left(0).right(0).h(1).bg("#ffffff40"))
-    .child(div().absolute().bottom(0).left(0).right(0).h(1).bg("#00000040"))
-    .child(div().relative().flex_none().text_size(10).font_semibold().text_color(t.foreground).child("HEAD"));
-  if (working) tag.child(div().absolute().top(0).h(16).w(10).bg("#ffffff2e")
-    .loop("left", { from: -12, to: SHEEN_RANGE, period: 2400, easing: "ease-in-out" }));
+  const tag = div().id(`head-${row.key}`).flex_none().h(TAG_H).px(5).flex().items_center().rounded(TAG_H / 2)
+    .bg(t.accent).text_size(10).font_semibold().text_color(headTagTextColor(t.accent, t.background))
+    .child("HEAD");
   if (onRename) tag.on_mouse_down("left", (e, cx) => { if (e.click_count === 2) { cx.stop_propagation(); onRename(cx); } });
   return tag;
 }

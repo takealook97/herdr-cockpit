@@ -4,7 +4,7 @@ import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
-import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors } from "./model.js";
+import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors, SECTION_PALETTE } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow, hubRow, nexusRow } from "./rows.js";
 import { initRename, startRename, finishRename, renameId } from "./rename.js";
@@ -313,9 +313,8 @@ export default class SpaceTree extends Plumbing {
     this.visible = buildTree({ ...input, folded: this.treeFolded });
     if (!this.visible.some(r => r.key === this.highlight)) this.highlight = this.visible.find(r => r.active)?.key ?? this.visible[0]?.key;
     const stored = shared("space.colors") ?? {};
-    const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1", "ansi14", "ansi11", "ansi12", "ansi13"];
     const sectionIds = buildTree({ ...input, folded: {} }).filter(row => row.kind === "space" && !row.hub && row.sectionColorKey === row.id && row.name !== "~").map(row => row.id);
-    const colors = assignSectionColors(sectionIds, stored, palette);
+    const colors = assignSectionColors(sectionIds, stored, SECTION_PALETTE);
     if (JSON.stringify(colors) !== JSON.stringify(stored)) setShared("space.colors", colors);
     const button = (id, icon, label, action) => div().id(id).size(24).flex_none().flex().items_center().justify_center()
       .rounded(4).tooltip(label).hover(s => s.bg(t.hover).text_color(t.foreground))
