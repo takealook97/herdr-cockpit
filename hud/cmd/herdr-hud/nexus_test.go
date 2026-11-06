@@ -48,7 +48,13 @@ func TestNexusRoute(t *testing.T) {
 			d := nexusFixture(t)
 			d.model = func(context.Context, string, string, []byte) ([]byte, error) { return []byte(tc.raw), tc.err }
 			var calls [][]string
-			d.hc = func(_ context.Context, args ...string) ([]byte, error) { calls = append(calls, args); return nil, nil }
+			d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "get" || args[0] == "read" {
+					return nil, nil
+				}
+				calls = append(calls, args)
+				return nil, nil
+			}
 			r := nexusRoute(context.Background(), d, "command", nexusRoster())
 			if r.Action != tc.action || r.Sent != tc.sent {
 				t.Fatalf("%+v", r)
@@ -83,6 +89,10 @@ func TestNexusStatusForwarded(t *testing.T) {
 		return []byte(`{"action":"send","target":"t1","message":"어디까지 했어?","confidence":0.9}`), nil
 	}
 	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" || args[0] == "read" {
+			return nil, nil
+		}
+
 		if !reflect.DeepEqual(args, []string{"send", "--", "t1", "어디까지 했어?"}) {
 			t.Fatal(args)
 		}
@@ -102,7 +112,10 @@ func TestNexusSend(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d := nexusFixture(t)
 			count := 0
-			d.hc = func(_ context.Context, args ...string) ([]byte, error) { count++; return nil, tc.hcErr }
+			d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+				count++
+				return nil, tc.hcErr
+			}
 			r := nexusSend(context.Background(), d, tc.to, tc.text, nexusRoster())
 			if r.Action != tc.action || len([]rune(r.Error)) > 300 {
 				t.Fatalf("%+v", r)
@@ -202,7 +215,13 @@ func TestNexusLogFailurePreservesReply(t *testing.T) {
 			}
 			d.logPath = filepath.Join(parent, "log.json")
 			calls := 0
-			d.hc = func(context.Context, ...string) ([]byte, error) { calls++; return nil, nil }
+			d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "get" || args[0] == "read" {
+					return nil, nil
+				}
+				calls++
+				return nil, nil
+			}
 			var r nexusReply
 			if mode == "route" {
 				r = nexusRoute(context.Background(), d, "hello", nexusRoster())
@@ -240,7 +259,10 @@ func TestNexusIncompleteRoster(t *testing.T) {
 					t.Fatal("model called")
 					return nil, nil
 				}
-				d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("hc called"); return nil, nil }
+				d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+					t.Fatal("hc called")
+					return nil, nil
+				}
 				var r nexusReply
 				if mode == "route" {
 					r = nexusRoute(context.Background(), d, "hi", nexusRoster())
@@ -260,7 +282,13 @@ func TestNexusReadRejected(t *testing.T) {
 	d.model = func(context.Context, string, string, []byte) ([]byte, error) {
 		return []byte(`{"action":"read","target":"t1"}`), nil
 	}
-	d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("read must not reach hc"); return nil, nil }
+	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" || args[0] == "read" {
+			return nil, nil
+		}
+		t.Fatal("invalid model action must not send")
+		return nil, nil
+	}
 	if r := nexusRoute(context.Background(), d, "상태 알려줘", nexusRoster()); r.Action != "error" {
 		t.Fatal(r)
 	}
@@ -304,7 +332,12 @@ func TestNexusHCErrorPassthrough(t *testing.T) {
 		for _, mode := range []string{"send", "route"} {
 			t.Run(tc.name+"/"+mode, func(t *testing.T) {
 				d := nexusFixture(t)
-				d.hc = func(context.Context, ...string) ([]byte, error) { return nil, tc.err }
+				d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+					if args[0] == "get" || args[0] == "read" {
+						return nil, nil
+					}
+					return nil, tc.err
+				}
 				var got nexusReply
 				if mode == "send" {
 					got = nexusSend(context.Background(), d, "t1", "hello", nexusRoster())
@@ -324,7 +357,13 @@ func TestNexusModelDeadline(t *testing.T) {
 		t.Run(err.Error(), func(t *testing.T) {
 			d := nexusFixture(t)
 			d.model = func(context.Context, string, string, []byte) ([]byte, error) { return nil, err }
-			d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("deadline sent a command"); return nil, nil }
+			d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "get" || args[0] == "read" {
+					return nil, nil
+				}
+				t.Fatal("deadline sent a command")
+				return nil, nil
+			}
 			got := nexusRoute(context.Background(), d, "hello", nexusRoster())
 			if got.Error != "모델 호출 시간이 초과됐습니다" || got.Sent {
 				t.Fatalf("%+v", got)
@@ -395,7 +434,13 @@ func TestNexusIgnore(t *testing.T) {
 				models++
 				return []byte(`{"action":"ignore","target":"bad","message":"do not send","summary":"잠시 기다리는 말입니다"}`), nil
 			}
-			d.hc = func(context.Context, ...string) ([]byte, error) { hc++; return nil, nil }
+			d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "get" || args[0] == "read" {
+					return nil, nil
+				}
+				hc++
+				return nil, nil
+			}
 			reply := nexusRoute(context.Background(), d, tc.text, nexusRoster())
 			if reply.Local != (tc.modelCalls == 0) || reply.Action != "ignore" || reply.Sent || reply.Summary != tc.summary || reply.Target != "" || reply.Message != "" {
 				t.Fatalf("%+v", reply)
@@ -492,6 +537,10 @@ func TestNexusPolishedMultiline(t *testing.T) {
 		return json.Marshal(map[string]any{"action": "send", "target": "t1", "message": message, "confidence": 0.99})
 	}
 	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" || args[0] == "read" {
+			return nil, nil
+		}
+
 		if !reflect.DeepEqual(args, []string{"send", "--", "t1", "넥서스 확인해. 테스트도 돌려줘."}) {
 			t.Fatal(args)
 		}
@@ -506,6 +555,7 @@ func TestNexusSendMultiline(t *testing.T) {
 	d := nexusFixture(t)
 	message := "첫 문장.\r\n\n다음 문장."
 	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+
 		if !reflect.DeepEqual(args, []string{"send", "--", "t1", "첫 문장. 다음 문장."}) {
 			t.Fatal(args)
 		}

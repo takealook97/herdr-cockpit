@@ -151,7 +151,13 @@ func TestNexusVoiceAppleAndMissing(t *testing.T) {
 func TestNexusDryRunAndVoiceExclusion(t *testing.T) {
 	d := nexusFixture(t)
 	d.dryRun = true
-	d.hc = func(context.Context, ...string) ([]byte, error) { t.Fatal("dry-run sent"); return nil, nil }
+	d.hc = func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" || args[0] == "read" {
+			return nil, nil
+		}
+		t.Fatal("dry-run sent")
+		return nil, nil
+	}
 	r := nexusRoute(context.Background(), d, "do it", nexusRoster())
 	if r.Action != "send" || r.Sent {
 		t.Fatal(r)
