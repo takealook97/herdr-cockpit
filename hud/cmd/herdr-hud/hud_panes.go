@@ -361,7 +361,7 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 	}
 	raw, err := exec.CommandContext(ctx, "ps", "-A", "-o", "pid=,ppid=,comm=").Output()
 	if err != nil {
-		return
+		raw = nil
 	}
 	procs := hudParseProcesses(string(raw))
 	nodeArgs := hudNodeArgs(ctx, procs)
@@ -372,7 +372,7 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 	results := make(chan result, len(indices))
 	sem := make(chan struct{}, 6)
 	for _, i := range indices {
-		go func(i int, address string) {
+		go func(i int, terminal HUDTerminal) {
 			model, effort := "", ""
 			defer func() { results <- result{i, model, effort} }()
 			select {
@@ -381,30 +381,42 @@ func hudResolveClaudeModels(ctx context.Context, out *HUDPanes) {
 				return
 			}
 			defer func() { <-sem }()
-			detailPID := out.Terminals[i].pid
-			if detailPID == 0 && !out.Terminals[i].detailLoaded {
-				raw, err := exec.CommandContext(ctx, hudHCPath(), "get", address, "--json").Output()
-				if err != nil {
-					return
-				}
+			detailPID, cwd := terminal.pid, terminal.Cwd
+			if detailPID == 0 && !terminal.detailLoaded {
+				raw, err := exec.CommandContext(ctx, hudHCPath(), "get", terminal.Address, "--json").Output()
 				var detail struct {
-					PID int `json:"pid"`
+					PID int    `json:"pid"`
+					Cwd string `json:"cwd"`
 				}
-				if json.Unmarshal(raw, &detail) != nil {
-					return
+				if err == nil && json.Unmarshal(raw, &detail) == nil {
+					detailPID, cwd = detail.PID, detail.Cwd
 				}
-				detailPID = detail.PID
 			}
 			pid, provider := hudFindAgent(detailPID, procs, func(pid int) string { return nodeArgs[pid] })
-			if provider != "claude" {
+			env := ""
+			if provider == "claude" {
+				// ps already supplies the config directory; use the same bounded
+				// process query for optional model environment overrides.
+				raw, err := exec.CommandContext(ctx, "ps", "eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
+				if err == nil {
+					env = string(raw)
+				}
+			} else {
+				pid = 0
+			}
+			if ctx.Err() != nil {
 				return
 			}
-			raw, err := exec.CommandContext(ctx, "ps", "eww", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-			if err != nil || ctx.Err() != nil {
-				return
+			model, effort = hudClaudeResolve(hudEnvValue(env, "CLAUDE_CONFIG_DIR"), pid, cwd, env, terminal.Model, terminal.Effort)
+			if model == "" {
+				resolved := hudClaudeCatalogModel(ctx, terminal.Model)
+				if resolved != terminal.Model {
+					model = resolved
+				}
+			} else {
+				model = hudClaudeCatalogModel(ctx, model)
 			}
-			model, effort = hudClaudeTranscript(hudEnvValue(string(raw), "CLAUDE_CONFIG_DIR"), pid)
-		}(i, out.Terminals[i].Address)
+		}(i, out.Terminals[i])
 	}
 	for range indices {
 		select {
