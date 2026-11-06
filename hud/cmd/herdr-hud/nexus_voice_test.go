@@ -293,7 +293,7 @@ func TestNexusHaikuCLI(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"", "haiku", "claude-haiku"} {
+	for _, key := range []string{"", "haiku", "claude-haiku", "claude-medium-m", "claude-high-m"} {
 		runner, err := nexusCLIModel(key)
 		if err != nil {
 			t.Fatal(err)
@@ -306,13 +306,49 @@ func TestNexusHaikuCLI(t *testing.T) {
 			t.Fatal(err)
 		}
 		want := "--model\nhaiku\n"
-		if key == "" {
+		if key == "" || key == "claude-medium-m" {
 			want = "--model\nsonnet\n"
 		}
-		if !strings.Contains(string(raw), want) || (key != "" && strings.Contains(string(raw), "--effort")) {
+		if key == "claude-high-m" {
+			want = "--model\nopus\n"
+		}
+		if !strings.Contains(string(raw), want) || ((key == "haiku" || key == "claude-haiku") && strings.Contains(string(raw), "--effort")) {
+			t.Fatal(string(raw))
+		}
+		if key != "haiku" && key != "claude-haiku" && !strings.Contains(string(raw), "--effort\nlow\n") {
 			t.Fatal(string(raw))
 		}
 	}
+	configDir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "herdr-hud")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, effort := range []string{"low", "medium", "high"} {
+		if err := os.WriteFile(filepath.Join(configDir, "nexus.json"), []byte(`{"effort":"`+effort+`"}`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"claude-medium-m", "claude-high-m", "haiku"} {
+			runner, err := nexusCLIModel(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = runner(context.Background(), "sys", "prompt", []byte(`{}`)); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(capture)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if key == "haiku" {
+				if strings.Contains(string(raw), "--effort") {
+					t.Fatal(string(raw))
+				}
+			} else if !strings.Contains(string(raw), "--effort\n"+effort+"\n") {
+				t.Fatal(string(raw))
+			}
+		}
+	}
+
 }
 
 func TestNexusHookRosterAndNavigationFailure(t *testing.T) {

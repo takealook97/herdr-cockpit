@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const nexusContextHeads = 8
-const nexusContextBudget = 1500 * time.Millisecond
+const nexusContextBudget = time.Second
 
 func nexusContextCwd(path string) string {
 	if path == "" {
@@ -164,4 +168,125 @@ func nexusPendingAsk(logs []nexusLogEntry, now time.Time) *nexusLogEntry {
 		return nil
 	}
 	return last
+}
+
+// Context entries contain only bounded topic hints, never routing authority.
+type nexusContextEntry struct {
+	At     time.Time `json:"at"`
+	Cwd    string    `json:"cwd"`
+	Report string    `json:"report"`
+	Recent string    `json:"recent"`
+}
+
+func nexusCachedRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRosterEntry, panes HUDPanes, path string, now time.Time, force bool) ([]nexusRosterEntry, error) {
+	cached := map[string]nexusContextEntry{}
+	raw, _ := os.ReadFile(path)
+	_ = json.Unmarshal(raw, &cached)
+	out := nexusEnrichRoster(ctx, nil, roster, panes)
+	missing := []nexusRosterEntry{}
+	indices := []int{}
+	next := map[string]nexusContextEntry{}
+	for i := 0; i < min(len(out), nexusContextHeads); i++ {
+		r := &out[i]
+		c, ok := cached[r.Address]
+		if !force && ok && !now.Before(c.At) && now.Sub(c.At) < 20*time.Second {
+			r.Cwd, r.Report, r.Recent = c.Cwd, c.Report, c.Recent
+			next[r.Address] = c
+		} else {
+			missing = append(missing, *r)
+			indices = append(indices, i)
+		}
+	}
+	if len(missing) > 0 {
+		enriched := nexusEnrichRoster(ctx, hc, missing, panes)
+		for j, r := range enriched {
+			out[indices[j]] = r
+			next[r.Address] = nexusContextEntry{now, r.Cwd, r.Report, r.Recent}
+		}
+	}
+	// Reapply bounds to untrusted disk content, and discard departed addresses.
+	out = nexusEnrichRoster(ctx, nil, out, HUDPanes{})
+	raw, err := json.Marshal(next)
+	if err == nil {
+		err = nexusAtomic(path, raw)
+	}
+	return out, err
+}
+
+func nexusContextWarm(ctx context.Context, sharedPath, cache string, hc nexusHCRunner) error {
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(cache, "nexus-context.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
+			return nil
+		}
+		return err
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	raw, err := os.ReadFile(sharedPath)
+	if err != nil {
+		return err
+	}
+	var shared nexusShared
+	if err = json.Unmarshal(raw, &shared); err != nil {
+		return err
+	}
+	roster := []nexusRosterEntry{}
+	seen := map[string]bool{}
+	for _, h := range shared.Heads {
+		if h.Address == "" || strings.Contains(h.Address, "/") || seen[h.Address] {
+			continue
+		}
+		seen[h.Address] = true
+		roster = append(roster, nexusRosterEntry{Address: h.Address})
+	}
+	_, err = nexusCachedRoster(ctx, hc, roster, HUDPanes{}, filepath.Join(cache, "nexus-context.json"), time.Now(), true)
+	return err
+}
+
+func nexusContextSpawnWarm() error {
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer null.Close()
+	cmd := exec.Command(binary, "nexus", "context", "warm")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = null, null, null
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
+}
+
+func nexusRouterEffort(key, override string) string {
+	if key == "haiku" || key == "claude-haiku" {
+		return ""
+	}
+	switch override {
+	case "low", "medium", "high":
+		return override
+	}
+	return "low"
+}
+
+func nexusRouterEffortArgs(key, effort string) []string {
+	effort = nexusRouterEffort(key, effort)
+	if effort == "" {
+		return nil
+	}
+	if strings.HasPrefix(key, "codex-") {
+		return []string{"-c", "model_reasoning_effort=" + effort}
+	}
+	return []string{"--effort", effort}
 }

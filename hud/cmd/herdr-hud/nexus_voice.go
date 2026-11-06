@@ -413,10 +413,14 @@ func nexusVoiceCancel(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
 }
 
 func nexusVoiceRecord(ctx context.Context, hc nexusHCRunner) nexusVoiceReply {
-	return nexusVoiceRecordWithSpawn(ctx, hc, nexusLoadConfig().AutoSendSilenceMs, nexusVoiceSpawnWatch)
+	return nexusVoiceRecordWithWarm(ctx, hc, nexusLoadConfig().AutoSendSilenceMs, nexusVoiceSpawnWatch, nexusContextSpawnWarm)
 }
 
 func nexusVoiceRecordWithSpawn(ctx context.Context, hc nexusHCRunner, silenceMs int, spawn func() error) nexusVoiceReply {
+	return nexusVoiceRecordWithWarm(ctx, hc, silenceMs, spawn, func() error { return nil })
+}
+
+func nexusVoiceRecordWithWarm(ctx context.Context, hc nexusHCRunner, silenceMs int, spawn, warm func() error) nexusVoiceReply {
 	fail := func(err error) nexusVoiceReply { return nexusVoiceReply{Action: "error", Error: nexusError(err).Error} }
 	unlock, err := nexusVoiceLock(ctx)
 	if err != nil {
@@ -433,6 +437,7 @@ func nexusVoiceRecordWithSpawn(ctx context.Context, hc nexusHCRunner, silenceMs 
 	}
 	screen := string(raw)
 	if !nexusVoiceRecording(screen) && !nexusVoiceRecent(3*time.Second) {
+		_ = warm()
 		for attempt := 0; ; attempt++ {
 			input, found := nexusVoiceInput(screen)
 			if found && input == "" {

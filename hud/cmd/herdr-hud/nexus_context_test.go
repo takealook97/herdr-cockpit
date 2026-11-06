@@ -127,7 +127,7 @@ func TestNexusEnrichmentTotalBudget(t *testing.T) {
 	if len(started) != 16 || len(got) != 8 {
 		t.Fatalf("not parallel: %d calls", len(started))
 	}
-	if elapsed < 1400*time.Millisecond || elapsed > 2200*time.Millisecond {
+	if elapsed < 900*time.Millisecond || elapsed > 1700*time.Millisecond {
 		t.Fatalf("budget elapsed: %s", elapsed)
 	}
 	for _, r := range got {
@@ -234,5 +234,98 @@ func TestNexusVoiceContextAndAskFollowup(t *testing.T) {
 	logs := nexusLoadLog(d.logPath)
 	if len(logs) != 2 || logs[0].Message != "슬랙 MCP 끊기는 원인 파악해 줘." || len(logs[0].Candidates) != 1 || logs[1].Action != "send" {
 		t.Fatal(logs)
+	}
+}
+
+func TestNexusContextCacheLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nexus-context.json")
+	now := time.Now()
+	roster := []nexusRosterEntry{{Address: "t1", Tab: "current"}}
+	var mu sync.Mutex
+	calls := 0
+	hc := func(_ context.Context, args ...string) ([]byte, error) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		if args[0] == "get" {
+			return []byte(`{"cwd":"/projects/nexus","report":"routing"}`), nil
+		}
+		return []byte("recent context"), nil
+	}
+	for i, age := range []time.Duration{0, 19 * time.Second, 20 * time.Second} {
+		got, err := nexusCachedRoster(context.Background(), hc, roster, HUDPanes{}, path, now.Add(age), false)
+		if err != nil || got[0].Report != "routing" || got[0].Recent != "recent context" || got[0].Tab != "current" {
+			t.Fatal(got, err)
+		}
+		mu.Lock()
+		n := calls
+		mu.Unlock()
+		want := 2
+		if i == 2 {
+			want = 4
+		}
+		if n != want {
+			t.Fatalf("calls=%d want=%d", n, want)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatal(info, err)
+	}
+	if _, err := nexusCachedRoster(context.Background(), hc, nil, HUDPanes{}, path, now, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "{}" {
+		t.Fatal(string(raw))
+	}
+}
+
+func TestNexusContextWarm(t *testing.T) {
+	cache := t.TempDir()
+	shared := filepath.Join(t.TempDir(), "shared.json")
+	if err := os.WriteFile(shared, []byte(`{"hub.heads":[{"address":"t1"}]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hc := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" {
+			return []byte(`{"report":"warm context"}`), nil
+		}
+		return []byte("recent"), nil
+	}
+	if err := nexusContextWarm(context.Background(), shared, cache, hc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := nexusCachedRoster(context.Background(), func(context.Context, ...string) ([]byte, error) { t.Error("cache hit fetched"); return nil, nil }, []nexusRosterEntry{{Address: "t1"}}, HUDPanes{}, filepath.Join(cache, "nexus-context.json"), time.Now(), false)
+	if err != nil || got[0].Report != "warm context" {
+		t.Fatal(got, err)
+	}
+}
+
+func TestNexusRouterEffort(t *testing.T) {
+	for _, key := range []string{"claude-medium-m", "claude-high-m", "codex-low-h", "codex-medium-m", "codex-high-l", "codex-high-m"} {
+		if got := nexusRouterEffort(key, ""); got != "low" {
+			t.Fatal(key, got)
+		}
+		for _, effort := range []string{"low", "medium", "high"} {
+			if got := nexusRouterEffort(key, effort); got != effort {
+				t.Fatal(key, got)
+			}
+			want := []string{"--effort", effort}
+			if strings.HasPrefix(key, "codex-") {
+				want = []string{"-c", "model_reasoning_effort=" + effort}
+			}
+			if got := nexusRouterEffortArgs(key, effort); !reflect.DeepEqual(got, want) {
+				t.Fatal(key, got, want)
+			}
+		}
+	}
+	for _, key := range []string{"haiku", "claude-haiku"} {
+		if got := nexusRouterEffort(key, "high"); got != "" {
+			t.Fatal(key, got)
+		}
+	}
+	if nexusParseConfig([]byte(`{"effort":"high"}`)).Effort != "high" || nexusParseConfig([]byte(`{"effort":"invalid"}`)).Effort != "" {
+		t.Fatal("effort parsing")
 	}
 }

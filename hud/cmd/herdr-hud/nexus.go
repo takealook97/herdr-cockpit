@@ -280,7 +280,7 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 	if panes.Error != "" {
 		return nexusError(errors.New("Head 목록을 확인하지 못했습니다"))
 	}
-	roster = nexusEnrichRoster(ctx, d.hc, nexusValidRoster(roster, panes), panes)
+	roster, _ = nexusCachedRoster(ctx, d.hc, nexusValidRoster(roster, panes), panes, filepath.Join(filepath.Dir(d.logPath), "nexus-context.json"), time.Now(), false)
 	if len(roster) == 0 {
 		return nexusError(errors.New("Head가 없습니다"))
 	}
@@ -414,6 +414,7 @@ type nexusConfig struct {
 	VoiceInput        string
 	AutoSendSilenceMs int
 	Model             string
+	Effort            string
 	KeepAudio         int
 	LaughThreshold    float64
 	SpeechEngine      string
@@ -440,6 +441,10 @@ func nexusParseConfig(raw []byte) nexusConfig {
 		return nil
 	}
 	_ = json.Unmarshal(field("model"), &cfg.Model)
+	_ = json.Unmarshal(field("effort"), &cfg.Effort)
+	if cfg.Effort != "low" && cfg.Effort != "medium" && cfg.Effort != "high" {
+		cfg.Effort = ""
+	}
 	_ = json.Unmarshal(field("voiceInput"), &cfg.VoiceInput)
 	var silence *int
 	if json.Unmarshal(field("autoSendSilenceMs"), &silence) == nil && silence != nil && (*silence == 0 || *silence >= 800 && *silence <= 10000) {
@@ -512,6 +517,7 @@ func nexusCLIModel(key string) (nexusModelRunner, error) {
 		}
 		m.Effort = "medium"
 	}
+	m.Effort = nexusRouterEffort(key, nexusLoadConfig().Effort)
 	name := "claude"
 	if strings.HasPrefix(key, "codex-") {
 		name = "codex"
@@ -532,16 +538,16 @@ func nexusCLIModel(key string) (nexusModelRunner, error) {
 		last := filepath.Join(dir, "last.json")
 		if name == "claude" {
 			args = []string{"-p", "--setting-sources", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`, "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--model", m.Model, "--output-format", "json", "--json-schema", string(schema), "--system-prompt", sys}
-			if m.Effort != "" {
-				args = append(args, "--effort", m.Effort)
-			}
+			args = append(args, nexusRouterEffortArgs(key, m.Effort)...)
 			args = append(args, prompt)
 		} else {
 			sf := filepath.Join(dir, "schema.json")
 			if err = os.WriteFile(sf, schema, 0600); err != nil {
 				return nil, err
 			}
-			args = []string{"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "-m", m.Model, "-c", "model_reasoning_effort=" + m.Effort, "--output-schema", sf, "-o", last, "-C", dir, sys + "\n\n" + prompt}
+			args = []string{"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check", "-m", m.Model, "--output-schema", sf, "-o", last, "-C", dir}
+			args = append(args, nexusRouterEffortArgs(key, m.Effort)...)
+			args = append(args, sys+"\n\n"+prompt)
 		}
 		cmd := nexusCommand(ctx, path, args...)
 		cmd.Dir = dir
@@ -624,7 +630,7 @@ func nexusHC(ctx context.Context, args ...string) ([]byte, error) {
 }
 func cmdNexus(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: herdr-hud nexus route [--dry-run]|send|log|voice ensure|voice key [--key space]|voice record|voice cancel|hook-prompt|listen start|status|stop|prepare [--hints a,b,c] [--pid N]")
+		fmt.Fprintln(stderr, "usage: herdr-hud nexus route [--dry-run]|send|log|context warm|voice ensure|voice key [--key space]|voice record|voice cancel|hook-prompt|listen start|status|stop|prepare [--hints a,b,c] [--pid N]")
 		return 2
 	}
 	if len(args) == 0 {
@@ -634,6 +640,15 @@ func cmdNexus(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	var out any
 	switch args[0] {
+	case "context":
+		if len(args) != 2 || args[1] != "warm" {
+			return usage()
+		}
+		if err := nexusContextWarm(ctx, nexusSharedPath(), hudCacheDir(), nexusHC); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "hook-prompt":
 		return nexusHookPrompt(ctx, os.Stdin, stdout, nexusDefaultDeps(), nexusSharedPath(), nexusApp)
 	case "voice":
@@ -645,6 +660,7 @@ func cmdNexus(args []string, stdout, stderr io.Writer) int {
 			if len(args) != 2 {
 				return usage()
 			}
+			_ = nexusContextSpawnWarm()
 			out = nexusVoiceEnsure(ctx, nexusLoadConfig(), hudCacheDir(), nexusCLIPath, nexusHC)
 		case "cancel":
 			if len(args) != 2 {
