@@ -46,6 +46,8 @@ export function orchIndexes(orch = {}) {
     terminals: Object.fromEntries((orch.terminals ?? []).map(t => [t.address, t])) };
 }
 
+export const isHeadPane = (pane, orchIndex = {}) =>
+  !!(orchIndex.heads?.[pane.terminal] || (orchIndex.enabled && orchIndex.terminals?.[pane.terminal]));
 const programName = pane => pane.program?.name || pane.app || pane.mod || "Terminal";
 export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
   const alias = aliases[aliasKey("pane", pane.terminal)];
@@ -53,7 +55,7 @@ export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
   const worker = orchIndex.workers?.[pane.terminal];
   if (worker) return (worker.label || worker.name || "worker").toLowerCase();
   // Only active runs identify heads; vanilla panes retain program names.
-  if (orchIndex.heads?.[pane.terminal] || (orchIndex.enabled && orchIndex.terminals?.[pane.terminal])) return "head";
+  if (isHeadPane(pane, orchIndex)) return "head";
   return programName(pane).toLowerCase();
 }
 
@@ -164,7 +166,7 @@ export function buildTree({ machines = [], spaces = [], panes = [], orch = {}, a
         status: tabStatus(tab), active: !hub?.active && !!tab.active && s.id === activeSpaceId });
       if (!tr.open) return;
       ps.forEach((pane, pi) => emit("pane", pane.pane, depth + 2, { sectionColorKey, sectionDepth,
-        name: paneName(pane, pi, index, aliases), sub: paneSub(pane, index, pi),
+        name: paneName(pane, pi, index, aliases), head: isHeadPane(pane, index) && !index.workers[pane.terminal], sub: paneSub(pane, index, pi),
         orch: !!(index.workers[pane.terminal] || index.heads[pane.terminal]),
         data: pane, terminal: pane.terminal, status: pane.status, active: !!pane.focused && s.id === activeSpaceId,
         guide: pi === ps.length - 1 ? "└" : "├" }));

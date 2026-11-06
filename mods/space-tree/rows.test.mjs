@@ -32,10 +32,11 @@ function element() {
   return proxy;
 }
 
-const treeRow = new Function("div", "svg", "image", "h_flex", "run", "shared", "nameElement",
+const tagCalls = [];
+const treeRow = new Function("div", "svg", "image", "h_flex", "run", "shared", "nameElement", "startRename", "renameId", "headTag",
   "tabIconColor", "machineConnected", "rowDisplay",
   `${rows.replace(/^import .*;$/gm, "").replace(/^export /gm, "")}\nreturn treeRow;`)(
-  element, element, element, element, () => {}, () => ({}), () => "Name",
+  element, element, element, element, () => {}, () => ({}), () => "Name", () => {}, () => null, (...a) => { tagCalls.push(a); return element(); },
   tabIconColor, machineConnected, rowDisplay);
 
 test("drop mouse-up on a space or tab row does not also select that row", () => {
@@ -213,3 +214,64 @@ function loadRows(names) {
   const body = source.replace(/^import .*;\n/gm, "").replace(/^export /gm, "");
   return new Function(...Object.keys(deps), `${body}; return { ${names.join(", ")} };`)(...Object.values(deps));
 }
+
+// Head tag: rendered through the real head-tag.js with the retained-element host.
+const tagHost = () => { const h = host(); return { h, t: h.deps.theme() }; };
+const tagModule = () => load(new URL("./head-tag.js", import.meta.url), "({ headTag, headColor, withAlpha, mixColor })",
+  { ...host().deps, svg: retainedElement });
+const { headColor, withAlpha, mixColor } = tagModule();
+const renderTag = (row, t) => tagModule().headTag(row, t);
+
+test("head rows render a HEAD tag with the diamond glyph", () => {
+  const { t } = tagHost();
+  const tag = renderTag({ key: "p", status: "idle", data: { program: { key: "claude" } } }, t);
+  const nodes = walk(tag);
+  assert.ok(nodes.includes("HEAD"));
+  assert.ok(nodes.some(n => n?.style?.size === 11));
+  assert.ok(!nodes.some(n => n?.style?.loop));
+});
+
+test("sheen child exists only while the head is working", () => {
+  const { t } = tagHost();
+  const idle = walk(renderTag({ key: "p", status: "idle", data: {} }, t));
+  const busy = walk(renderTag({ key: "p", status: "working", data: {} }, t));
+  assert.equal(idle.filter(n => n?.style?.loop).length, 0);
+  assert.equal(busy.filter(n => n?.style?.loop).length, 1);
+});
+
+test("head color follows the program family", () => {
+  const t = { ansi1: "#d00000", ansi3: "#00d000", ansi4: "#4080d0", accent: "#00ff00" };
+  assert.equal(mixColor("#d00000", "#00d000"), "#686800");
+  assert.equal(headColor({ key: "claude" }, t), "#686800");
+  assert.equal(headColor({ name: "Codex" }, t), "#4080d0");
+  assert.equal(headColor({ name: "bash" }, t), "#00ff00");
+  assert.equal(withAlpha("#abc", 0.5), "#aabbcc80");
+  assert.equal(withAlpha("#102030", 1), "#102030ff");
+});
+
+test("HEAD label keeps 4.5:1 contrast on the tinted tag in the bundled themes", () => {
+  const rgb = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const lin = c => c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  const lum = c => { const [r, g, b] = c.map(lin); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+  const mix = (a, b, k) => a.map((v, i) => v * (1 - k) + b[i] * k);
+  for (const name of ["asphodel", "elysium"]) {
+    const theme = JSON.parse(readFileSync(new URL(`../../themes/${name}.json`, import.meta.url), "utf8"));
+    const t = { ...theme.colors, ansi1: theme.ansi[1], ansi3: theme.ansi[3], ansi4: theme.ansi[4] };
+    for (const program of [{ key: "claude" }, { key: "codex" }]) {
+      // base 0.2 + gloss 0.2 stacked is the strongest tint behind the text.
+      const tint = rgb(headColor(program, t));
+      const bg = mix(mix(rgb(t.chrome), tint, 0.2), tint, 0.2);
+      const [hi, lo] = [lum(rgb(t.foreground)), lum(bg)].sort((a, b) => b - a);
+      assert.ok((hi + 0.05) / (lo + 0.05) >= 4.5, `${name} ${program.key}`);
+    }
+  }
+});
+
+test("treeRow swaps the plain name for the tag only on head rows", () => {
+  const row = (extra) => ({ kind: "pane", key: "k", name: "head", terminal: "t", data: {}, depth: 2, ...extra });
+  const hasTag = el => { const n = tagCalls.length; treeRow({}, el, {}); return tagCalls.length > n; };
+  assert.ok(hasTag(row({ head: true })));
+  assert.ok(!hasTag(row({ head: false })));
+  assert.ok(!hasTag(row({ head: true, name: "renamed" })));
+  assert.ok(!hasTag(row({ head: true, hub: true })));
+});

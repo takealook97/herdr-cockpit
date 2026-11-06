@@ -1,7 +1,8 @@
 import { div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { run, shared } from "herdr";
-import { nameElement } from "./rename.js";
+import { nameElement, startRename, renameId } from "./rename.js";
+import { headTag } from "./head-tag.js";
 import { tabIconColor, machineConnected, rowDisplay } from "./model.js";
 
 const asset = name => `mods/space-tree/${name}.svg`;
@@ -19,7 +20,10 @@ function icon(row, t) {
 }
 export function treeRow(view, row, t) {
   const stop = (_e, cx) => cx.stop_propagation();
-  const name = row.hub ? row.name : nameElement(view, row, t);
+  const editing = view.editing?.kind === row.kind && view.editing?.id === renameId(row);
+  const tag = row.head && !row.hub && !editing && row.name === "head"
+    ? headTag(row, t, cx => startRename(view, "pane", row.terminal, row.name, cx)) : null;
+  const name = row.hub ? row.name : tag ?? nameElement(view, row, t);
   const main = h_flex().w_full().min_w(0).items_center().gap(row.kind === "pane" ? 6 : 5)
     .child(div().w(row.kind === "space" && !row.data.parentId ? 3 : 9).h(17).self_start().mt(-4).flex_none()
       .when(Boolean(row.guide), el => el.border_l(1).border_b(1).rounded_bl(6).border_color(t.border)))
