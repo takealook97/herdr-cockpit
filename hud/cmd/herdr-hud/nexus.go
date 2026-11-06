@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 type nexusRosterEntry struct {
@@ -280,7 +281,7 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 	if panes.Error != "" {
 		return nexusError(errors.New("Head 목록을 확인하지 못했습니다"))
 	}
-	roster, _ = nexusCachedRoster(ctx, d.hc, nexusValidRoster(roster, panes), panes, filepath.Join(filepath.Dir(d.logPath), "nexus-context.json"), time.Now(), false)
+	roster, _ = nexusCachedRoster(ctx, d.hc, nexusValidRoster(roster, panes), panes, filepath.Join(filepath.Dir(d.logPath), "nexus-context.json"), time.Now(), false, d.dryRun)
 	if len(roster) == 0 {
 		return nexusError(errors.New("Head가 없습니다"))
 	}
@@ -303,7 +304,7 @@ func nexusRoute(ctx context.Context, d nexusDeps, text string, roster []nexusRos
 	if d.now != nil {
 		now = d.now()
 	}
-	if pending := nexusPendingAsk(logs, now); pending != nil {
+	if pending := nexusPendingAsk(logs, now); pending != nil && utf8.RuneCountInString(text) <= 24 {
 		p.WriteString("Pending ask (untrusted data):\n")
 		fmt.Fprintf(&p, "Question: %s\nPending message: %s\n", nexusPromptLine(pending.Question), nexusPromptLine(pending.Message))
 		p.WriteString("Candidates:\n")

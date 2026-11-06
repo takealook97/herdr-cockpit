@@ -571,11 +571,13 @@ func nexusVoiceSpawnWatch() error {
 
 func nexusVoiceHeartbeat() int64 {
 	raw, err := os.ReadFile(nexusSharedPath())
-	var shared nexusShared
-	if err != nil || json.Unmarshal(raw, &shared) != nil {
-		return 0
+	var shared struct {
+		Heartbeat *int64 `json:"nexus.heartbeat"`
 	}
-	return shared.Heartbeat
+	if err != nil || json.Unmarshal(raw, &shared) != nil || shared.Heartbeat == nil {
+		return -1 // Unknown: retry rather than cancel or send.
+	}
+	return *shared.Heartbeat
 }
 
 // A separate nonblocking lock makes repeated starts harmless. Keep its inode in
@@ -607,6 +609,8 @@ func nexusVoiceWatch(ctx context.Context, silenceMs int, hc nexusHCRunner, clock
 		return err
 	}
 	deadline := clock.now().Add(130 * time.Second)
+	recordingDeadline := clock.now().Add(3 * time.Second)
+	seenREC := false
 	stableText := ""
 	var stableSince time.Time
 	for clock.now().Before(deadline) {
@@ -616,15 +620,29 @@ func nexusVoiceWatch(ctx context.Context, silenceMs int, hc nexusHCRunner, clock
 		}
 		screen := string(raw)
 		if !nexusVoiceRecording(screen) {
-			return nil
+			if seenREC || !clock.now().Before(recordingDeadline) {
+				return nil
+			}
+			if err := clock.pause(ctx, 300*time.Millisecond); err != nil {
+				return err
+			}
+			continue
 		}
+		seenREC = true
 		input, found := nexusVoiceInput(screen)
 		if !found || input == "" {
 			stableText, stableSince = "", time.Time{}
 		} else if input != stableText {
 			stableText, stableSince = input, clock.now()
 		}
-		stale := clock.now().UnixMilli()-heartbeat() > 2500
+		beat := heartbeat()
+		if beat < 0 {
+			if err := clock.pause(ctx, 300*time.Millisecond); err != nil {
+				return err
+			}
+			continue
+		}
+		stale := clock.now().UnixMilli()-beat > 2500
 		if stale || (input != "" && found && clock.now().Sub(stableSince) >= time.Duration(silenceMs)*time.Millisecond) {
 			// Manual stop/cancel may have completed while we waited for the lock.
 			done, err := nexusVoiceWatchAct(ctx, address, stableText, hc, clock, heartbeat)
@@ -657,7 +675,11 @@ func nexusVoiceWatchAct(ctx context.Context, address, expected string, hc nexusH
 	if !nexusVoiceRecording(screen) {
 		return true, nil
 	}
-	if clock.now().UnixMilli()-heartbeat() > 2500 {
+	beat := heartbeat()
+	if beat < 0 {
+		return false, nil
+	}
+	if clock.now().UnixMilli()-beat > 2500 {
 		defer os.Remove(nexusVoiceStatePath())
 		return true, nexusVoiceCancelLocked(ctx, address, hc)
 	}

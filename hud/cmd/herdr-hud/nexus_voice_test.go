@@ -1153,7 +1153,7 @@ func TestNexusAutoSendConfig(t *testing.T) {
 }
 
 func TestNexusVoiceWatchScreens(t *testing.T) {
-	for _, scenario := range []string{"pause", "changing", "empty", "missing input", "manual stop", "stale heartbeat", "auto submitted", "disabled", "stop wins lock", "text changes under lock", "empty under lock"} {
+	for _, scenario := range []string{"pause", "changing", "empty", "missing input", "manual stop", "stale heartbeat", "auto submitted", "disabled", "stop wins lock", "text changes under lock", "empty under lock", "unknown heartbeat", "pending REC", "REC never appears"} {
 		t.Run(scenario, func(t *testing.T) {
 			t.Setenv("XDG_CACHE_HOME", t.TempDir())
 			now := time.Unix(1000, 0)
@@ -1177,6 +1177,9 @@ func TestNexusVoiceWatchScreens(t *testing.T) {
 						t.Fatalf("not screen only: %v", args)
 					}
 					reads++
+					if scenario == "REC never appears" || (scenario == "pending REC" && now.Sub(start) < 900*time.Millisecond) {
+						return []byte("❯"), nil
+					}
 					if stopped {
 						if scenario == "auto submitted" {
 							return []byte(nexusVoiceBlocked + "\n❯"), nil
@@ -1214,7 +1217,11 @@ func TestNexusVoiceWatchScreens(t *testing.T) {
 					key := strings.Join(args[2:], " ")
 					keys = append(keys, key)
 					if key == "space" {
-						if now.Sub(start) != 2400*time.Millisecond {
+						wantTime := 2400 * time.Millisecond
+						if scenario == "pending REC" {
+							wantTime = 2700 * time.Millisecond
+						}
+						if now.Sub(start) != wantTime {
 							t.Fatalf("stopped at %v", now.Sub(start))
 						}
 						stopped = true
@@ -1225,6 +1232,9 @@ func TestNexusVoiceWatchScreens(t *testing.T) {
 				return nil, nil
 			}
 			heartbeat := func() int64 {
+				if scenario == "unknown heartbeat" {
+					return -1
+				}
 				if scenario == "stale heartbeat" {
 					return now.Add(-2501 * time.Millisecond).UnixMilli()
 				}
@@ -1239,7 +1249,7 @@ func TestNexusVoiceWatchScreens(t *testing.T) {
 			}
 			var want []string
 			switch scenario {
-			case "pause":
+			case "pause", "pending REC":
 				want = []string{"space", "enter"}
 			case "auto submitted":
 				want = []string{"space"}
@@ -1252,6 +1262,9 @@ func TestNexusVoiceWatchScreens(t *testing.T) {
 			}
 			if !reflect.DeepEqual(keys, want) {
 				t.Fatalf("keys %v, want %v", keys, want)
+			}
+			if scenario == "REC never appears" && now.Sub(start) != 3*time.Second {
+				t.Fatal("pending wait", now.Sub(start))
 			}
 			if now.Sub(start) > 130*time.Second+300*time.Millisecond {
 				t.Fatal("watch exceeded lifetime")
@@ -1367,5 +1380,34 @@ func TestNexusVoiceWatchWaitsForManualAction(t *testing.T) {
 	}
 	if premature {
 		t.Fatal("watch bypassed voice.lock")
+	}
+}
+
+func TestNexusVoiceHeartbeatUnknown(t *testing.T) {
+	t.Setenv("HERDR_APP_HOME", t.TempDir())
+	if got := nexusVoiceHeartbeat(); got != -1 {
+		t.Fatal(got)
+	}
+	if err := os.WriteFile(nexusSharedPath(), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := nexusVoiceHeartbeat(); got != -1 {
+		t.Fatal(got)
+	}
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	hc := func(_ context.Context, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "get":
+			return []byte(`{"labels":{"nexus.voice":"1"}}`), nil
+		case "read":
+			return []byte("⏺ REC\n❯ final text"), nil
+		case "keys":
+			t.Fatal("unknown heartbeat acted", args)
+		}
+		return nil, nil
+	}
+	done, err := nexusVoiceWatchAct(context.Background(), "t1", "final text", hc, nexusVoiceRealClock(), nexusVoiceHeartbeat)
+	if done || err != nil {
+		t.Fatal(done, err)
 	}
 }

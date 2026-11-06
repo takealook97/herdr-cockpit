@@ -94,13 +94,17 @@ func nexusSanitizeScreen(screen string) string {
 // Called only after roster validation, by both route --roster and hook-prompt.
 // Workers return values through a buffered channel; only this goroutine mutates
 // the roster, including when an uncooperative runner returns after our deadline.
-func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRosterEntry, panes HUDPanes) []nexusRosterEntry {
+func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRosterEntry, panes HUDPanes, fetched ...[]bool) []nexusRosterEntry {
 	out := append([]nexusRosterEntry(nil), roster...)
 	n := min(len(out), nexusContextHeads)
 	screens := make([]string, n)
+	completed := make([]int, n)
 	defer func() {
 		for i := range screens {
 			out[i].Recent = nexusRecent(screens[i], out[i].Report)
+			if len(fetched) > 0 {
+				fetched[0][i] = completed[i] == 2
+			}
 		}
 	}()
 	for i := range out {
@@ -127,6 +131,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 		index  int
 		detail bool
 		raw    []byte
+		ok     bool
 	}
 	results := make(chan result, 2*n)
 	for i := 0; i < n; i++ {
@@ -134,7 +139,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 		go func(i int) {
 			raw, err := hc(ctx, "get", address, "--json")
 			if err == nil {
-				results <- result{i, true, raw}
+				results <- result{i, true, raw, true}
 			} else {
 				results <- result{index: i, detail: true}
 			}
@@ -142,7 +147,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 		go func(i int) {
 			raw, err := hc(ctx, "read", address, "--lines", "0")
 			if err == nil {
-				results <- result{i, false, raw}
+				results <- result{i, false, raw, true}
 			} else {
 				results <- result{index: i}
 			}
@@ -153,10 +158,11 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 		case <-ctx.Done():
 			return out
 		case r := <-results:
-			if len(r.raw) == 0 {
+			if !r.ok {
 				continue
 			}
 			if !r.detail {
+				completed[r.index]++
 				screens[r.index] = string(r.raw)
 				continue
 			}
@@ -174,6 +180,7 @@ func nexusEnrichRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 			if json.Unmarshal(r.raw, &detail) != nil {
 				continue
 			}
+			completed[r.index]++
 			cwd := detail.Foreground.Cwd
 			if cwd == "" {
 				cwd = detail.Cwd
@@ -215,7 +222,7 @@ type nexusContextEntry struct {
 	Recent string    `json:"recent"`
 }
 
-func nexusCachedRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRosterEntry, panes HUDPanes, path string, now time.Time, force bool) ([]nexusRosterEntry, error) {
+func nexusCachedRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRosterEntry, panes HUDPanes, path string, now time.Time, force bool, readOnly ...bool) ([]nexusRosterEntry, error) {
 	cached := map[string]nexusContextEntry{}
 	raw, _ := os.ReadFile(path)
 	_ = json.Unmarshal(raw, &cached)
@@ -226,6 +233,11 @@ func nexusCachedRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 	for i := 0; i < min(len(out), nexusContextHeads); i++ {
 		r := &out[i]
 		c, ok := cached[r.Address]
+		if ok && !now.Before(c.At) && now.Sub(c.At) < 10*time.Minute && (c.Cwd != "" || c.Report != "" || c.Recent != "") {
+			next[r.Address] = c
+		} else {
+			ok = false
+		}
 		if !force && ok && !now.Before(c.At) && now.Sub(c.At) < 20*time.Second {
 			r.Cwd, r.Report, r.Recent = c.Cwd, c.Report, c.Recent
 			next[r.Address] = c
@@ -235,14 +247,22 @@ func nexusCachedRoster(ctx context.Context, hc nexusHCRunner, roster []nexusRost
 		}
 	}
 	if len(missing) > 0 {
-		enriched := nexusEnrichRoster(ctx, hc, missing, panes)
+		fetched := make([]bool, len(missing))
+		enriched := nexusEnrichRoster(ctx, hc, missing, panes, fetched)
 		for j, r := range enriched {
 			out[indices[j]] = r
-			next[r.Address] = nexusContextEntry{now, r.Cwd, r.Report, r.Recent}
+			if fetched[j] && (r.Cwd != "" || r.Report != "" || r.Recent != "") {
+				next[r.Address] = nexusContextEntry{now, r.Cwd, r.Report, r.Recent}
+			} else if c, ok := next[r.Address]; ok {
+				out[indices[j]].Cwd, out[indices[j]].Report, out[indices[j]].Recent = c.Cwd, c.Report, c.Recent
+			}
 		}
 	}
 	// Reapply bounds to untrusted disk content, and discard departed addresses.
 	out = nexusEnrichRoster(ctx, nil, out, HUDPanes{})
+	if len(readOnly) > 0 && readOnly[0] {
+		return out, nil
+	}
 	raw, err := json.Marshal(next)
 	if err == nil {
 		err = nexusAtomic(path, raw)

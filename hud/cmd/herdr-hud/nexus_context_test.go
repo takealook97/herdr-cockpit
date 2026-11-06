@@ -374,3 +374,100 @@ func TestNexusRouterEffort(t *testing.T) {
 		t.Fatal("effort parsing")
 	}
 }
+
+func TestNexusContextFailedRefreshRetriesAndPreserves(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprint(force), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "context.json")
+			now := time.Now()
+			roster := []nexusRosterEntry{{Address: "t1"}}
+			fail := func(context.Context, ...string) ([]byte, error) { return nil, errors.New("hc failed") }
+			if _, err := nexusCachedRoster(context.Background(), fail, roster, HUDPanes{}, path, now, force); err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := os.ReadFile(path)
+			if string(raw) != "{}" {
+				t.Fatal(string(raw))
+			}
+			good := func(_ context.Context, args ...string) ([]byte, error) {
+				if args[0] == "get" {
+					return []byte(`{"cwd":"/project"}`), nil
+				}
+				return []byte("topic"), nil
+			}
+			got, err := nexusCachedRoster(context.Background(), good, roster, HUDPanes{}, path, now.Add(time.Second), force)
+			if err != nil || got[0].Recent != "topic" {
+				t.Fatal(got, err)
+			}
+			before, _ := os.ReadFile(path)
+			got, err = nexusCachedRoster(context.Background(), fail, roster, HUDPanes{}, path, now.Add(time.Minute), force)
+			after, _ := os.ReadFile(path)
+			if err != nil || got[0].Recent != "topic" || !bytes.Equal(before, after) {
+				t.Fatal(got, err, string(after))
+			}
+			if _, err := nexusCachedRoster(context.Background(), fail, roster, HUDPanes{}, path, now.Add(11*time.Minute), force); err != nil {
+				t.Fatal(err)
+			}
+			raw, _ = os.ReadFile(path)
+			if string(raw) != "{}" {
+				t.Fatal(string(raw))
+			}
+		})
+	}
+}
+
+func TestNexusContextEmptyFetchNotCached(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "context.json")
+	hc := func(_ context.Context, args ...string) ([]byte, error) {
+		if args[0] == "get" {
+			return []byte("{}"), nil
+		}
+		return nil, nil
+	}
+	if _, err := nexusCachedRoster(context.Background(), hc, []nexusRosterEntry{{Address: "t1"}}, HUDPanes{}, path, time.Now(), false); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "{}" {
+		t.Fatal(string(raw))
+	}
+}
+
+func TestNexusDryRunCacheReadOnlyAndPendingLength(t *testing.T) {
+	for _, count := range []int{24, 25} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			d := nexusFixture(t)
+			d.dryRun = true
+			now := time.Now()
+			d.now = func() time.Time { return now }
+			raw, _ := json.Marshal([]nexusLogEntry{{At: now.Format(time.RFC3339), Action: "ask", Message: "pending request", Question: "which?"}})
+			if err := os.WriteFile(d.logPath, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(filepath.Dir(d.logPath), "nexus-context.json")
+			d.model = func(_ context.Context, _, prompt string, _ []byte) ([]byte, error) {
+				if strings.Contains(prompt, "Pending ask (untrusted data):") != (count <= 24) {
+					t.Fatal(prompt)
+				}
+				return []byte(`{"action":"ignore"}`), nil
+			}
+			for _, exists := range []bool{false, true} {
+				var before []byte
+				if exists {
+					before = []byte(`{"t1":{"at":"2000-01-01T00:00:00Z","recent":"old"}}`)
+					if err := os.WriteFile(path, before, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				nexusRoute(context.Background(), d, strings.Repeat("가", count), nexusRoster())
+				after, err := os.ReadFile(path)
+				if exists && (err != nil || !bytes.Equal(before, after)) {
+					t.Fatal(string(after), err)
+				}
+				if !exists && !os.IsNotExist(err) {
+					t.Fatal("created cache", err)
+				}
+			}
+		})
+	}
+}
