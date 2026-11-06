@@ -7,7 +7,7 @@ import { exec, agents, terminals, panes, focused, spaces, run, theme, shared, se
 
 import { workerIndex, isHidden, headSuffix, freshPanes, indexSignature } from "./orch.js";
 
-import { narrow, toggleSidebar, lead, title, RANK, kidStatus, sortOf, SECTION, SECTION_STATUS, duration, icon, sortMenu } from "./presentation.js";
+import { narrow, toggleSidebar, lead, title, RANK, kidStatus, sortOf, SECTION, SECTION_STATUS, duration, icon, sortMenu, statusDot } from "./presentation.js";
 
 
 export default class Agents extends View {
@@ -150,12 +150,9 @@ export default class Agents extends View {
   // compact: a ! for blocked where a header already says "Needs you".
   status(t, a, compact = false) {
     const color = t[a.status] ?? t.dim;
-    if (a.status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
     if (a.status === "blocked" && compact) return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
     if (a.status === "blocked") return div().flex_none().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
-    // Idle: a ring; done: a dot.
-    if (a.status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-    return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : t.dim + "00");
+    return statusDot(t, a.status);
   }
 
   render(cx) {
@@ -247,7 +244,6 @@ export default class Agents extends View {
           .child(h_flex().w(14).flex_none().items_center().justify_center().child(this.status(t, a, true)));
       }
       const when = this.since(a);
-      const idle = a.status === "idle" && !a.focused;
       const isPinned = a.pinned;
       const pin = div()
         .id(`pin-${a.address}`)
@@ -294,8 +290,10 @@ export default class Agents extends View {
             cx.notify();
           })).child(pic)))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
-          .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
-          .when((full && Boolean(more)) || Boolean(headSuffix(a.address, this.orch)), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`${full && more ? `\u00b7 ${more}` : ""}${headSuffix(a.address, this.orch)}`))))
+          .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(full ? t.dim : t.foreground).child(name))
+          .when(full && Boolean(more), el => el.child(div().flex_none().text_color(t.dim).child("\u00b7")))
+          .when(full && Boolean(more), el => el.child(div().min_w(0).truncate().text_color(t.foreground).child(more)))
+          .when(Boolean(headSuffix(a.address, this.orch)), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(headSuffix(a.address, this.orch)))))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))

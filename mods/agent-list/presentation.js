@@ -91,3 +91,11 @@ export function sortMenu(t) {
       .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
 }
 
+
+// The HUB row's indicator: idle a ring, working a pulsing dot, the rest a dot in their tone.
+export function statusDot(t, status = "idle") {
+  return div().size(6).rounded(3).flex_none().mx(3)
+    .when(status === "idle", e => e.border(1).border_color(t.dim))
+    .when(status !== "idle", e => e.bg(t[status] ?? t.dim))
+    .when(status === "working", e => e.loop("opacity", { from: 0.35, to: 1, period: 1800 }));
+}
