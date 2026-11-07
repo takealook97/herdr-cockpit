@@ -26,6 +26,9 @@ export default class Agents extends View {
   }
 
   applyOrch(data, cx) {
+    // Both cached snapshots and helper polls must preserve the last good index on failure.
+    if (data === null || typeof data !== "object" || Array.isArray(data) ||
+        "error" in data || !Array.isArray(data.runs) || !Array.isArray(data.terminals)) return;
     const index = workerIndex(data);
     const signature = indexSignature(index);
     if (signature === this.orchSignature) return;
