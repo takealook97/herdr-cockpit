@@ -32,3 +32,22 @@ test('header matches pane size and colors, shows source title and dim cwd withou
 test('empty hub renders an explanatory placeholder', () => {
   assert.ok(walk(header(true).root).includes('No Head terminals'));
 });
+
+
+test('same tinted Program uses muted and full-color Program keeps its image', () => {
+  const t = { muted: '#999999', foreground: '#eeeeee', dim: '#606060' };
+  const calls = [];
+  const tagged = kind => path => { const el = element(); el.kind = kind; el.path = path; calls.push(el); return el; };
+  const program = { key: 'claude', name: 'Claude Code', icon: 'icons/claude.svg', tint: true };
+  const h = host();
+  const deps = { ...h.deps, svg: tagged('svg'), image: tagged('image'), theme: () => t };
+  let current;
+  const Header = load(new URL('./main.js', import.meta.url), 'HubHead', { ...deps, props: () => ({ address: 't' }), home: () => '/fixture', panes: () => [{ terminal: 't', program: current }] });
+  const render = program => { current = program; return new Header().render(); };
+  render(program);
+  assert.equal(calls.find(c => c.path === program.icon).style.text_color, t.muted);
+  assert.equal(calls.find(c => c.path === program.icon).kind, 'svg');
+  calls.length = 0;
+  render({ ...program, tint: false });
+  assert.equal(calls.find(c => c.path === program.icon).kind, 'image');
+});

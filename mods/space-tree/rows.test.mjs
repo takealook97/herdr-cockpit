@@ -336,3 +336,21 @@ test('space drag safely stops when the last pressed space disappears', () => {
   const h = spaceDragHost(), target = h.row('a'); h.press('c'); h.spaces.pop();
   assert.doesNotThrow(() => h.drop(target)); assert.deepEqual(h.calls, []);
 });
+
+
+test('same tinted Program uses muted and full-color Program keeps its image', () => {
+  const t = { muted: '#999999', foreground: '#eeeeee', dim: '#606060' };
+  const calls = [];
+  const tagged = kind => path => { const el = retainedElement(); el.kind = kind; el.path = path; calls.push(el); return el; };
+  const program = { key: 'claude', name: 'Claude Code', icon: 'icons/claude.svg', tint: true };
+  const h = host();
+  const deps = { ...h.deps, svg: tagged('svg'), image: tagged('image'), theme: () => t };
+  const draw = load(new URL('./rows.js', import.meta.url), 'treeRow', { ...deps, nameElement: () => 'Name', tabIconColor, machineConnected, rowDisplay });
+  const render = program => draw({}, { kind: 'pane', key: 'p', data: { program }, depth: 1 }, t);
+  render(program);
+  assert.equal(calls.find(c => c.path === program.icon).style.text_color, t.muted);
+  assert.equal(calls.find(c => c.path === program.icon).kind, 'svg');
+  calls.length = 0;
+  render({ ...program, tint: false });
+  assert.equal(calls.find(c => c.path === program.icon).kind, 'image');
+});
