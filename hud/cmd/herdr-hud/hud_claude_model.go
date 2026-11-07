@@ -418,6 +418,8 @@ var hudClaudeBannerCacheMu sync.Mutex
 // can recover without leaving persistent negative evidence.
 var hudClaudeBannerRetryAfter = map[string]time.Time{}
 
+var hudClaudeBannerChildTimeout = 300 * time.Millisecond
+
 func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (string, string) {
 	if pid <= 0 || address == "" || ctx.Err() != nil {
 		return "", ""
@@ -452,11 +454,10 @@ func hudClaudeStartupBanner(ctx context.Context, pid int, address string) (strin
 	if time.Now().Before(hudClaudeBannerRetryAfter[retryKey]) {
 		return "", ""
 	}
-	const readTimeout = 300 * time.Millisecond
-	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < readTimeout {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < hudClaudeBannerChildTimeout {
 		return "", ""
 	}
-	child, cancel := context.WithTimeout(context.Background(), readTimeout)
+	child, cancel := context.WithTimeout(context.Background(), hudClaudeBannerChildTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(child, hudHCPath(), "read", address, "--lines", "0")
 	var screen hudClaudeScreenBuffer

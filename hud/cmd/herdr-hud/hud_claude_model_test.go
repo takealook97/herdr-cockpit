@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -681,14 +682,22 @@ func TestHUDClaudeBannerDeadlineAndCache(t *testing.T) {
 func TestHUDClaudeBannerRetry(t *testing.T) {
 	for _, first := range []string{"empty", "failure"} {
 		t.Run(first, func(t *testing.T) {
+			// This tests retry state, not the child-process deadline.
+			timeout := hudClaudeBannerChildTimeout
+			hudClaudeBannerChildTimeout = 2 * time.Second
+			t.Cleanup(func() { hudClaudeBannerChildTimeout = timeout })
 			t.Setenv("HOME", t.TempDir())
 			bin := t.TempDir()
 			t.Setenv("PATH", bin)
 			marker := filepath.Join(t.TempDir(), "read")
 			t.Setenv("BANNER_MARKER", marker)
 			t.Setenv("FIRST_READ", first)
-			script := "#!/bin/sh\nif [ ! -f \"$BANNER_MARKER\" ]; then\n : > \"$BANNER_MARKER\"\n if [ \"$FIRST_READ\" = failure ]; then exit 1; fi\n exit 0\nfi\nprintf 'Claude Code\\nSonnet 4 with low effort\\n'\n"
+			script := "#!/bin/sh\nif [ \"$1\" = --warmup ]; then exit 0; fi\nif [ ! -f \"$BANNER_MARKER\" ]; then\n : > \"$BANNER_MARKER\"\n if [ \"$FIRST_READ\" = failure ]; then exit 1; fi\n exit 0\nfi\nprintf 'Claude Code\\nSonnet 4 with low effort\\n'\n"
 			if err := os.WriteFile(filepath.Join(bin, "hc"), []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			// Exclude macOS cold-launch latency without consuming the first read.
+			if err := exec.Command(filepath.Join(bin, "hc"), "--warmup").Run(); err != nil {
 				t.Fatal(err)
 			}
 			if m, e := hudClaudeStartupBanner(context.Background(), 123, "retry"); m != "" || e != "" {
@@ -723,8 +732,12 @@ func TestHUDClaudeBannerParentDeadline(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "read")
 	t.Setenv("PATH", bin)
 	t.Setenv("BANNER_MARKER", marker)
-	script := "#!/bin/sh\n: > \"$BANNER_MARKER\"\nprintf 'Claude Code\\nOpus 5.5 with high effort\\n'\n"
+	script := "#!/bin/sh\nif [ \"$1\" = --warmup ]; then exit 0; fi\n: > \"$BANNER_MARKER\"\nprintf 'Claude Code\\nOpus 5.5 with high effort\\n'\n"
 	if err := os.WriteFile(filepath.Join(bin, "hc"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Warm up without creating the marker checked by the deadline assertion.
+	if err := exec.Command(filepath.Join(bin, "hc"), "--warmup").Run(); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
@@ -735,6 +748,10 @@ func TestHUDClaudeBannerParentDeadline(t *testing.T) {
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("hc called despite insufficient budget: %v", err)
 	}
+	// A healthy poll must not depend on the machine's process-launch speed.
+	timeout := hudClaudeBannerChildTimeout
+	hudClaudeBannerChildTimeout = 2 * time.Second
+	t.Cleanup(func() { hudClaudeBannerChildTimeout = timeout })
 	if m, e := hudClaudeStartupBanner(context.Background(), 456, "deadline"); m != "opus-5.5" || e != "high" {
 		t.Fatalf("healthy poll: %q/%q", m, e)
 	}
