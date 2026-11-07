@@ -32,7 +32,7 @@ const subLabel = (row, t) => {
   return (isHead ? label.font_semibold() : label).child(row.sub);
 };
 export function treeRow(view, row, t) {
-  const stop = (_e, cx) => cx.stop_propagation();
+  const stop = (_e, cx) => { view.pressed = null; view.over = null; cx.stop_propagation(); };
   const editing = view.editing?.kind === row.kind && view.editing?.id === renameId(row);
   const tag = row.head && !row.hub && !editing && row.name === "head"
     ? headTag(row, t, cx => startRename(view, "pane", row.terminal, row.name, cx)) : null;
@@ -70,7 +70,7 @@ export function treeRow(view, row, t) {
     .hover(s => s.bg(t.hover))
     .when(row.hub, e => e.tooltip("Head hub · Cmd-Shift-H"))
     .on_click((_e, cx) => { if (Date.now() >= (view.suppressClickUntil ?? 0)) view.select(row, cx); })
-    .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); if (!row.hub) view.contextMenu(row); })
+    .on_mouse_down("right", (_e, cx) => { view.pressed = null; view.over = null; cx.stop_propagation(); if (!row.hub) view.contextMenu(row); })
     .when(row.sectionColorKey != null, e => e.child(div().absolute().left(2 + row.sectionDepth * 12).top(0).bottom(0).w(2)
       .bg(sectionRailColor(row.sectionColorKey, t, shared("space.colors") ?? {}))))
     .when(row.guide === "├", e => e.child(div().absolute().top(0).bottom(0)
@@ -96,7 +96,7 @@ export function treeRow(view, row, t) {
   if (row.kind === "space" && !row.hub) {
     const i = row.data.order;
     const from = view.visible?.find(r => r.kind === "space" && r.id === view.pressed?.id)?.data.order;
-    el.on_mouse_down("left", () => { if (!view.movingTab) { view.tabDrag = null; view.pressed = { id: row.id, machine: row.data.machine ?? null }; view.over = row.id; } })
+    el.on_mouse_down("left", () => { view.pressed = null; view.over = null; if (!view.movingTab) { view.tabDrag = null; view.pressed = { id: row.id, machine: row.data.machine ?? null, at: Date.now() }; view.over = row.id; } })
       .on_mouse_move((_e, cx) => view.dragOver(row, cx))
       .on_mouse_up("left", (_e, cx) => view.dropSpace(row, cx))
       .when(view.pressed?.id === row.id && view.over !== row.id, e => e.opacity(0.5))

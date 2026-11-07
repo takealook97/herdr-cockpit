@@ -50,7 +50,7 @@ export default class Tabs extends View {
     const space = spaces().find(p => p.active);
     const hidden = space?.machine != null ? (space.tabs ?? []).filter(c => c.settled) : [];
     const shown = (space?.tabs ?? []).filter(c => space.machine == null || !c.settled);
-    const stop = (_e, cx) => cx.stop_propagation();
+    const stop = (_e, cx) => { this.pressed = null; cx.stop_propagation(); };
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
     const item = c => {
@@ -59,9 +59,10 @@ export default class Tabs extends View {
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover))
-        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = { tabId: c.id, spaceId: space.id }; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
+        .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = null; this.pressed = { tabId: c.id, spaceId: space.id, at: Date.now() }; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
         .on_mouse_up("left", () => {
           const from = this.pressed; this.pressed = null;
+          if (from && (!Number.isFinite(from.at) || Date.now() - from.at > 10000)) return;
           const current = spaces().find(s => s.id === space.id);
           const currentShown = (current?.tabs ?? []).filter(tab => current.machine == null || !tab.settled);
           const target = currentShown.find(tab => tab.id === c.id);
@@ -76,7 +77,7 @@ export default class Tabs extends View {
           }
           run("tab.select", { id: target.id });
         })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+        .on_mouse_down("right", (_e, cx) => { this.pressed = null; cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))
@@ -115,6 +116,7 @@ export default class Tabs extends View {
         }).child(svg(icon).size(14)).child(label);
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+      .on_hover(hovered => { if (!hovered) this.pressed = null; })
       .on_mouse_up("left", () => { this.pressed = null; })
       .on_scroll_wheel(e => { if (Math.abs(e.delta.y) >= 1) run(e.delta.y > 0 ? "tab.prev" : "tab.next"); })
       .child(h_flex().id("tab-scroll").flex_1().min_w(0).h_full().items_center().gap(3).overflow_x_scrollbar().children(shown.map(item)))

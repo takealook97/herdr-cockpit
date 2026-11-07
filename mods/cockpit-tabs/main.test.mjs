@@ -125,3 +125,28 @@ test('press and release on the same tab preserves selection without moving it', 
   const h = host(); h.fire('tab-a', 'on_mouse_down:left'); h.fire('tab-a', 'on_mouse_up:left');
   assert.deepEqual(h.calls, [['tab.select', { id: 'a' }]]);
 });
+
+
+test('tab press expires after 10 seconds without selecting or moving', t => {
+  t.mock.method(Date, 'now', () => 100000);
+  const h = host({ remote: false, tabs: ['a', 'b', 'c'].map(id => ({ id, name: id })) });
+  h.fire('tab-a', 'on_mouse_down:left');
+  t.mock.method(Date, 'now', () => 111000);
+  h.fire('tab-c', 'on_mouse_up:left'); assert.deepEqual(h.calls, []);
+  h.fire('tab-b', 'on_mouse_down:left'); h.fire('tab-c', 'on_mouse_up:left');
+  assert.deepEqual(h.calls, [['tab.move', { id: 'b', index: 3 }]]);
+});
+test('fresh tab press replaces a stale press', t => {
+  t.mock.method(Date, 'now', () => 100000);
+  const h = host({ remote: false, tabs: ['a', 'b', 'c'].map(id => ({ id, name: id })) });
+  h.fire('tab-a', 'on_mouse_down:left');
+  t.mock.method(Date, 'now', () => 111000);
+  h.fire('tab-b', 'on_mouse_down:left'); h.fire('tab-c', 'on_mouse_up:left');
+  assert.deepEqual(h.calls, [['tab.move', { id: 'b', index: 3 }]]);
+});
+test('leaving the tabs container clears the press', () => {
+  const h = host({ remote: false, tabs: ['a', 'b'].map(id => ({ id, name: id })) });
+  h.fire('tab-a', 'on_mouse_down:left'); h.root.handlers.on_hover(false);
+  h.fire('tab-b', 'on_mouse_up:left');
+  assert.deepEqual(h.calls, [['tab.select', { id: 'b' }]]);
+});

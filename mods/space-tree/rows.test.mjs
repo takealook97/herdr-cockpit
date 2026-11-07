@@ -372,3 +372,35 @@ test('missing Program and icon use the muted terminal glyph', () => {
     assert.equal(fallback.style.size, 14);
   }
 });
+
+
+test('space press expires after 10 seconds and a fresh press replaces it', t => {
+  const now = 100000; t.mock.method(Date, 'now', () => now);
+  const h = spaceDragHost(); h.press('a');
+  t.mock.method(Date, 'now', () => now + 11000);
+  h.drop(h.row('c')); assert.deepEqual(h.calls, []);
+  assert.equal(h.view.pressed, null);
+  h.press('a');
+  t.mock.method(Date, 'now', () => now + 22000);
+  h.press('b'); h.drop(h.row('c'));
+  assert.deepEqual(h.calls, [['space.move', { id: 'b', index: 3 }]]);
+});
+test('new space press clears an old press even when a tab move blocks it', () => {
+  const h = spaceDragHost(); h.press('a'); h.view.movingTab = true;
+  h.press('b'); assert.equal(h.view.pressed, null); assert.equal(h.view.over, null);
+  h.drop(h.row('c')); assert.deepEqual(h.calls, []);
+});
+
+test('leaving the tree container clears a pending space press', async () => {
+  const { clearDrag } = await import('./drag.js');
+  const Tree = load(new URL('./main.js', import.meta.url), 'SpaceTree', {
+    Plumbing: class {}, div: retainedElement, svg: retainedElement,
+    h_flex: retainedElement, v_flex: retainedElement, props: () => ({}),
+    theme: () => ({}), buildTree: () => [], shared: () => ({}),
+    assignSectionColors: () => ({}), SECTION_PALETTE: [], clearDrag,
+  });
+  const view = new Tree(); view.inputs = () => ({}); view.treeChildren = () => [];
+  view.pressed = { id: 'a', at: Date.now() }; view.over = 'b';
+  const root = view.render(); root.style.on_hover(false, { notify() {} });
+  assert.equal(view.pressed, null); assert.equal(view.over, null);
+});

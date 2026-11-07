@@ -277,7 +277,7 @@ export default class SpaceTree extends Plumbing {
       props: { treeMenu: true, kind: row.kind, id: renameId(row), current: row.name,
         target: { pane: row.id, terminal: row.terminal } } });
   }
-  beginTabDrag(row, cx) { beginTabDrag(this, row, cx, this.dragApi()); }
+  beginTabDrag(row, cx) { this.pressed = null; this.over = null; beginTabDrag(this, row, cx, this.dragApi()); }
   hoverTabTarget(row, cx) { hoverTabTarget(this, row, cx, this.dragApi()); }
   dragApi() {
     return { run, spaces, panes,
@@ -299,7 +299,7 @@ export default class SpaceTree extends Plumbing {
     this.pressed = null; this.over = null;
     const current = spaces(), source = current.find(s => s.id === from?.id);
     const i = current.findIndex(s => s.id === row.id), target = current[i];
-    if (source && target && over === target.id && source.id !== target.id &&
+    if (Number.isFinite(from?.at) && Date.now() - from.at <= 10000 && source && target && over === target.id && source.id !== target.id &&
         (source.machine ?? null) === (target.machine ?? null) && (source.machine ?? null) === from.machine) {
       run("space.move", { id: source.id, index: i + 1 });
     }
