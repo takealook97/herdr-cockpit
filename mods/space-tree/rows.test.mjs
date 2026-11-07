@@ -401,6 +401,15 @@ test('leaving the tree container clears a pending space press', async () => {
   });
   const view = new Tree(); view.inputs = () => ({}); view.treeChildren = () => [];
   view.pressed = { id: 'a', at: Date.now() }; view.over = 'b';
-  const root = view.render(); root.style.on_hover(false, { notify() {} });
+  let notifications = 0;
+  const cx = { notify() { notifications++; } };
+  const root = view.render();
+  root.style.on_hover(true, cx);
+  assert.equal(view.pressed.id, 'a'); assert.equal(view.over, 'b');
+  assert.equal(notifications, 0);
+  root.style.on_hover(false, cx);
   assert.equal(view.pressed, null); assert.equal(view.over, null);
+  assert.equal(notifications, 1);
+  root.style.on_hover(false, cx);
+  assert.equal(notifications, 1);
 });

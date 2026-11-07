@@ -337,7 +337,9 @@ export default class SpaceTree extends Plumbing {
       .on_click(action).child(svg(`mods/space-tree/${icon}.svg`).size(12));
     return v_flex().id("space-tree").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .size_full().min_h(0).bg(t.chrome).text_size(12)
-      .on_hover((hovered, cx) => { if (!hovered) clearDrag(this, cx); })
+      .on_hover((hovered, cx) => {
+        if (!hovered && (this.pressed || this.over || this.tabDrag || this.tabOver)) clearDrag(this, cx);
+      })
       .on_mouse_up("left", (_e, cx) => clearDrag(this, cx))
       .child(h_flex().h(30).flex_none().pl(12).pr(8).items_center().text_color(t.muted)
         .child(div().flex_1().child("Spaces"))
