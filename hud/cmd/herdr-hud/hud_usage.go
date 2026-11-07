@@ -142,6 +142,24 @@ func hudParseProcesses(raw string) []hudProcess {
 	return out
 }
 
+var hudClaudeExecutableVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+`)
+
+func hudIsClaudeExecutable(path string) bool {
+	if filepath.Base(path) == "claude" {
+		return true
+	}
+	// Native installs use claude/versions/<version>, sometimes with a binary
+	// inside the version directory. Never infer Claude from a version alone.
+	for i := 0; i < 2; i++ {
+		parent := filepath.Dir(path)
+		if hudClaudeExecutableVersion.MatchString(filepath.Base(path)) && filepath.Base(parent) == "versions" && filepath.Base(filepath.Dir(parent)) == "claude" {
+			return true
+		}
+		path = parent
+	}
+	return false
+}
+
 // Breadth-first traversal prefers the agent closest to the terminal's shell.
 func hudFindAgent(root int, procs []hudProcess, args func(int) string) (int, string) {
 	children := map[int][]hudProcess{}
@@ -161,8 +179,11 @@ func hudFindAgent(root int, procs []hudProcess, args func(int) string) (int, str
 		seen[pid] = true
 		p := byID[pid]
 		name := filepath.Base(p.Comm)
-		if name == "codex" || name == "claude" {
-			return pid, name
+		if name == "codex" {
+			return pid, "codex"
+		}
+		if hudIsClaudeExecutable(p.Comm) {
+			return pid, "claude"
 		}
 		if name == "node" && args != nil {
 			if provider := hudNodeProvider(args(pid)); provider != "" {

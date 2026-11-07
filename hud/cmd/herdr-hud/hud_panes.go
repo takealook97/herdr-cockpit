@@ -362,7 +362,7 @@ func hudResolveClaudeModelsWithin(ctx context.Context, out *HUDPanes, timeout ti
 	for i := range out.Terminals {
 		t := &out.Terminals[i]
 		t.Model = hudModelDisplay(t.Model)
-		if (filepath.Base(t.Program) == "claude" || filepath.Base(t.Program) == "claude-code") && t.Labels["hub.observer"] == "" && len(indices) < 12 {
+		if (hudIsClaudeExecutable(t.Program) || filepath.Base(t.Program) == "claude-code") && t.Labels["hub.observer"] == "" && len(indices) < 12 {
 			indices = append(indices, i)
 		}
 	}

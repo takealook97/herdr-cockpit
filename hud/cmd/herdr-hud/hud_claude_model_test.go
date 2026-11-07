@@ -71,6 +71,42 @@ func TestHUDClaudeTranscriptModel(t *testing.T) {
 	}
 }
 
+func TestHUDClaudeVersionedExecutableResolve(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	dir := filepath.Join(home, "projects", "-fixture")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"type":"assistant","message":{"model":"claude-fable-5-1"},"perTurnEffort":"medium"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "session.jsonl"), []byte(transcript), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeHUDClaudeSession(t, home, 101, "session", "/fixture")
+	bin := t.TempDir()
+	ps := `#!/bin/sh
+if [ "$1" = "-A" ]; then
+  printf '%s\n' '100 1 /bin/zsh' '101 100 /fixture/.local/share/claude/versions/2.1.319'
+else
+  printf '%s\n' "2.1.319 CLAUDE_CONFIG_DIR=$FIXTURE_HOME"
+fi
+`
+	if err := os.WriteFile(filepath.Join(bin, "ps"), []byte(ps), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("FIXTURE_HOME", home)
+	for _, program := range []string{"claude-code", "/fixture/.local/share/claude/versions/2.1.319", "/fixture/.local/share/claude/versions/2.1.319/native"} {
+		t.Run(program, func(t *testing.T) {
+			out := HUDPanes{Terminals: []HUDTerminal{{Address: "t1", Program: program, pid: 100, detailLoaded: true}}}
+			hudResolveClaudeModelsWithin(context.Background(), &out, 10*time.Second)
+			if got := out.Terminals[0]; got.Model != "fable-5.1" || got.Effort != "medium" {
+				t.Fatalf("terminal: %+v, want fable-5.1 medium", got)
+			}
+		})
+	}
+}
+
 func TestHUDClaudeLiveOverride(t *testing.T) {
 	// Race-enabled suites can delay fixture subprocess startup under load.
 	// Keep the production deadline separate from this source-precedence test.
