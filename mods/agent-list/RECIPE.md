@@ -10,7 +10,7 @@ A compact theme-aware list shows agent identity, status, activity, and nested li
 
 ## How it behaves
 
-Select an agent to focus its session; existing menus and session controls retain the shipped behavior. Closed or lost workers do not contribute to active working counts. A three-second helper poll updates the optional run index while retaining the last valid index on failures.
+Select an agent to focus its session; existing menus and session controls retain the shipped behavior. Closed or lost workers do not contribute to active working counts. A five-second helper poll updates the optional run index while retaining the last valid index on failures.
 
 ## Built from
 

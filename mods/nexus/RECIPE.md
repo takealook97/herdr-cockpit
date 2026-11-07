@@ -1,6 +1,6 @@
 # Nexus
 
-An overlay-only compact bar (`place: none`, dialog 560×120) that throws one typed or spoken line at a Head. Space tree opens it from the NEXUS row, Cmd-Shift-N (`space-tree.nexus`) or Cmd-Shift-Space (`space-tree.nexus-listen`, starts listening); the same command closes it. It sets `shared("nexus.open")` while open and `shared("nexus.last")` = `{label, at}` after a send. Nexus never answers: there is no log list and no read action.
+An overlay-only dialog (`place: none`, 640×420) with a header and Claude terminal, or an optional Apple voice bar (560×150) when `voiceInput` is `apple`, that throws one typed or spoken line at a Head. Space tree opens it from the NEXUS row, Cmd-Shift-N (`space-tree.nexus`) or Cmd-Shift-Space (`space-tree.nexus-listen`, starts listening); the same command closes it. It sets `shared("nexus.open")` while open and `shared("nexus.last")` = `{label, at}` after a send. Nexus never answers: there is no log list and no read action.
 
 Row 1 is the live text input (partial transcript fills it), five level dots and a mic button (hidden when listening is unavailable). Row 2 is one dim status line: `듣는 중`, `판단 중` (with the pending dots, the submitted text stays in the input), `1초 뒤 보냄 · Esc 취소`, `? question` plus candidate chips, `· 명령으로 들리지 않아 넘겼습니다`, `· 말을 알아듣지 못했습니다` (listening ended with no text) or `! error`. Enter sends. A spoken final text waits 1 s before sending; typing or Esc cancels it, and Esc also stops listening without closing the bar.
 

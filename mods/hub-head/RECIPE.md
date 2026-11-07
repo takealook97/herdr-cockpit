@@ -1,1 +1,1 @@
-Native-style 30 px header for an interactive hub terminal block. Program icon and cwd come from the live source pane; the title is the source tab and space. Clicking the header focuses its terminal. The sole right button asks space-tree to close hub, select the source space/tab and focus the terminal after the layout write completes.
+Native-style 30 px header for an interactive hub terminal block. Program icon and dim cwd come from the live source pane; the title is the source tab and space. Clicking the header focuses the source terminal.
