@@ -32,6 +32,7 @@ function element() {
       if (key === "when" && args[0]) args[1](proxy);
       if (key === "on_click") target.handlers.click = args[0];
       if (key === "on_mouse_up") target.handlers.mouseUp = args[1];
+      if (key === "on_mouse_down" && args[0] === "left") target.handlers.mouseDown = args[1];
       return proxy;
     };
   } });
@@ -295,4 +296,43 @@ test("tree pane row dot matches hub: ring when idle, pulse when working", () => 
   const working = dotOf("working");
   assert.equal(working.style.bg, "working"); assert.equal(working.style.loop, "opacity");
   assert.equal(dotOf("blocked").style.loop, undefined);
+});
+
+// Exercise the real press and drop handlers against a changing native list.
+function spaceDragHost() {
+  const h = { spaces: ['a', 'b', 'c'].map(id => ({ id, machine: null })), calls: [] };
+  const Tree = load(new URL('./main.js', import.meta.url), 'SpaceTree', {
+    Plumbing: class {}, spaces: () => h.spaces, run: (...args) => h.calls.push(args),
+  });
+  h.view = new Tree(); h.view.dropTab = () => false;
+  h.row = id => ({ kind: 'space', id, key: `space:${id}`, data: { ...h.spaces.find(s => s.id === id), order: h.spaces.findIndex(s => s.id === id) } });
+  h.press = id => treeRow(h.view, h.row(id), {}).handlers.mouseDown({}, { notify() {} });
+  h.drop = row => { h.view.dragOver(row, { notify() {} }); h.view.dropSpace(row, { notify() {} }); };
+  return h;
+}
+test('space drag moves the pressed ID after external reorder, including a stale target row', () => {
+  const h = spaceDragHost(), target = h.row('c'); h.press('a');
+  h.spaces = [h.spaces[2], h.spaces[1], h.spaces[0]];
+  h.drop(target);
+  assert.deepEqual(h.calls, [['space.move', { id: 'a', index: 1 }]]);
+});
+test('space drag aborts for missing source, missing target, self, or changed machine boundary', () => {
+  for (const change of ['source', 'target', 'self', 'machine']) {
+    const h = spaceDragHost(), target = h.row(change === 'self' ? 'a' : 'c'); h.press('a');
+    if (change === 'source') h.spaces.shift();
+    if (change === 'target') h.spaces.pop();
+    if (change === 'machine') h.spaces[2].machine = 'remote';
+    assert.doesNotThrow(() => h.drop(target));
+    assert.deepEqual(h.calls, [], change);
+  }
+});
+test('space drop rechecks machine boundary after hover', () => {
+  const h = spaceDragHost(), target = h.row('c'); h.press('a');
+  h.view.dragOver(target, { notify() {} }); h.spaces[2].machine = 'remote';
+  h.view.dropSpace(target, { notify() {} }); assert.deepEqual(h.calls, []);
+});
+
+test('space drag safely stops when the last pressed space disappears', () => {
+  const h = spaceDragHost(), target = h.row('a'); h.press('c'); h.spaces.pop();
+  assert.doesNotThrow(() => h.drop(target)); assert.deepEqual(h.calls, []);
 });

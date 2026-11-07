@@ -95,12 +95,13 @@ export function treeRow(view, row, t) {
   }
   if (row.kind === "space" && !row.hub) {
     const i = row.data.order;
-    el.on_mouse_down("left", () => { if (!view.movingTab) { view.tabDrag = null; view.pressed = i; view.over = i; } })
+    const from = view.visible?.find(r => r.kind === "space" && r.id === view.pressed?.id)?.data.order;
+    el.on_mouse_down("left", () => { if (!view.movingTab) { view.tabDrag = null; view.pressed = { id: row.id, machine: row.data.machine ?? null }; view.over = row.id; } })
       .on_mouse_move((_e, cx) => view.dragOver(row, cx))
       .on_mouse_up("left", (_e, cx) => view.dropSpace(row, cx))
-      .when(view.pressed === i && view.over !== i, e => e.opacity(0.5))
-      .when(view.pressed !== null && view.over === i && view.pressed !== i, e => e.child(div().absolute().left(0).right(0).h(2).bg(t.accent)
-        .when(view.pressed < i, line => line.bottom(0)).when(view.pressed > i, line => line.top(0))));
+      .when(view.pressed?.id === row.id && view.over !== row.id, e => e.opacity(0.5))
+      .when(view.pressed != null && view.over === row.id && view.pressed.id !== row.id, e => e.child(div().absolute().left(0).right(0).h(2).bg(t.accent)
+        .when(from < i, line => line.bottom(0)).when(from > i, line => line.top(0))));
   }
   return el;
 }

@@ -278,15 +278,22 @@ export default class SpaceTree extends Plumbing {
   dropTab(row, cx) { return dropTab(this, row, cx, this.dragApi()); }
   dragOver(row, cx) {
     if (this.tabDrag) { this.hoverTabTarget(row, cx); return; }
-    const source = spaces()[this.pressed];
-    const over = source && (source.machine ?? null) === (row.data.machine ?? null) ? row.data.order : null;
-    if (this.pressed !== null && this.over !== over) { this.over = over; cx.notify(); }
+    const current = spaces();
+    const source = current.find(s => s.id === this.pressed?.id);
+    const target = current.find(s => s.id === row.id);
+    const over = source && target && (source.machine ?? null) === (target.machine ?? null) ? target.id : null;
+    if (this.pressed != null && this.over !== over) { this.over = over; cx.notify(); }
   }
   dropSpace(row, cx) {
     if (this.dropTab(row, cx)) return;
-    const from = this.pressed, over = this.over, i = row.data.order;
+    const from = this.pressed, over = this.over;
     this.pressed = null; this.over = null;
-    if (from !== null && over === i && from !== i) run("space.move", { id: spaces()[from].id, index: i + 1 });
+    const current = spaces(), source = current.find(s => s.id === from?.id);
+    const i = current.findIndex(s => s.id === row.id), target = current[i];
+    if (source && target && over === target.id && source.id !== target.id &&
+        (source.machine ?? null) === (target.machine ?? null) && (source.machine ?? null) === from.machine) {
+      run("space.move", { id: source.id, index: i + 1 });
+    }
     cx.notify();
   }
   key(e, cx) {
