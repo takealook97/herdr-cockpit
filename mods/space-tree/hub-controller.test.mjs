@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { load, host, element } from './host.test.mjs';
 import * as model from './hub-model.js';
 import { beginTabDrag, hoverTabTarget, dropTab } from './drag.js';
-import { buildTree, assignSectionColors, machineId, rowId } from './model.js';
+import { buildTree, paneSub, orchIndexes, assignSectionColors, machineId, rowId } from './model.js';
 const layout = JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url)));
 function setup() {
   const h = host();
@@ -232,14 +232,39 @@ test('normal refresh updates idle model and effort and retains current values on
   const refresh = async () => { h.intervals.find(t => t.ms === 3000).fn(h.cx); await h.flush(); };
   h.hud.terminals = [{ address: 't1' }];
   await refresh();
-  assert.deepEqual(h.tree.lastModel.t1, { model: 'launch', effort: 'high' });
+  assert.deepEqual(h.tree.lastModel.t1, { model: 'launch', effort: 'high', programKey: undefined, at: h.tree.lastModel.t1.at });
   h.hud.terminals = [{ address: 't1', model: 'current', effort: 'low' }];
   await refresh();
-  assert.deepEqual(h.tree.lastModel.t1, { model: 'current', effort: 'low' });
+  assert.deepEqual(h.tree.lastModel.t1, { model: 'current', effort: 'low', programKey: undefined, at: h.tree.lastModel.t1.at });
   h.hud.terminals[0].effort = 'max';
   await refresh();
-  assert.deepEqual(h.tree.lastModel.t1, { model: 'current', effort: 'max' });
+  assert.deepEqual(h.tree.lastModel.t1, { model: 'current', effort: 'max', programKey: undefined, at: h.tree.lastModel.t1.at });
   h.hud.terminals = [{ address: 't1' }];
   await refresh();
-  assert.deepEqual(h.tree.orch.lastModel.t1, { model: 'current', effort: 'max' });
+  assert.deepEqual(h.tree.orch.lastModel.t1, { model: 'current', effort: 'max', programKey: undefined, at: h.tree.lastModel.t1.at });
+});
+
+
+test('model observations follow program identity and survive helper failure', async () => {
+  const h = setup(); await h.flush();
+  const pane = h.panes[0];
+  const refresh = async () => { h.intervals.find(t => t.ms === 3000).fn(h.cx); await h.flush(); };
+  const label = () => paneSub(pane, orchIndexes(h.tree.orch));
+  pane.program = { key: 'claude', agent: true };
+  h.hud.terminals = [{ address: 't1', program: 'claude-code', model: 'opus', effort: 'high' }];
+  await refresh(); assert.equal(label(), 'opus-high');
+  assert.equal(h.tree.lastModel.t1.programKey, 'claude');
+  assert.ok(Number.isFinite(h.tree.lastModel.t1.at));
+  const observedAt = h.tree.lastModel.t1.at;
+  h.failPoll = true; await refresh();
+  assert.equal(label(), 'opus-high'); assert.equal(h.tree.lastModel.t1.at, observedAt);
+  pane.program = { key: 'shell', icon: 'icons/shell.svg' };
+  assert.equal(label(), 'main');
+  pane.program = { key: 'codex', agent: true };
+  assert.equal(label(), 'main'); await refresh(); assert.equal(label(), 'main');
+  h.failPoll = false; await refresh(); assert.equal(label(), 'main');
+  h.hud.terminals = [{ address: 't1', program: 'codex', model: 'gpt', effort: 'low' }];
+  await refresh(); assert.equal(label(), 'gpt-low');
+  h.hud.terminals[0].model = 'gpt-new';
+  await refresh(); assert.equal(label(), 'gpt-new-low');
 });

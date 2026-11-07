@@ -352,3 +352,17 @@ test("nexus row sits directly before hub-entry, only under This computer", () =>
   assert.equal(buildTree({ ...input, nexus: undefined }).find(r => r.nexus).active, false);
   assert.equal(buildTree({ ...input, hub: undefined }).some(r => r.nexus), false);
 });
+
+
+test('cached models require the same agent program and reject generic shells', () => {
+  const index = { lastModel: { t: { model: 'opus', programKey: 'claude', at: 100 } } };
+  const sub = program => paneSub({ terminal: 't', program }, index);
+  assert.equal(sub({ key: 'claude', agent: true }), 'opus');
+  assert.equal(sub({ key: 'codex', agent: true }), 'main');
+  for (const key of ['shell', 'program', 'zsh', 'bash', 'sh', 'fish']) {
+    index.lastModel.t.programKey = key;
+    assert.equal(sub({ key }), 'main');
+  }
+  index.lastModel.t.programKey = 'custom';
+  for (const program of [{ key: 'custom', icon: 'icons/shell.svg' }, { key: 'custom', icon: 'icons/program.svg' }, { key: 'custom', agent: false }]) assert.equal(sub(program), 'main');
+});

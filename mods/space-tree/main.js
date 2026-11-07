@@ -62,6 +62,15 @@ export default class SpaceTree extends Plumbing {
           if (r.code !== 0) throw new Error("hud unavailable");
           const data = JSON.parse(r.stdout);
           if (data.error || !Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
+          const observed = new Map(panes().map(p => [p.terminal, p.program?.key]));
+          const qualify = id => !id || !machine || id.includes("/") ? id : `${machine}/${id}`;
+          const at = Date.now();
+          for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
+            const key = observed.get(qualify(info.address ?? info.terminal));
+            const reported = info.program?.replace(/-code$/, "");
+            info.programKey = !reported || reported === key?.replace(/-code$/, "") ? key : info.program;
+            info.at = at;
+          }
           this.hub.snapshots.set(machine, { machine, data });
           return true;
         } catch { return false; }
@@ -69,11 +78,11 @@ export default class SpaceTree extends Plumbing {
       for (const machine of this.hub.snapshots.keys()) if (!names.includes(machine)) this.hub.snapshots.delete(machine);
       const data = mergeHuds([...this.hub.snapshots.values()]);
       for (const info of data.runs.flatMap(run => run.workers ?? [])) {
-        if (info.terminal && info.model && !this.lastModel[info.terminal]?.model)
-          this.lastModel[info.terminal] = { model: info.model, effort: info.effort };
+        if (info.terminal && info.model && (!this.lastModel[info.terminal]?.model || this.lastModel[info.terminal].programKey !== info.programKey))
+          this.lastModel[info.terminal] = { model: info.model, effort: info.effort, programKey: info.programKey, at: info.at };
       }
       for (const info of data.terminals) {
-        if (info.address && info.model) this.lastModel[info.address] = { model: info.model, effort: info.effort };
+        if (info.address && info.model) this.lastModel[info.address] = { model: info.model, effort: info.effort, programKey: info.programKey, at: info.at };
       }
       data.lastModel = this.lastModel;
       this.orch = data;
