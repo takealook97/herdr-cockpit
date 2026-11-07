@@ -61,7 +61,7 @@ export function duration(ms) {
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 export function icon(p, size, color) {
-  if (!p?.icon) return null;
+  if (!p?.icon) return div().size(size).flex_none().text_color(color).child("›_");
   return p.tint ? svg(p.icon).size(size).flex_none().text_color(color) : image(p.icon).w(size).h(size).flex_none();
 }
 

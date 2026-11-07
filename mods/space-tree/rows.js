@@ -23,7 +23,7 @@ function icon(row, t) {
   if (row.kind === "tab") return svg(asset("tab")).size(13).flex_none().text_color(t[tabIconColor(row.status, row.active)]);
   const program = row.data.program;
   if (program?.icon) return program.tint ? svg(program.icon).size(14).flex_none().text_color(t.muted) : image(program.icon).size(14).flex_none();
-  return div().w(14).text_color(t.dim).child("›_");
+  return div().size(14).flex_none().text_color(t.muted).child("›_");
 }
 // Head rows highlight the model text in the accent color; workers keep the dim style.
 const subLabel = (row, t) => {

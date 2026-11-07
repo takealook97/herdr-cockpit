@@ -26,3 +26,21 @@ test('parent and child call sites pass the shared muted tint', async () => {
   assert.match(main, /icon\(k\.program, 14, t\.muted\)/);
   assert.match(main, /icon\(a\.program, 16, t\.muted\)/);
 });
+
+test('missing Program and icon use the muted terminal glyph', () => {
+  const t = { muted: '#999999', foreground: '#eeeeee', dim: '#606060' };
+  const calls = [];
+  const tagged = kind => path => { const el = element(); el.kind = kind; el.path = path; calls.push(el); return el; };
+  const program = { key: 'claude', name: 'Claude Code', icon: 'icons/claude.svg', tint: true };
+  const h = host();
+  const deps = { ...h.deps, svg: tagged('svg'), image: tagged('image'), theme: () => t };
+  const draw = load(new URL('./presentation.js', import.meta.url), 'icon', deps);
+  const render = program => draw(program, 16, t.muted);
+  for (const program of [null, { key: 'program', icon: null }]) {
+    const root = render(program);
+    const fallback = walk(root).find(n => n?.nodes?.includes('›_'));
+    assert.ok(fallback);
+    assert.equal(fallback.style.text_color, t.muted);
+    assert.equal(fallback.style.size, 16);
+  }
+});

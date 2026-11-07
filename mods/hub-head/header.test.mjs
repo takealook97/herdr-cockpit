@@ -51,3 +51,22 @@ test('same tinted Program uses muted and full-color Program keeps its image', ()
   render({ ...program, tint: false });
   assert.equal(calls.find(c => c.path === program.icon).kind, 'image');
 });
+
+test('missing Program and icon use the muted terminal glyph', () => {
+  const t = { muted: '#999999', foreground: '#eeeeee', dim: '#606060' };
+  const calls = [];
+  const tagged = kind => path => { const el = element(); el.kind = kind; el.path = path; calls.push(el); return el; };
+  const program = { key: 'claude', name: 'Claude Code', icon: 'icons/claude.svg', tint: true };
+  const h = host();
+  const deps = { ...h.deps, svg: tagged('svg'), image: tagged('image'), theme: () => t };
+  let current;
+  const Header = load(new URL('./main.js', import.meta.url), 'HubHead', { ...deps, props: () => ({ address: 't' }), home: () => '/fixture', panes: () => [{ terminal: 't', program: current }] });
+  const render = program => { current = program; return new Header().render(); };
+  for (const program of [null, { key: 'program', icon: null }]) {
+    const root = render(program);
+    const fallback = walk(root).find(n => n?.nodes?.includes('›_'));
+    assert.ok(fallback);
+    assert.equal(fallback.style.text_color, t.muted);
+    assert.equal(fallback.style.size, 14);
+  }
+});
