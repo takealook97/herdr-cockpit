@@ -72,10 +72,9 @@ export function paneSub(pane, orchIndex = {}, indexInTab = 0) {
   // Session-resolved terminal metadata wins over the worker launch catalog.
   const last = orchIndex.lastModel?.[pane.terminal];
   const program = pane.program;
-  const nonAgent = program?.shell || program?.agent === false ||
-    ["shell", "program", "zsh", "bash", "sh", "fish"].includes(program?.key?.toLowerCase()) ||
-    /(?:^|\/)(?:shell|program)\.svg$/i.test(program?.icon ?? "");
-  const usable = info => info?.model && !nonAgent && info.programKey === program?.key;
+  const shell = ["shell", "zsh", "bash", "sh", "fish", "dash", "ksh", "nu", "pwsh", "powershell", "cmd"]
+    .includes((program?.key ?? program?.name)?.toLowerCase());
+  const usable = info => info?.model && !shell;
   const info = usable(terminal) ? terminal : usable(last) ? last : usable(worker) ? worker : null;
   const model = info?.model ? [info.model, info.effort].filter(Boolean).join("-").replace(/\s+/g, "-") : "";
   // Status is the row's colored dot; the text line carries only the model or the pane's position.

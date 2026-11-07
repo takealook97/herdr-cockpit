@@ -354,15 +354,15 @@ test("nexus row sits directly before hub-entry, only under This computer", () =>
 });
 
 
-test('cached models require the same agent program and reject generic shells', () => {
+test('cached models are hidden only for shell programs', () => {
   const index = { lastModel: { t: { model: 'opus', programKey: 'claude', at: 100 } } };
   const sub = program => paneSub({ terminal: 't', program }, index);
-  assert.equal(sub({ key: 'claude', agent: true }), 'opus');
-  assert.equal(sub({ key: 'codex', agent: true }), 'main');
-  for (const key of ['shell', 'program', 'zsh', 'bash', 'sh', 'fish']) {
-    index.lastModel.t.programKey = key;
-    assert.equal(sub({ key }), 'main');
+  for (const key of ['shell', 'zsh', 'bash', 'sh', 'fish', 'dash', 'ksh', 'nu', 'pwsh', 'powershell', 'cmd']) {
+    assert.equal(sub({ key }), 'main', key);
+    assert.equal(sub({ name: key.toUpperCase() }), 'main', key);
   }
-  index.lastModel.t.programKey = 'custom';
-  for (const program of [{ key: 'custom', icon: 'icons/shell.svg' }, { key: 'custom', icon: 'icons/program.svg' }, { key: 'custom', agent: false }]) assert.equal(sub(program), 'main');
+  for (const program of [undefined, { key: 'program' }, { key: 'codex' },
+    { key: 'custom', name: 'bash', icon: 'icons/shell.svg', agent: false }]) {
+    assert.equal(sub(program), 'opus');
+  }
 });

@@ -261,10 +261,26 @@ test('model observations follow program identity and survive helper failure', as
   pane.program = { key: 'shell', icon: 'icons/shell.svg' };
   assert.equal(label(), 'main');
   pane.program = { key: 'codex', agent: true };
-  assert.equal(label(), 'main'); await refresh(); assert.equal(label(), 'main');
-  h.failPoll = false; await refresh(); assert.equal(label(), 'main');
+  assert.equal(label(), 'opus-high'); await refresh(); assert.equal(label(), 'opus-high');
+  h.failPoll = false; await refresh(); assert.equal(label(), 'opus-high');
   h.hud.terminals = [{ address: 't1', program: 'codex', model: 'gpt', effort: 'low' }];
   await refresh(); assert.equal(label(), 'gpt-low');
   h.hud.terminals[0].model = 'gpt-new';
   await refresh(); assert.equal(label(), 'gpt-new-low');
+});
+
+
+test('model labels survive helper and pane program name differences', async () => {
+  for (const [program, reported] of [
+    [{ key: 'cursor' }, 'cursor-agent'],
+    [{ key: 'program' }, 'mycustomagent'],
+    [{ key: 'codex' }, '/opt/bin/codex'],
+    [undefined, 'codex'],
+  ]) {
+    const h = setup(); await h.flush();
+    h.panes[0].program = program;
+    h.hud.terminals = [{ address: 't1', program: reported, model: 'm1' }];
+    h.intervals.find(t => t.ms === 3000).fn(h.cx); await h.flush();
+    assert.equal(paneSub(h.panes[0], orchIndexes(h.tree.orch)), 'm1', reported);
+  }
 });
