@@ -89,3 +89,39 @@ test('tree hides remote settled rows and panes while retaining machine, space, l
   for (const id of ['s', 'r', 'visible', 'l', 'local-hidden', 'hub-entry', 'hub:t']) assert.ok(rows.some(r => r.id === id), id);
   assert.ok(!rows.some(r => r.id === 'hidden' || r.id === 'p'));
 });
+
+test('tab drag moves the pressed ID after external reorder and redraw', () => {
+  const h = host({ remote: false, tabs: ['a', 'b', 'c'].map(id => ({ id, name: id })) });
+  h.fire('tab-a', 'on_mouse_down:left');
+  h.spaces[0].tabs = [h.spaces[0].tabs[1], h.spaces[0].tabs[0], h.spaces[0].tabs[2]];
+  h.render(); h.fire('tab-c', 'on_mouse_up:left');
+  assert.deepEqual(h.calls, [['tab.move', { id: 'a', index: 3 }]]);
+});
+test('tab drag safely aborts if the pressed tab disappears before redraw', () => {
+  const h = host({ remote: false, tabs: ['a', 'b', 'c'].map(id => ({ id, name: id })) });
+  h.fire('tab-c', 'on_mouse_down:left'); h.spaces[0].tabs.pop(); h.render();
+  assert.doesNotThrow(() => h.fire('tab-a', 'on_mouse_up:left'));
+  assert.deepEqual(h.calls, []);
+});
+test('tab drop revalidates stale rows, visibility and source space', () => {
+  for (const change of ['target', 'source', 'settled-source', 'settled-target', 'space']) {
+    const h = host({ tabs: ['a', 'b', 'c'].map(id => ({ id, name: id })) });
+    h.fire('tab-a', 'on_mouse_down:left');
+    if (change === 'target') h.spaces[0].tabs.pop();
+    if (change === 'source') h.spaces[0].tabs.shift();
+    if (change === 'settled-source') h.spaces[0].tabs[0].settled = true;
+    if (change === 'settled-target') h.spaces[0].tabs[2].settled = true;
+    if (change === 'space') h.spaces[0].id = 'new-space';
+    h.fire('tab-c', 'on_mouse_up:left'); assert.deepEqual(h.calls, [], change);
+  }
+});
+test('tab drop derives the current native index without requiring redraw', () => {
+  const h = host({ tabs: [{ id: 'a', name: 'A' }, { id: 'hidden', settled: true }, { id: 'c', name: 'C' }] });
+  h.fire('tab-a', 'on_mouse_down:left'); h.spaces[0].tabs.reverse();
+  h.fire('tab-c', 'on_mouse_up:left');
+  assert.deepEqual(h.calls, [['tab.move', { id: 'a', index: 1 }]]);
+});
+test('press and release on the same tab preserves selection without moving it', () => {
+  const h = host(); h.fire('tab-a', 'on_mouse_down:left'); h.fire('tab-a', 'on_mouse_up:left');
+  assert.deepEqual(h.calls, [['tab.select', { id: 'a' }]]);
+});
