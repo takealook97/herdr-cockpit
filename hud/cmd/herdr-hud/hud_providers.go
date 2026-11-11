@@ -18,8 +18,62 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+var hudClaudeCLIVersionOnce sync.Once
+var hudClaudeCLIVersionCached string
+
+func hudClaudeCLIVersion() string {
+	hudClaudeCLIVersionOnce.Do(func() {
+		home, _ := os.UserHomeDir()
+		hudClaudeCLIVersionCached = hudDetectClaudeCLIVersion(home, exec.LookPath)
+	})
+	return hudClaudeCLIVersionCached
+}
+
+// Inspect native install paths only; never launch Claude to discover its version.
+func hudDetectClaudeCLIVersion(home string, lookPath func(string) (string, error)) string {
+	if path, err := lookPath("claude"); err == nil {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil && hudIsClaudeExecutable(resolved) {
+			for i := 0; i < 2; i++ {
+				parent := filepath.Dir(resolved)
+				if filepath.Base(parent) == "versions" && filepath.Base(filepath.Dir(parent)) == "claude" && hudClaudeExecutableVersion.MatchString(filepath.Base(resolved)) {
+					return filepath.Base(resolved)
+				}
+				resolved = parent
+			}
+		}
+	}
+	entries, _ := os.ReadDir(filepath.Join(home, ".local", "share", "claude", "versions"))
+	best := ""
+	for _, entry := range entries {
+		version := entry.Name()
+		if hudClaudeExecutableVersion.MatchString(version) && (best == "" || hudClaudeVersionLess(best, version)) {
+			best = version
+		}
+	}
+	if best == "" {
+		return "2.1.321"
+	}
+	return best
+}
+
+func hudClaudeVersionLess(a, b string) bool {
+	av := strings.Split(hudClaudeExecutableVersion.FindString(a), ".")
+	bv := strings.Split(hudClaudeExecutableVersion.FindString(b), ".")
+	for i := range av {
+		x, y := strings.TrimLeft(av[i], "0"), strings.TrimLeft(bv[i], "0")
+		if len(x) != len(y) {
+			return len(x) < len(y)
+		}
+		if x != y {
+			return x < y
+		}
+	}
+	return false
+}
 
 func hudProviderEnv(home string) []string {
 	env := []string{}
@@ -222,7 +276,7 @@ func fetchClaudeUsage(ctx context.Context, home string) (HUDAccount, error) {
 	req.Header.Set("anthropic-version", "2023-06-01")
 	// Limit-reset grants are gated to the Claude CLI surface. Use the client
 	// signature verified with this usage schema; a generic Go agent returns none.
-	req.Header.Set("User-Agent", "claude-cli/2.1.321 (external, cli)")
+	req.Header.Set("User-Agent", "claude-cli/"+hudClaudeCLIVersion()+" (external, cli)")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return HUDAccount{}, errors.New("claude usage request failed")
@@ -259,6 +313,10 @@ func hudRetryAt(value string, now time.Time) time.Time {
 	return now.Add(5 * time.Minute)
 }
 func hudParseClaude(raw []byte) (HUDAccount, error) {
+	return hudParseClaudeAt(raw, time.Now())
+}
+
+func hudParseClaudeAt(raw []byte, now time.Time) (HUDAccount, error) {
 	type window struct {
 		Used   *float64 `json:"utilization"`
 		Resets string   `json:"resets_at"`
@@ -274,7 +332,8 @@ func hudParseClaude(raw []byte) (HUDAccount, error) {
 			Resets  string   `json:"resets_at"`
 		} `json:"limits"`
 		Cedar *struct {
-			Grants []struct {
+			Eligible *bool `json:"eligible"`
+			Grants   []struct {
 				Label      string `json:"label"`
 				ResetsLeft int    `json:"resets_left"`
 				EndsAt     string `json:"ends_at"`
@@ -318,9 +377,12 @@ func hudParseClaude(raw []byte) (HUDAccount, error) {
 			a.Weekly = w
 		}
 	}
-	if body.Cedar != nil {
+	if body.Cedar != nil && (body.Cedar.Eligible == nil || *body.Cedar.Eligible) {
 		a.Coupons = &HUDCoupons{Items: []HUDCoupon{}}
 		for _, grant := range body.Cedar.Grants {
+			if endsAt, err := time.Parse(time.RFC3339, grant.EndsAt); err == nil && endsAt.Before(now) {
+				continue
+			}
 			if grant.ResetsLeft > 0 {
 				a.Coupons.Available += grant.ResetsLeft
 				a.Coupons.Items = append(a.Coupons.Items, HUDCoupon{grant.Label, date(grant.EndsAt)})
@@ -328,7 +390,7 @@ func hudParseClaude(raw []byte) (HUDAccount, error) {
 		}
 		hudSortCoupons(a.Coupons)
 	}
-	if a.FiveHour == nil && a.Weekly == nil && a.Coupons == nil {
+	if a.FiveHour == nil && a.Weekly == nil {
 		return a, errors.New("usage response has no supported windows")
 	}
 	return a, nil

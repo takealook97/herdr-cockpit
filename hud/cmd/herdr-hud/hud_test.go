@@ -176,7 +176,8 @@ func TestHUDClaudeCoupons(t *testing.T) {
 		{"used grant excluded", `{"grants":[{"id":"fixture-used","label":"Used","resets_left":0,"ends_at":"2026-11-01T00:00:00Z"},{"id":"fixture-left","label":"Remaining","resets_left":2,"ends_at":"2026-12-10T22:00:00Z"}]}`, true,
 			&HUDCoupons{Available: 2, NextExpiresAt: "2026-12-10T22:00:00Z", Items: []HUDCoupon{{"Remaining", "2026-12-10T22:00:00Z"}}}},
 		{"all used", `{"grants":[{"resets_left":0,"ends_at":"2026-11-01T00:00:00Z"}]}`, true, &HUDCoupons{Items: []HUDCoupon{}}},
-		{"ineligible empty", `{"eligible":false,"grants":[]}`, false, &HUDCoupons{Items: []HUDCoupon{}}},
+		{"ineligible empty", `{"eligible":false,"grants":[]}`, true, nil},
+		{"ineligible cli version", `{"eligible":false,"ineligible_reason":"cli_version","grants":[{"resets_left":1}]}`, true, nil},
 		{"null", `null`, true, nil},
 		{"absent", "", true, nil},
 	} {
@@ -192,7 +193,13 @@ func TestHUDClaudeCoupons(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a, err := hudParseClaude(raw)
+			a, err := hudParseClaudeAt(raw, time.Date(2026, 11, 11, 0, 0, 0, 0, time.UTC))
+			if !tt.weekly {
+				if err == nil || err.Error() != "usage response has no supported windows" {
+					t.Fatalf("coupon-only response: %v", err)
+				}
+				return
+			}
 			if err != nil || !reflect.DeepEqual(a.Coupons, tt.want) {
 				t.Fatalf("coupons=%+v want=%+v err=%v", a.Coupons, tt.want, err)
 			}
@@ -506,7 +513,7 @@ func TestHUDClaudeHTTP(t *testing.T) {
 		if req.Method != http.MethodGet || req.URL.String() != "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1" || req.Header.Get("Authorization") != "Bearer fixture-token" || req.Header.Get("anthropic-beta") != "oauth-2025-04-20" || req.Header.Get("anthropic-version") != "2023-06-01" {
 			t.Error("incorrect Claude usage request")
 		}
-		if req.Header.Get("User-Agent") != "claude-cli/2.1.321 (external, cli)" {
+		if req.Header.Get("User-Agent") != "claude-cli/"+hudClaudeCLIVersion()+" (external, cli)" {
 			t.Error("Claude CLI surface missing from usage request")
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"90"}}, Body: io.NopCloser(strings.NewReader(`{"seven_day":{"utilization":11,"resets_at":"2026-11-09T14:00:00Z"}}`))}, nil

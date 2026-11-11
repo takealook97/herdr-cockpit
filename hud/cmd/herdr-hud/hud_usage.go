@@ -586,8 +586,12 @@ func hudSafeError(err error) string {
 }
 func hudSortCoupons(c *HUDCoupons) {
 	sort.Slice(c.Items, func(i, j int) bool { return c.Items[i].ExpiresAt < c.Items[j].ExpiresAt })
-	if len(c.Items) > 0 {
-		c.NextExpiresAt = c.Items[0].ExpiresAt
+	c.NextExpiresAt = ""
+	for _, item := range c.Items {
+		if item.ExpiresAt != "" {
+			c.NextExpiresAt = item.ExpiresAt
+			break
+		}
 	}
 }
 
