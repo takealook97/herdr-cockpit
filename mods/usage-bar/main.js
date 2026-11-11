@@ -1,7 +1,7 @@
 import { View } from 'gpui-kit';
 import { h_flex, v_flex } from 'gpui-base';
 import { exec, spaces, agents, theme } from 'herdr';
-import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand } from './format.js';
+import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell } from './format.js';
 import { cell, groupLabel, systemRow } from './ui.js';
 
 export default class UsageBar extends View {
@@ -140,7 +140,7 @@ export default class UsageBar extends View {
       const content = h_flex().items_center().gap(8).opacity(stale ? 0.6 : 1)
         .child(groupLabel(t, account, !mode.accountLine))
         .child(this.percentCell(t, account.weekly, now, mode));
-      if (account.provider === 'codex') {
+      if (hasCouponCell(account.provider)) {
         const count = account.coupons?.available;
         const expiry = count > 0 ? formatCouponExpiry(account.coupons.next_expires_at, now) : { text: '—', urgent: false };
         content.child(cell(t, { label: 'coupon', value: count === undefined ? '—' : `${count} resets`, detail: expiry.text,

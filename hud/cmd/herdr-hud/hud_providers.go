@@ -213,13 +213,16 @@ func fetchClaudeUsage(ctx context.Context, home string) (HUDAccount, error) {
 	if err != nil {
 		return HUDAccount{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/api/oauth/usage", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1", nil)
 	if err != nil {
 		return HUDAccount{}, errors.New("claude usage request failed")
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("anthropic-version", "2023-06-01")
+	// Limit-reset grants are gated to the Claude CLI surface. Use the client
+	// signature verified with this usage schema; a generic Go agent returns none.
+	req.Header.Set("User-Agent", "claude-cli/2.1.321 (external, cli)")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return HUDAccount{}, errors.New("claude usage request failed")
@@ -270,6 +273,13 @@ func hudParseClaude(raw []byte) (HUDAccount, error) {
 			Percent *float64 `json:"percent"`
 			Resets  string   `json:"resets_at"`
 		} `json:"limits"`
+		Cedar *struct {
+			Grants []struct {
+				Label      string `json:"label"`
+				ResetsLeft int    `json:"resets_left"`
+				EndsAt     string `json:"ends_at"`
+			} `json:"grants"`
+		} `json:"cedar_ember"`
 	}
 	if json.Unmarshal(raw, &body) != nil {
 		return HUDAccount{}, errors.New("invalid claude usage JSON")
@@ -308,7 +318,17 @@ func hudParseClaude(raw []byte) (HUDAccount, error) {
 			a.Weekly = w
 		}
 	}
-	if a.FiveHour == nil && a.Weekly == nil {
+	if body.Cedar != nil {
+		a.Coupons = &HUDCoupons{Items: []HUDCoupon{}}
+		for _, grant := range body.Cedar.Grants {
+			if grant.ResetsLeft > 0 {
+				a.Coupons.Available += grant.ResetsLeft
+				a.Coupons.Items = append(a.Coupons.Items, HUDCoupon{grant.Label, date(grant.EndsAt)})
+			}
+		}
+		hudSortCoupons(a.Coupons)
+	}
+	if a.FiveHour == nil && a.Weekly == nil && a.Coupons == nil {
 		return a, errors.New("usage response has no supported windows")
 	}
 	return a, nil

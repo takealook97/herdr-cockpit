@@ -34,10 +34,11 @@ export function pickAccounts(usage) {
 // Dimensions shared by the provider cards and their width estimates.
 export const cellWidth = label => label === 'coupon' ? 52 : 96;
 export const labelWidth = accountLine => accountLine ? 96 : 48;
+export const hasCouponCell = provider => provider === 'codex' || provider === 'claude';
 export function layoutMode(width, accounts) {
   const mode = { bars: true, accountLine: true };
   const needed = () => accounts.reduce((sum, account) => sum + labelWidth(mode.accountLine) +
-    cellWidth('weekly') + (account.provider === 'codex' ? cellWidth('coupon') + 8 : 0) +
+    cellWidth('weekly') + (hasCouponCell(account.provider) ? cellWidth('coupon') + 8 : 0) +
     16 + 2 + 8 + 10, 170 + 44 - (mode.bars ? 0 : 44));
   if (width < needed()) mode.bars = false;
   if (width < needed()) mode.accountLine = false;

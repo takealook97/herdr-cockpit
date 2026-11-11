@@ -6,7 +6,7 @@ Keep selected-provider capacity and host load visible in a compact top row, with
 
 ## What you see
 
-A 44 px row has 12 px outer padding and 8 px gaps. Three 38 px provider cards sit on the left, ordered Codex, Claude, Gemini; CPU/RAM sit on the right. Cards have a raised theme background, border, and 6 px radius. Provider names use 12 px text and account local parts use 10.5 px text. Gemini omits its account line. Cards show weekly usage and a reset detail, without 5h/Week labels; Codex adds available reset credits and expiry. Missing values show an em dash. CPU and RAM each have fixed columns for percentage, a 32 px mini bar, and memory detail. Usage colors change at 50% and 80%. Responsive width calculation hides bars, then account lines, then reset details as space tightens. A sanitized preview is pending.
+A 44 px row has 12 px outer padding and 8 px gaps. Three 38 px provider cards sit on the left, ordered Codex, Claude, Gemini; CPU/RAM sit on the right. Cards have a raised theme background, border, and 6 px radius. Provider names use 12 px text and account local parts use 10.5 px text. Gemini omits its account line. Cards show weekly usage and a reset detail, without 5h/Week labels; Codex and Claude add available reset credits and expiry (Claude Limit resets). Missing values show an em dash. CPU and RAM each have fixed columns for percentage, a 32 px mini bar, and memory detail. Usage colors change at 50% and 80%. Responsive width calculation hides bars, then account lines, then reset details as space tightens. A sanitized preview is pending.
 
 ## How it behaves
 

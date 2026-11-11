@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pctColorRole, formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, cellWidth, labelWidth, hudCommand } from './format.js';
+import { pctColorRole, formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, cellWidth, labelWidth, hudCommand, hasCouponCell } from './format.js';
 test('HUD commands route arguments to the selected machine', () => {
   const args = ['usage', '--selected', 'a b'];
   assert.deepEqual(hudCommand('', args), ['sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', ...args], { on: undefined }]);
@@ -79,9 +79,23 @@ test('missing providers yield placeholders', () => {
 
 test('layout hides bars before account lines at compact widths', () => {
   const accounts = ['codex', 'claude', 'gemini'].map(provider => ({ provider }));
-  const fullWidth = 170 + 44 + accounts.length * (labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8 + 10) + cellWidth('coupon') + 8;
+  const fullWidth = 170 + 44 + accounts.length * (labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8 + 10) + 2 * (cellWidth('coupon') + 8);
   assert.deepEqual(layoutMode(fullWidth, accounts), { bars: true, accountLine: true });
   assert.deepEqual(layoutMode(fullWidth - 1, accounts), { bars: false, accountLine: true });
   assert.deepEqual(layoutMode(fullWidth - 45, accounts), { bars: false, accountLine: false });
   assert.deepEqual(layoutMode(fullWidth, pickAccounts(null)), { bars: true, accountLine: true });
+});
+
+test('Claude reserves the same coupon cell width as Codex, including placeholders', () => {
+  assert.equal(hasCouponCell('codex'), true);
+  assert.equal(hasCouponCell('claude'), true);
+  assert.equal(hasCouponCell('gemini'), false);
+  const baseWidth = 170 + 44 + labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8 + 10;
+  const couponWidth = cellWidth('coupon') + 8;
+  for (const provider of ['codex', 'claude']) {
+    assert.deepEqual(layoutMode(baseWidth + couponWidth, [{ provider }]), { bars: true, accountLine: true });
+    assert.deepEqual(layoutMode(baseWidth + couponWidth - 1, [{ provider }]), { bars: false, accountLine: true });
+    assert.deepEqual(layoutMode(baseWidth + couponWidth - 45, [{ provider }]), { bars: false, accountLine: false });
+  }
+  assert.deepEqual(layoutMode(baseWidth, [{ provider: 'gemini' }]), { bars: true, accountLine: true });
 });

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -152,6 +153,56 @@ func TestHUDClaudeMapping(t *testing.T) {
 		t.Fatal("valid credential rejected")
 	}
 }
+func TestHUDClaudeCoupons(t *testing.T) {
+	// Synthetic IDs and labels; fields and dates follow the observed cedar_ember grants.
+	const grants = `{"eligible":true,"grants":[
+		{"id":"fixture-launch","label":"Launch reset","resets_total":1,"resets_left":1,"starts_at":"2026-11-10T21:30:00+00:00","ends_at":"2027-03-09T07:59:00+00:00","paused":false,"usable_now":true,"type":"full"},
+		{"id":"fixture-november","label":"November reset","resets_total":1,"resets_left":1,"ends_at":"2026-12-10T23:00:00+01:00","usable_now":true,"type":"weekly"},
+		{"id":"fixture-tenure","label":"Tenure reset","resets_total":1,"resets_left":1,"ends_at":"2027-03-09T08:00:00+00:00","usable_now":false,"paused":true,"type":"full"}
+	]}`
+	three := &HUDCoupons{Available: 3, NextExpiresAt: "2026-12-10T22:00:00Z", Items: []HUDCoupon{
+		{"November reset", "2026-12-10T22:00:00Z"},
+		{"Launch reset", "2027-03-09T07:59:00Z"},
+		{"Tenure reset", "2027-03-09T08:00:00Z"},
+	}}
+	for _, tt := range []struct {
+		name   string
+		cedar  string
+		weekly bool
+		want   *HUDCoupons
+	}{
+		{"three grants preserve weekly", grants, true, three},
+		{"coupons without windows", grants, false, three},
+		{"used grant excluded", `{"grants":[{"id":"fixture-used","label":"Used","resets_left":0,"ends_at":"2026-11-01T00:00:00Z"},{"id":"fixture-left","label":"Remaining","resets_left":2,"ends_at":"2026-12-10T22:00:00Z"}]}`, true,
+			&HUDCoupons{Available: 2, NextExpiresAt: "2026-12-10T22:00:00Z", Items: []HUDCoupon{{"Remaining", "2026-12-10T22:00:00Z"}}}},
+		{"all used", `{"grants":[{"resets_left":0,"ends_at":"2026-11-01T00:00:00Z"}]}`, true, &HUDCoupons{Items: []HUDCoupon{}}},
+		{"ineligible empty", `{"eligible":false,"grants":[]}`, false, &HUDCoupons{Items: []HUDCoupon{}}},
+		{"null", `null`, true, nil},
+		{"absent", "", true, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body := map[string]json.RawMessage{}
+			if tt.cedar != "" {
+				body["cedar_ember"] = json.RawMessage(tt.cedar)
+			}
+			if tt.weekly {
+				body["seven_day"] = json.RawMessage(`{"utilization":34,"resets_at":"2026-11-17T02:00:00+00:00"}`)
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := hudParseClaude(raw)
+			if err != nil || !reflect.DeepEqual(a.Coupons, tt.want) {
+				t.Fatalf("coupons=%+v want=%+v err=%v", a.Coupons, tt.want, err)
+			}
+			if tt.weekly && (a.Weekly == nil || a.Weekly.Used != 34 || a.Weekly.ResetsAt != "2026-11-17T02:00:00Z") {
+				t.Fatalf("weekly mapping changed: %+v", a.Weekly)
+			}
+		})
+	}
+}
+
 func TestHUDProcessDiscovery(t *testing.T) {
 	raw := "100 1 /bin/zsh\n101 100 /bin/cr\n102 101 /bin/codex\n103 102 /bin/claude\n104 100 /bin/sleep\n200 1 node\n201 200 node\nmalformed\n"
 	procs := hudParseProcesses(raw)
@@ -452,8 +503,11 @@ func TestHUDClaudeHTTP(t *testing.T) {
 	t.Cleanup(func() { http.DefaultClient = previous })
 	status := 200
 	http.DefaultClient = &http.Client{Transport: hudTestTransport(func(req *http.Request) (*http.Response, error) {
-		if req.URL.String() != "https://api.anthropic.com/api/oauth/usage" || req.Header.Get("Authorization") != "Bearer fixture-token" || req.Header.Get("anthropic-beta") != "oauth-2025-04-20" || req.Header.Get("anthropic-version") != "2023-06-01" {
+		if req.Method != http.MethodGet || req.URL.String() != "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1" || req.Header.Get("Authorization") != "Bearer fixture-token" || req.Header.Get("anthropic-beta") != "oauth-2025-04-20" || req.Header.Get("anthropic-version") != "2023-06-01" {
 			t.Error("incorrect Claude usage request")
+		}
+		if req.Header.Get("User-Agent") != "claude-cli/2.1.321 (external, cli)" {
+			t.Error("Claude CLI surface missing from usage request")
 		}
 		return &http.Response{StatusCode: status, Header: http.Header{"Retry-After": []string{"90"}}, Body: io.NopCloser(strings.NewReader(`{"seven_day":{"utilization":11,"resets_at":"2026-11-09T14:00:00Z"}}`))}, nil
 	})}

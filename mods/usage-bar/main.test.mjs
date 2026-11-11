@@ -12,7 +12,8 @@ const fixture = {
       coupons: { available: 2, next_expires_at: '2026-11-30T00:00:00+09:00' }, terminals: ['t2w'], stale: false, error: '' },
     { provider: 'claude', home: '', id: 'default', label: 'me', plan: 'max',
       five_hour: { used_pct: 34, resets_at: '2026-11-03T15:10:00+09:00' },
-      weekly: { used_pct: 81, resets_at: '2026-11-10T10:59:59+09:00' }, terminals: ['t2t'], stale: true, error: 'HTTP 429' },
+      weekly: { used_pct: 81, resets_at: '2026-11-10T10:59:59+09:00' },
+      coupons: { available: 3, next_expires_at: '2026-12-10T22:00:00Z' }, terminals: ['t2t'], stale: true, error: 'HTTP 429' },
     { provider: 'gemini', id: 'agy', label: '',
       five_hour: { used_pct: 12, resets_at: '2026-11-03T15:10:00+09:00' },
       weekly: { used_pct: 34, resets_at: '2026-11-10T10:59:59+09:00' } },
@@ -93,9 +94,11 @@ test('provider cards show compact weekly usage, coupon text and stale opacity', 
   assert.equal(codex.nodes[0].nodes[1].style.min_w, undefined); // cells hug their content
   assert.equal(codex.nodes[0].nodes[2].style.min_w, undefined);
   assert.equal(byID(tree, 'account-claude').nodes[0].style.opacity, 0.6);
+  assert.ok(text(byID(tree, 'account-claude')).includes('3 resets'));
+  assert.ok(!text(byID(tree, 'account-gemini')).some(label => label.includes('resets')));
   assert.equal(byID(tree, 'account-gemini').nodes[0].nodes[0].nodes.length, 1);
   assert.ok(walk(tree).some(node => node?.style?.w === 28 && node?.style?.h === 2));
-  const fullWidth = 170 + 44 + 3 * (format.labelWidth(true) + format.cellWidth('weekly') + 16 + 2 + 8 + 10) + format.cellWidth('coupon') + 8;
+  const fullWidth = 170 + 44 + 3 * (format.labelWidth(true) + format.cellWidth('weekly') + 16 + 2 + 8 + 10) + 2 * (format.cellWidth('coupon') + 8);
   h.view.width = fullWidth - 1;
   assert.ok(!walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
   h.view.width = fullWidth - 45;
