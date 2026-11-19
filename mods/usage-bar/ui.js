@@ -1,6 +1,6 @@
 import { div } from 'gpui-kit';
-import { h_flex, v_flex } from 'gpui-base';
-import { pctColorRole, labelWidth } from './format.js';
+import { h_flex, v_flex, Button } from 'gpui-base';
+import { pctColorRole, labelWidth, LINEAR_WIDTH, GEAR_WIDTH } from './format.js';
 
 export function roleColor(t, pct) {
   return t[{ ok: 'foreground', warn: 'working', crit: 'blocked' }[pctColorRole(pct)]];
@@ -33,4 +33,24 @@ export function systemRow(t, label, pct, detail, hideBar) {
       .child(known ? `${Math.round(pct)}%` : '—'))
     .when(!hideBar, el => el.child(known ? progress(t, pct, 32) : div().w(32).flex_none()))
     .child(h_flex().w(56).flex_none().justify_end().text_color(t.dim).child(detail));
+}
+
+function buttonCard(t, id, tooltip) {
+  return Button.new(id).h(38).flex().flex_none().items_center().justify_center().gap(5)
+    .tab_index(0)
+    .rounded(6).bg(t.chrome).border(1).border_color(t.muted + '66').cursor_pointer()
+    .text_color(t.foreground).hover(s => s.bg(t.hover)).tooltip(tooltip);
+}
+
+export function iconButton(t, id, glyph, tooltip) {
+  return buttonCard(t, id, tooltip).w(GEAR_WIDTH).text_size(16).child(glyph);
+}
+
+export function linearButton(t, { count, alert, connected, stale }) {
+  const label = connected === false ? 'Connect' : count ?? '—';
+  return buttonCard(t, 'linear', 'Assigned Linear issues').w(LINEAR_WIDTH).text_size(12)
+    .child(div().text_color(t.accent).child('◆'))
+    .child(div().font_semibold().child('Linear'))
+    .child(div().opacity(stale ? 0.6 : 1).text_color(connected && count !== null ? t.foreground : t.dim).child(String(label)))
+    .when(alert, el => el.child(div().size(5).rounded(3).bg(t.blocked)));
 }

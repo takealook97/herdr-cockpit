@@ -1,11 +1,55 @@
 import { View } from 'gpui-kit';
-import { h_flex, v_flex } from 'gpui-base';
-import { exec, spaces, agents, theme } from 'herdr';
-import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell } from './format.js';
-import { cell, groupLabel, systemRow } from './ui.js';
+import { h_flex, v_flex, InputState } from 'gpui-base';
+import { exec, spaces, agents, theme, props, shared, setShared } from 'herdr';
+import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell, barSpacing, LINEAR_WIDTH, GEAR_WIDTH, systemWidth } from './format.js';
+import { cell, groupLabel, systemRow, iconButton, linearButton } from './ui.js';
+import { readVisible } from './prefs.js';
+import { badgeState } from './linear.js';
+import { linearPanel, settingsPanel, openPanel } from './panels.js';
+
+const LINEAR_REV = 'usage-bar.linear-rev';
+const VISIBLE_KEY = 'usage-bar.visible';
+const linearRevision = () => {
+  const value = shared(LINEAR_REV);
+  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
+};
+
+function linearCommand(args) {
+  return ['sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear', ...args]];
+}
+
+async function execLinear(args) {
+  try {
+    const { code, stdout } = await exec(...linearCommand(args));
+    const data = JSON.parse(stdout);
+    if (typeof data?.error === 'string') return data;
+    const valid = args[0] === 'issues' ? Array.isArray(data?.issues) : typeof data?.connected === 'boolean';
+    if (code === 0 && valid) return data;
+  } catch {
+    // Launch and JSON failures use fixed copy. Never surface helper diagnostics.
+  }
+  return { error: 'helper' };
+}
 
 export default class UsageBar extends View {
   init(_props, cx) {
+    this.panel = props()?.panel;
+    this.linearRev = linearRevision();
+    this.linearSeq = { issues: 0, status: 0 };
+    this.linearVisible = readVisible(shared(VISIBLE_KEY)).linear;
+    if (this.panel === 'linear' || this.panel === 'settings') {
+      this.handle = cx.focus_handle();
+      this.handle.focus();
+      if (this.panel === 'settings') {
+        this.input = InputState.new({ placeholder: 'lin_api_…' });
+        this.input.set_masked(true);
+        this.input.on('submit', (_event, cx) => this.changeLinear('connect', cx));
+      } else {
+        this.readLinear('issues', cx);
+      }
+      this.readLinear('status', cx);
+      return;
+    }
     this.byMachine = Object.create(null);
     this.busy = new Set();
     this.request = new Set();
@@ -17,6 +61,104 @@ export default class UsageBar extends View {
     this.refresh('usage', cx);
     cx.timer.every(1000, cx => this.refresh('sys', cx));
     cx.timer.every(60000, cx => this.refresh('usage', cx));
+    this.readLinear('status', cx);
+    this.readLinear('issues', cx);
+    cx.timer.every(120000, cx => {
+      if (readVisible(shared(VISIBLE_KEY)).linear) this.readLinear('issues', cx);
+    });
+  }
+
+  close() {
+    this.closed = true;
+    this.input?.release();
+    this.handle?.release();
+  }
+
+  linearSnapshot() {
+    const current = this.linearRev === linearRevision();
+    return { issues: current ? this.linearIssues : null, status: current ? this.linearStatus : null };
+  }
+
+  bumpLinear() {
+    this.linearRev = linearRevision() + 1;
+    setShared('usage-bar.linear-rev', this.linearRev);
+  }
+
+  readLinear(kind, cx, refresh = false) {
+    const seq = ++this.linearSeq[kind];
+    const rev = linearRevision();
+    const args = [kind];
+    if (kind === 'issues') args.push(...(refresh ? ['--refresh'] : ['--max-age', '60s']));
+    cx.spawn(async cx => {
+      const data = await execLinear(args);
+      if (seq !== this.linearSeq[kind] || rev !== linearRevision()) return;
+      if (kind === 'issues') this.linearIssues = data;
+      else this.linearStatus = data;
+      if (refresh) {
+        this.bumpLinear();
+        if (!this.closed && !this.linearStatus) this.readLinear('status', cx);
+      }
+      if (!this.closed) cx.notify();
+    });
+  }
+
+  changeLinear(action, cx) {
+    if (this.linearBusy) return;
+    const args = [action];
+    if (action === 'connect') {
+      const key = this.input.value().trim();
+      this.input.set_value('');
+      if (!key) return;
+      args.push('--key', key);
+    }
+    this.linearBusy = true;
+    this.linearActionError = null;
+    cx.notify();
+    cx.spawn(async cx => {
+      const data = await execLinear(args);
+      this.bumpLinear();
+      if (this.closed) return;
+      this.linearBusy = false;
+      this.linearActionError = data.connected === undefined ? data.error : null;
+      if (!this.linearActionError) this.linearStatus = data;
+      this.readLinear('status', cx);
+      cx.notify();
+    });
+  }
+
+  observeLinear(visible, cx) {
+    if (linearRevision() === this.linearRev && visible === this.linearVisible) return;
+    this.linearObservation?.cancel();
+    this.linearObservation = cx.timer.after(0, cx => {
+      const rev = linearRevision();
+      const visible = this.panel ? this.linearVisible : readVisible(shared(VISIBLE_KEY)).linear;
+      const changed = rev !== this.linearRev;
+      const enabled = !this.panel && visible && !this.linearVisible;
+      this.linearRev = rev;
+      this.linearVisible = visible;
+      if (changed) {
+        this.linearStatus = null;
+        this.linearIssues = null;
+      }
+      if (changed || enabled) this.readLinear('status', cx);
+      if ((changed && this.panel !== 'settings') || enabled) this.readLinear('issues', cx);
+      cx.notify();
+    });
+  }
+
+  popupButton(button, panel) {
+    const clearPointer = () => {
+      if (this.popupPointer?.panel === panel) this.popupPointer = null;
+    };
+    return button.on_mouse_down('left', (event, cx) => {
+      this.popupPointer = { panel, position: event.position };
+      cx.stop_propagation();
+    }).on_mouse_down_out(clearPointer).on_key_down(clearPointer)
+      .on_click(() => {
+        const point = this.popupPointer?.panel === panel ? this.popupPointer.position : null;
+        clearPointer();
+        openPanel(panel, point);
+      });
   }
 
   context() {
@@ -111,6 +253,11 @@ export default class UsageBar extends View {
   }
 
   render(cx) {
+    const panel = props()?.panel;
+    if (panel === 'linear' || panel === 'settings') {
+      this.observeLinear(this.linearVisible, cx);
+      return panel === 'linear' ? linearPanel(this, cx) : settingsPanel(this, cx);
+    }
     // Render only compares and schedules. Apply context after render, and
     // keep the last response visible until its replacement arrives.
     const snapshot = this.context();
@@ -120,8 +267,14 @@ export default class UsageBar extends View {
     }
     const t = theme(), now = new Date();
     const state = this.machineState(snapshot.machine);
-    const accounts = pickAccounts(state.usage);
-    const mode = layoutMode(this.width, accounts);
+    const visible = readVisible(shared(VISIBLE_KEY));
+    this.observeLinear(visible.linear, cx);
+    const accounts = pickAccounts(state.usage, visible);
+    const mode = layoutMode(this.width, accounts, visible);
+    const { padding, gap } = barSpacing(this.width);
+    const rightWidth = GEAR_WIDTH + (visible.linear ? LINEAR_WIDTH : 0) + (visible.system ? systemWidth(mode.bars) : 0);
+    const providerRoom = this.width - 2 * padding - rightWidth -
+      gap * (2 + Number(visible.linear) + Number(visible.system));
     const group = id => h_flex().id(id).h(38).items_center().flex_none().px(8).gap(6)
       .rounded(6).bg(t.chrome).border(1).border_color(t.muted + "66").cursor_pointer()
       .tooltip('Click to refresh usage')
@@ -148,12 +301,26 @@ export default class UsageBar extends View {
       }
       groups.push(group(`account-${account.provider}`).child(content));
     }
-    return h_flex().id('root').size_full().min_w(0).px(12).gap(10).items_center()
+    const { status, issues } = this.linearSnapshot();
+    const disconnected = ['not_connected', 'expired'].includes(issues?.error);
+    const connected = disconnected ? false : (issues?.source ? true : status?.connected);
+    const badge = badgeState(issues?.issues, now);
+    const linear = this.popupButton(linearButton(t, {
+      count: Array.isArray(issues?.issues) && connected ? badge.count : null,
+      alert: !!connected && badge.alert,
+      connected,
+      stale: !!issues?.stale,
+    }), 'linear');
+    const gear = this.popupButton(iconButton(t, 'gear', '⚙︎', 'Top bar settings'), 'settings');
+    return h_flex().id('root').size_full().min_w(0).px(padding).gap(gap).items_center()
       .bg(t.chrome).border_b(1).border_color(t.border)
       .on_size_change((size, cx) => { if (this.width !== size.width) { this.width = size.width; cx.notify(); } })
-      .child(h_flex().id('groups').flex_none().min_w(0).items_center().gap(10).children(groups))
+      .when(groups.length > 0, el => el.child(h_flex().id('groups').min_w(0).max_w(Math.max(0, providerRoom))
+        .overflow_hidden().items_center().gap(10).children(groups)))
       .child(h_flex().flex_1().min_w(0))
-      .child(system);
+      .when(visible.linear, el => el.child(linear.min_w(0).flex_shrink(1).overflow_hidden()))
+      .when(visible.system, el => el.child(system.min_w(0).flex_shrink(1).overflow_hidden()))
+      .child(gear);
   }
 }
 

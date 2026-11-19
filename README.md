@@ -37,6 +37,14 @@ To install only the helper on connected Herdr machines:
 
 Omit machine names to target all connected machines. This explicitly writes to those machines. The script cross-builds for each detected Darwin/Linux arm64/amd64 platform, uploads in 7 MB parts with `hc file write`, verifies the joined SHA-256 before installation, and checks `sys`. It does not install remote mods or change layouts.
 
+## Linear and top-bar settings
+
+Click **Linear** to the left of CPU/RAM to see your open assigned issues. The dropdown groups them by status and shows their priority, project, and due date. Click an issue to open it in your browser. **Refresh** fetches the list again, and **Open in Linear** opens your assigned issues in the workspace. The button shows the issue count and a dot if any issue is blocked or overdue.
+
+Click the gear to the right of CPU/RAM to show or hide Codex, Claude, Gemini, Linear, or CPU/RAM. Changes apply immediately and persist across restarts. The gear stays visible.
+
+The same popup shows the Linear connection status. The local helper uses your saved Linear API key if available, then uses the default Claude Code Linear MCP session. You can create an API key from the popup and connect with the masked input. **Disconnect** removes the saved API key and lets the helper fall back to the Claude Code session.
+
 ## nexus
 
 NEXUS is the locked top row above hub under **This computer**. Click it or press **Cmd-Shift-N** from any tab of the cockpit layout to open a dimmed, centered dialog with a dedicated Claude Code terminal. The same shortcut closes it. It works only in the cockpit layout, because the space-tree mod receives the bindings.
@@ -77,6 +85,10 @@ herdr-hud panes
 herdr-hud usage --selected --max-age 120s
 herdr-hud usage --terminals t1,t2 --max-age 120s
 herdr-hud usage --refresh
+herdr-hud linear status
+herdr-hud linear issues [--max-age D] [--refresh]
+herdr-hud linear connect --key KEY
+herdr-hud linear disconnect
 herdr-hud nexus route --text TEXT --roster ROSTER_JSON
 herdr-hud nexus send --to ADDRESS --text MESSAGE --roster ROSTER_JSON
 herdr-hud nexus log [--limit N]
@@ -97,9 +109,15 @@ With no cr registry, `usage` and `usage --selected` use ordinary homes (`~/.code
 
 The usage bar polls system readings every second and selected-account usage every minute (`--max-age 45s`). Machine switches and agent completion trigger debounced reads. The space tree polls pane metadata every three seconds and the agent list every five seconds. See each mod's recipe for UI behavior.
 
+`linear issues` fetches open assigned issues on this computer, including when a remote space is active. The bar polls every two minutes while the Linear button is visible. Opening the dropdown reads the issues with a 60-second cache allowance. Manual refresh bypasses that allowance.
+
 ## Privacy
 
 There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude and Codex transcript inspection emits no message contents; Codex reads only `turn_context` model/effort metadata from its bounded tail. The hub renders interactive terminal content inside the local layout. Herdr persists the grid layout and Head metadata in shared mod state. Hub does not save terminal screens or message text. Nexus sends the Head roster (including bounded current-folder, report/title and recent terminal context for up to 8 Heads), the last 6 log entries and your command to the configured model provider through your own CLI login. Bounded Head context is cached privately with 20 s freshness in `nexus-context.json`; each cache write drops entries older than 10 minutes, keeping only recent entries for at most 10 minutes. Voice ensure and recording start warm it in a detached process. Cache misses fetch in parallel with a 1 s budget. It stores up to 50 command entries (text, target, reply) locally in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud/nexus-log.json` with private permissions. Voice audio is recognized on device by default (`serverSpeech` explicitly permits sending audio to Apple); it is stored only when `keepAudio` is explicitly enabled, as private local WAV/JSON pairs with the newest N retained (see [laughter evaluation](scripts/laugh-eval/README.md)); turning it off does not delete existing samples. Review screenshots before sharing them.
+
+Linear stores a validated API key in the macOS keychain under `herdr-hud-linear`, or in `${XDG_CONFIG_HOME:-$HOME/.config}/herdr-hud/linear.json` with mode 0600 on other platforms. The helper reads the Claude Code Linear MCP token in place without refreshing or writing it. Assigned issues are cached privately per credential generation. Herdr's shared state stores the display preferences and a refresh counter.
+
+The API key is briefly visible in the process arguments for `linear connect --key`, including the macOS keychain command. Running the command manually can also put the key in shell history.
 
 ## Develop
 
