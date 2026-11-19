@@ -53,6 +53,10 @@ const issue = { identifier: 'TEST-1', title: 'An assigned issue', url: org.url +
   status: 'Blocked', status_type: 'started', priority: 1, project: 'Example / Test Project', due_date: '2000-01-01' };
 const statusReply = { connected: true, source: 'claude_mcp', org, expires_at: '2099-07-10T12:00:00Z', error: null };
 const issuesReply = { source: 'claude_mcp', issues: [issue], org_url: org.url, stale: false, error: null };
+const apiKeyStatus = { ...statusReply, source: 'api_key', user: { name: 'First Viewer' }, expires_at: null };
+const nextAPIKeyStatus = { ...apiKeyStatus, user: { name: 'Second Viewer' } };
+const apiKeyIssues = { ...issuesReply, source: 'api_key' };
+const unavailable = { code: 127, stdout: '' };
 const reply = (data, code = 0, stderr = '') => ({ code, stdout: JSON.stringify(data), stderr });
 const linearCalls = h => h.calls.filter(call => call.args[3] === 'linear').map(call => call.args.slice(4));
 const click = (tree, id, cx) => byID(tree, id).style.on_click({}, cx);
@@ -464,7 +468,9 @@ test('masked settings input clears immediately and failed connect uses the JSON 
   const tree = h.view.render(h.cx);
   assert.ok(text(tree).includes('That API key was rejected'));
   assert.ok(!text(tree).some(label => label.includes('private') || label.includes(key)));
-  assert.deepEqual([...h.store], [['usage-bar.linear-rev', 1]]);
+  assert.equal(h.store.get('usage-bar.linear-rev'), 1);
+  assert.equal(h.store.get('usage-bar.linear-account-rev'), 1);
+  assert.equal(h.store.size, 2);
   assert.deepEqual(linearCalls(h).at(-1), ['status']);
   click(tree, 'linear-create-key', h.cx);
   assert.deepEqual(h.urls, ['https://linear.app/settings/account/security']);
@@ -473,44 +479,161 @@ test('masked settings input clears immediately and failed connect uses the JSON 
 });
 
 test('Disconnect is offered for an API key and re-reads status for the fallback', async () => {
-  const apiKeyStatus = { connected: true, source: 'api_key', user: { name: 'Test Viewer' }, org, error: null };
   const h = harness({ panel: 'settings', initialResponse: () => reply(apiKeyStatus) });
   await h.flush();
   const tree = h.view.render(h.cx);
-  assert.ok(text(tree).includes('API key · Test Viewer'));
+  assert.ok(text(tree).includes('API key · First Viewer'));
   h.respond(() => reply(statusReply));
   click(tree, 'linear-disconnect', h.cx);
   await h.flush();
   assert.deepEqual(linearCalls(h), [['status'], ['disconnect'], ['status']]);
-  assert.deepEqual([...h.store], [['usage-bar.linear-rev', 1]]);
+  assert.equal(h.store.get('usage-bar.linear-rev'), 1);
+  assert.equal(h.store.get('usage-bar.linear-account-rev'), 1);
   assert.equal(byID(h.view.render(h.cx), 'linear-disconnect'), undefined);
 });
 
-test('connect updates the API-key status and clears old issues when the new source is confirmed', async () => {
+test('connect clears another popup before its new status arrives and discards in-flight reads', async () => {
   let finishOldRead;
-  const store = new Map();
-  const popup = harness({ panel: 'linear', store }), settings = harness({ panel: 'settings', store });
+  let finishStatus;
+  const store = new Map([['usage-bar.linear-account-rev', 4], ['usage-bar.linear-rev', 9]]);
+  const popup = harness({ panel: 'linear', store, initialResponse: args =>
+    reply(args[2] === 'status' ? apiKeyStatus : apiKeyIssues) });
+  const settings = harness({ panel: 'settings', store });
   await Promise.all([popup.flush(), settings.flush()]);
+  assert.ok(byID(popup.view.render(popup.cx), 'issue-TEST-1'));
   popup.respond(args => args[2] === 'issues'
     ? new Promise(resolve => { finishOldRead = resolve; }) : reply(statusReply));
   popup.view.readLinear('issues', popup.cx);
 
-  const apiKeyStatus = { connected: true, source: 'api_key', user: { name: 'Test Viewer' }, org, error: null };
-  settings.respond(() => reply(apiKeyStatus));
+  settings.respond(() => reply(nextAPIKeyStatus));
   settings.view.input.set_value(' synthetic-test-key ');
   click(settings.view.render(settings.cx), 'linear-connect', settings.cx);
   await settings.flush();
   assert.deepEqual(linearCalls(settings), [['status'], ['connect', '--key', 'synthetic-test-key'], ['status']]);
-  assert.ok(text(settings.view.render(settings.cx)).includes('API key · Test Viewer'));
-  assert.ok(text(popup.view.render(popup.cx)).includes(issue.title));
+  assert.ok(text(settings.view.render(settings.cx)).includes('API key · Second Viewer'));
+  assert.equal(store.get('usage-bar.linear-account-rev'), 5);
+  assert.equal(store.get('usage-bar.linear-rev'), 10);
 
-  finishOldRead(reply(issuesReply)); await popup.flush();
-  popup.respond(args => args[2] === 'status' ? reply(apiKeyStatus) :
-    { code: 127, stdout: '' });
-  popup.tick(0); await popup.flush();
-  const popupLabels = text(popup.view.render(popup.cx));
-  assert.ok(!popupLabels.includes('TEST-1'));
-  assert.ok(!popupLabels.includes(issue.title));
+  const assertNoOldSnapshot = () => {
+    const tree = popup.view.render(popup.cx);
+    assert.equal(byID(tree, 'issue-TEST-1'), undefined);
+    assert.equal(byID(tree, 'linear-open'), undefined);
+    assert.ok(!text(tree).includes('My issues · Example'));
+  };
+  assertNoOldSnapshot();
+  finishOldRead(reply(apiKeyIssues));
+  await popup.flush();
+  popup.respond(args => args[2] === 'status' ? new Promise(resolve => { finishStatus = resolve; }) : unavailable);
+  popup.tick(0);
+  assertNoOldSnapshot();
+  finishStatus(reply(nextAPIKeyStatus));
+  await popup.flush();
+  assert.equal(byID(popup.view.render(popup.cx), 'issue-TEST-1'), undefined);
+});
+
+test('failed reads after connect cannot restore issues or status in open popups', async () => {
+  const store = new Map();
+  const initialResponse = args => reply(args[2] === 'status' ? apiKeyStatus : apiKeyIssues);
+  const popup = harness({ panel: 'linear', store, initialResponse });
+  const settings = harness({ panel: 'settings', store, initialResponse });
+  const otherSettings = harness({ panel: 'settings', store, initialResponse });
+  await Promise.all([popup.flush(), settings.flush(), otherSettings.flush()]);
+  assert.ok(byID(popup.view.render(popup.cx), 'issue-TEST-1'));
+  assert.ok(text(otherSettings.view.render(otherSettings.cx)).includes('API key · First Viewer'));
+  settings.respond(args => args[2] === 'connect' ? reply(nextAPIKeyStatus) : unavailable);
+  popup.respond(() => unavailable);
+  otherSettings.respond(() => unavailable);
+  settings.view.input.set_value('synthetic-test-key');
+  click(settings.view.render(settings.cx), 'linear-connect', settings.cx);
+  await settings.flush();
+  popup.view.render(popup.cx);
+  otherSettings.view.render(otherSettings.cx);
+  popup.tick(0);
+  otherSettings.tick(0);
+  await Promise.all([popup.flush(), otherSettings.flush()]);
+  const tree = popup.view.render(popup.cx);
+  assert.equal(byID(tree, 'issue-TEST-1'), undefined);
+  assert.equal(byID(tree, 'linear-open'), undefined);
+  assert.ok(text(tree).includes('herdr-hud unavailable'));
+  assert.ok(!text(otherSettings.view.render(otherSettings.cx)).includes('API key · First Viewer'));
+  assert.ok(text(otherSettings.view.render(otherSettings.cx)).includes('Checking connection…'));
+});
+
+test('the account revision clears the bar count when its initial status is unknown', async () => {
+  const bar = harness({ initialResponse: args => {
+    if (args[1] === 'linear') return args[2] === 'status' ? unavailable : reply(apiKeyIssues);
+    return reply(args[1] === 'sys' ? fixture.sys : fixture.usage);
+  } });
+  await bar.flush();
+  const badge = () => text(byID(bar.view.render(bar.cx), 'linear'));
+  assert.ok(badge().includes('1'));
+  bar.respond(args => args[2] === 'status' ? reply(nextAPIKeyStatus) : unavailable);
+  bar.store.set('usage-bar.linear-account-rev', 1);
+  assert.ok(badge().includes('—'));
+  bar.tick(0);
+  await bar.flush();
+  assert.ok(badge().includes('—'));
+});
+
+test('the hidden bar invalidates its account snapshot without reading until re-enabled', async () => {
+  const bar = harness();
+  await bar.flush();
+  const badge = () => text(byID(bar.view.render(bar.cx), 'linear'));
+  assert.ok(badge().includes('1'));
+  bar.store.set('usage-bar.visible', { linear: false });
+  bar.view.render(bar.cx);
+  bar.tick(0);
+  bar.store.set('usage-bar.linear-account-rev', 1);
+  bar.store.set('usage-bar.linear-rev', 1);
+  bar.view.render(bar.cx);
+  bar.tick(0);
+  assert.equal(bar.view.linearSnapshot().issues, null);
+  assert.equal(bar.view.linearSnapshot().status, null);
+  assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s']]);
+
+  bar.respond(() => unavailable);
+  bar.store.set('usage-bar.visible', { linear: true });
+  assert.ok(badge().includes('—'));
+  bar.tick(0);
+  await bar.flush();
+  assert.ok(badge().includes('—'));
+  assert.deepEqual(linearCalls(bar).slice(2), [['status'], ['issues', '--max-age', '60s']]);
+});
+
+test('busy replies preserve issues and connection status and show the generic error', async () => {
+  const store = new Map();
+  const popup = harness({ panel: 'linear', store });
+  const settings = harness({ panel: 'settings', store });
+  await Promise.all([popup.flush(), settings.flush()]);
+  const busyReply = args => reply(args[2] === 'issues'
+    ? { issues: [], source: null, error: 'busy' }
+    : { connected: false, source: null, error: 'busy' }, 1);
+  popup.respond(busyReply);
+  settings.respond(busyReply);
+  click(popup.view.render(popup.cx), 'linear-refresh', popup.cx);
+  await popup.flush();
+  assert.deepEqual(popup.writes, ['usage-bar.linear-rev']);
+  const tree = popup.view.render(popup.cx);
+  assert.ok(byID(tree, 'issue-TEST-1'));
+  assert.ok(byID(tree, 'linear-open'));
+  assert.equal(byID(tree, 'linear-issue-list').style.opacity, 0.6);
+  assert.ok(text(tree).includes("Couldn't load Linear issues"));
+  settings.view.render(settings.cx);
+  settings.tick(0);
+  await settings.flush();
+  const labels = text(settings.view.render(settings.cx));
+  assert.ok(labels.some(label => label.startsWith('Claude Code connection')));
+  assert.ok(labels.includes("Couldn't load Linear issues"));
+
+  popup.respond(args => args[2] === 'status' ? busyReply(args) : popup.fallback(args));
+  store.set('usage-bar.linear-rev', 2);
+  popup.view.render(popup.cx);
+  popup.tick(0);
+  await popup.flush();
+  const statusBusy = popup.view.render(popup.cx);
+  assert.ok(byID(statusBusy, 'issue-TEST-1'));
+  assert.equal(byID(statusBusy, 'linear-issue-list').style.opacity, 0.6);
+  assert.ok(text(statusBusy).includes("Couldn't load Linear issues"));
 });
 
 test('disconnected status removes old issues even if the in-flight issues read finishes later', async () => {
