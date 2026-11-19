@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, seenAccount, unreadIds, nextSeen, errorText, statusLine } from './linear.js';
+import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, seenAccount, seenIds, unreadIds, nextSeen, SEEN_ACCOUNTS_LIMIT, errorText, statusLine } from './linear.js';
 
 test('unread tracking baselines new accounts and compares only current open issue identifiers', () => {
   const account = seenAccount({ org: { url: 'https://linear.app/fixture' }, source: 'api_key', user: { name: 'Viewer A' } });
@@ -12,13 +12,45 @@ test('unread tracking baselines new accounts and compares only current open issu
   assert.equal(seenAccount(undefined), null);
   const issue = (identifier, status_type = 'unstarted') => ({ identifier, status_type, title: 'Fixture title' });
   const current = [issue('TEST-3'), issue('TEST-2'), issue('TEST-2'), issue('TEST-4', 'completed')];
-  const before = nextSeen([issue('TEST-2'), issue('TEST-1')], account);
+  const before = { account, ids: ['TEST-1', 'TEST-2'] };
+  assert.deepEqual(seenIds(before, account), ['TEST-1', 'TEST-2']);
   assert.deepEqual(unreadIds(current, undefined, account), new Set());
   assert.deepEqual(unreadIds(current, before, 'another-account'), new Set());
   assert.deepEqual(unreadIds(current, before, account), new Set(['TEST-3']));
-  assert.deepEqual(nextSeen(current, account), { account, ids: ['TEST-2', 'TEST-3'] });
+  const next = nextSeen(before, current, account);
+  assert.deepEqual(next, { v: 2, accounts: [{ account, ids: ['TEST-2', 'TEST-3'] }] });
+  assert.deepEqual(seenIds(next, account), ['TEST-2', 'TEST-3']);
+  assert.deepEqual(before.ids, ['TEST-1', 'TEST-2']);
   const tooMany = Array.from({ length: 501 }, (_, i) => issue(`TEST-${501 - i}`));
-  assert.deepEqual(nextSeen(tooMany, account).ids, tooMany.map(row => row.identifier).sort().slice(0, 500));
+  assert.deepEqual(seenIds(nextSeen(null, tooMany, account), account),
+    tooMany.map(row => row.identifier).sort().slice(0, 500));
+});
+
+test('seen lists migrate legacy entries, replace the updated account, and cap write recency at eight', () => {
+  assert.equal(SEEN_ACCOUNTS_LIMIT, 8);
+  const legacy = { account: 'old', ids: ['OLD-1'] };
+  assert.deepEqual(nextSeen(legacy, [], 'new'), { v: 2, accounts: [{ account: 'new', ids: [] }, legacy] });
+  const accounts = Object.freeze(Array.from({ length: 8 }, (_, i) =>
+    Object.freeze({ account: `account-${i}`, ids: Object.freeze([`TEST-${i}`]) })));
+  const before = Object.freeze({ v: 2, accounts });
+  assert.deepEqual(nextSeen(before, [], 'account-2').accounts,
+    [{ account: 'account-2', ids: [] }, ...accounts.filter(entry => entry.account !== 'account-2')]);
+  assert.deepEqual(nextSeen(before, [], 'new').accounts, [{ account: 'new', ids: [] }, ...accounts.slice(0, 7)]);
+});
+
+test('seen lists distinguish a valid empty baseline from missing and invalid data', () => {
+  const v2 = { v: 2, accounts: [null, {}, { account: 'bad', ids: 3 }, { account: 'valid', ids: [] }] };
+  assert.deepEqual(seenIds(v2, 'valid'), []);
+  assert.equal(seenIds(v2, 'bad'), null);
+  assert.equal(seenIds(v2, 'absent'), null);
+  const issues = [{ identifier: 'TEST-1', status_type: 'started' }];
+  assert.deepEqual(unreadIds(issues, v2, 'valid'), new Set(['TEST-1']));
+  assert.deepEqual(unreadIds(issues, v2, 'absent'), new Set());
+  for (const stored of [null, false, 'bad', [], { v: 2, accounts: {} }, { account: 'bad', ids: 3 }]) {
+    assert.equal(seenIds(stored, 'bad'), null);
+    assert.deepEqual(nextSeen(stored, [], 'valid'), { v: 2, accounts: [{ account: 'valid', ids: [] }] });
+  }
+  assert.deepEqual(nextSeen(v2, [], 'new').accounts, [{ account: 'new', ids: [] }, { account: 'valid', ids: [] }]);
 });
 
 test('visibility defaults, malformed inputs and immutable toggles', () => {

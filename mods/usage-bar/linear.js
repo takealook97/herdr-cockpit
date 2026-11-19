@@ -1,5 +1,6 @@
 const DAY = 86400000;
 const SEEN_LIMIT = 500;
+export const SEEN_ACCOUNTS_LIMIT = 8;
 const STATUS_TITLES = new Map([
   ['started', 'In Progress'],
   ['unstarted', 'Todo'],
@@ -91,14 +92,28 @@ function openIdentifiers(issues) {
     .map(issue => issue.identifier);
 }
 
+function seenEntries(seen) {
+  const entries = seen?.v === 2 ? seen.accounts : [seen];
+  if (!Array.isArray(entries)) return [];
+  return entries.filter(entry => typeof entry?.account === 'string' && entry.account &&
+    Array.isArray(entry.ids));
+}
+
+export function seenIds(seen, account) {
+  return seenEntries(seen).find(entry => entry.account === account)?.ids ?? null;
+}
+
 export function unreadIds(issues, seen, account) {
-  if (!account || seen?.account !== account || !Array.isArray(seen.ids)) return new Set();
-  const known = new Set(seen.ids);
+  const ids = seenIds(seen, account);
+  if (ids === null) return new Set();
+  const known = new Set(ids);
   return new Set(openIdentifiers(issues).filter(id => !known.has(id)));
 }
 
-export function nextSeen(issues, account) {
-  return { account, ids: [...new Set(openIdentifiers(issues))].sort().slice(0, SEEN_LIMIT) };
+export function nextSeen(seen, issues, account) {
+  const ids = [...new Set(openIdentifiers(issues))].sort().slice(0, SEEN_LIMIT);
+  const others = seenEntries(seen).filter(entry => entry.account !== account);
+  return { v: 2, accounts: [{ account, ids }, ...others].slice(0, SEEN_ACCOUNTS_LIMIT) };
 }
 
 export function plainDescription(md, max = 1500) {

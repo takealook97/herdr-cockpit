@@ -26,7 +26,7 @@ The installer builds the helper and installs it at `$HOME/.local/bin/herdr-hud`.
 
 Select **cockpit** in Herdr's layout chooser (**Ctrl-Shift-L**), or invoke `layout.switch cockpit`. Keep the shipped layouts available as a fallback.
 
-The mods call `sh -c 'exec "$HOME/.local/bin/herdr-hud" "$@"' hud ...`, so the same configuration works on another machine without personal paths or PATH assumptions. Usage follows the active space's machine; the sidebar reads terminal metadata from the local helper.
+The mods call `sh -c 'exec "$HOME/.local/bin/herdr-hud" "$@"' hud ...`, so the same configuration works on another machine without personal paths or PATH assumptions. System readings, usage, and Linear follow the active space's machine. The sidebar reads terminal metadata from the local helper.
 
 To install only the helper on connected Herdr machines:
 
@@ -43,9 +43,9 @@ Click **Linear** to the left of CPU/RAM to see your open assigned issues. The dr
 
 Click the gear to the right of CPU/RAM to show or hide Codex, Claude, Gemini, Linear, or CPU/RAM. Changes apply immediately and persist across restarts. The gear stays visible.
 
-The same popup shows the Linear connection status. The local helper uses your saved Linear API key if available, then uses the default Claude Code Linear MCP session. You can create an API key from the popup and connect with the masked input. **Disconnect** removes the saved API key and lets the helper fall back to the Claude Code session.
+The Linear dropdown and settings stay on the machine selected when they open. Settings shows the target machine's name for remote connections. The helper on that machine uses its saved Linear API key if available, then falls back to its default Claude Code Linear MCP session. Connecting through the masked input sends the key to that machine via Herdr exec and saves it there. **Disconnect** removes that machine's saved key. Install or update the helper on each remote machine with `scripts/remote-install.sh`.
 
-You can turn Linear on once the popup confirms a connection and turn it off anytime. Connecting with an API key also shows the Linear button if it was hidden.
+You can turn Linear on from settings for the active machine once the popup confirms a connection. You can turn it off anytime. Connecting with an API key shows the Linear button if the target machine is still active.
 
 ## nexus
 
@@ -112,7 +112,7 @@ With no cr registry, `usage` and `usage --selected` use ordinary homes (`~/.code
 
 The usage bar polls system readings every second and selected-account usage every minute (`--max-age 45s`). Machine switches and agent completion trigger debounced reads. The space tree polls pane metadata every three seconds and the agent list every five seconds. See each mod's recipe for UI behavior.
 
-`linear issues` fetches open assigned issues on this computer, including when a remote space is active. The bar polls every 30 minutes while the Linear button is visible. Opening the dropdown refreshes the issues if the cache is older than one minute and updates the bar count. Refresh requests an immediate fetch. `linear issue` reads one issue by identifier, such as `ABC-123`, using the same connection. The dropdown reuses each in-memory detail reply for 60 seconds. Linear calls use no AI tokens.
+`linear issues` fetches open assigned issues on the target machine. The bar polls every 30 minutes while the Linear button is visible. Opening the dropdown refreshes the issues if the cache is older than one minute. Refresh requests an immediate fetch. `linear issue` reads one issue by identifier, such as `ABC-123`, using the same connection. The dropdown reuses each in-memory detail reply for 60 seconds. Linear calls use no AI tokens.
 
 An accent border on the Linear button marks issues newly assigned since the dropdown was last opened. Opening the dropdown clears the border and shows a dot next to those issues until the dropdown closes. The first successful read establishes a baseline for the current account.
 
@@ -120,9 +120,9 @@ An accent border on the Linear button marks issues newly assigned since the drop
 
 There is no hosted collector or telemetry. Data is gathered and cached on the machine where the helper runs. Usage queries contact provider services only through your own existing logins; the mods receive JSON, never credentials. Account labels, paths, usage, model names, and terminal addresses may appear in local JSON/cache files. Claude and Codex transcript inspection emits no message contents; Codex reads only `turn_context` model/effort metadata from its bounded tail. The hub renders interactive terminal content inside the local layout. Herdr persists the grid layout and Head metadata in shared mod state. Hub does not save terminal screens or message text. Nexus sends the Head roster (including bounded current-folder, report/title and recent terminal context for up to 8 Heads), the last 6 log entries and your command to the configured model provider through your own CLI login. Bounded Head context is cached privately with 20 s freshness in `nexus-context.json`; each cache write drops entries older than 10 minutes, keeping only recent entries for at most 10 minutes. Voice ensure and recording start warm it in a detached process. Cache misses fetch in parallel with a 1 s budget. It stores up to 50 command entries (text, target, reply) locally in `${XDG_CACHE_HOME:-$HOME/.cache}/herdr-hud/nexus-log.json` with private permissions. Voice audio is recognized on device by default (`serverSpeech` explicitly permits sending audio to Apple); it is stored only when `keepAudio` is explicitly enabled, as private local WAV/JSON pairs with the newest N retained (see [laughter evaluation](scripts/laugh-eval/README.md)); turning it off does not delete existing samples. Review screenshots before sharing them.
 
-Linear stores a validated API key in the macOS keychain under `herdr-hud-linear`, or in `${XDG_CONFIG_HOME:-$HOME/.config}/herdr-hud/linear.json` with mode 0600 on other platforms. The helper reads the Claude Code Linear MCP token in place without refreshing or writing it. Assigned issues are cached privately per credential generation. Herdr's shared state stores display preferences and revision counters. For unread tracking, it stores only the account identifier and open issue identifiers locally.
+On the target machine, Linear stores a validated API key in the macOS keychain under `herdr-hud-linear`, or in `${XDG_CONFIG_HOME:-$HOME/.config}/herdr-hud/linear.json` with mode 0600 on other platforms. The helper reads the Claude Code Linear MCP token in place without refreshing or writing it. Assigned issues are cached privately per credential generation. Herdr's shared state stores display preferences and revision metadata. For unread tracking, it stores account identifiers and open issue identifiers locally for up to eight accounts, ordered by the last update to each seen list.
 
-The API key is briefly visible in the process arguments for `linear connect --key`, including the macOS keychain command. Running the command manually can also put the key in shell history.
+Connecting sends the API key to the target machine through Herdr exec. It is briefly visible in that machine's `linear connect --key` process arguments and macOS keychain command arguments. Running the command manually can also put the key in shell history.
 
 ## Develop
 

@@ -1,6 +1,6 @@
 import { div } from 'gpui-kit';
 import { h_flex, v_flex, Switch, Input } from 'gpui-base';
-import { props, shared, setShared, theme, closeOverlay, openOverlay } from 'herdr';
+import { props, shared, setShared, theme, closeOverlay, openOverlay, spaces } from 'herdr';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
 import { groupIssues, groupType, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, errorText, statusLine } from './linear.js';
 import { openLinearKeySettings } from './ui.js';
@@ -9,9 +9,9 @@ const PANEL_WIDTH = { linear: 440, settings: 320 };
 const LABELS = { codex: 'Codex', claude: 'Claude', gemini: 'Gemini', linear: 'Linear', system: 'CPU · RAM' };
 const VISIBLE_KEY = 'usage-bar.visible';
 
-export function openPanel(panel, point) {
+export function openPanel(panel, point, machine) {
   const width = PANEL_WIDTH[panel];
-  const spec = { mod: 'usage-bar', kind: 'popup', width, props: { panel } };
+  const spec = { mod: 'usage-bar', kind: 'popup', width, props: machine ? { panel, machine } : { panel } };
   if (Number.isFinite(point?.x)) spec.at = { x: Math.max(8, point.x - width + 24), y: 48 };
   openOverlay(spec);
 }
@@ -153,7 +153,7 @@ export function linearPanel(view) {
 
   if (error === 'not_connected') return root.child(action(t, 'linear-settings', errorText(error), () => {
     dismiss();
-    openPanel('settings');
+    openPanel('settings', undefined, view.linearMachine());
   }));
   if (error) root.child(div().text_color(t.blocked).child(errorText(error)));
   if (!snapshot || error === 'expired') return root;
@@ -184,32 +184,39 @@ export function settingsPanel(view) {
   const orgName = status?.org?.name;
   const connectedLabel = orgName ? `Connected · ${orgName}` : 'Connected';
   const connection = loading ? 'Checking…' : (connected ? connectedLabel : 'Not connected');
+  const machine = view.linearMachine();
+  const onActiveMachine = () => machine === (spaces().find(space => space.active)?.machine || '');
   const busy = view.linearBusy;
   const error = view.linearActionError ?? statusError ?? (status?.error === 'not_connected' ? null : status?.error);
   return panelRoot(view, t, 'settings')
     .child(heading('Top bar'))
     .children(VISIBLE_KEYS.map(key => {
       const linear = key === 'linear';
-      const disabled = linear && !visible[key] && (loading || !connected);
+      const disabled = linear && !visible[key] && (loading || !connected || !onActiveMachine());
       const toggle = Switch.new('visible-' + key).checked(visible[key])
         .flex().items_center().flex_none().w(32).h(18).px(3).rounded(9)
         .bg(visible[key] ? t.accent : t.border)
         .child(div().size(12).rounded(6).bg(visible[key] ? t.accent_foreground : t.dim))
         .when(visible[key], el => el.justify_end());
       if (disabled) {
-        toggle.opacity(0.5).tooltip('Connect Linear below first');
+        toggle.opacity(0.5).tooltip(loading || !connected ? 'Connect Linear below first' : 'Open settings on this machine');
       } else {
         toggle.tab_index(0).cursor_pointer().on_click(() => {
           const current = shared(VISIBLE_KEY);
           if (linear && !readVisible(current).linear &&
-              (view.linearStatusReadRev != null || view.linearSnapshot().status?.connected !== true)) return;
+              (view.linearStatusReadRev != null || view.linearSnapshot().status?.connected !== true ||
+                !onActiveMachine())) return;
           setShared(VISIBLE_KEY, toggleVisible(current, key));
         });
       }
-      return h_flex().h(26).items_center().justify_between().gap(8)
+      return h_flex().h(linear && machine ? 34 : 26).items_center().justify_between().gap(8)
         .child(div().flex_none().child(LABELS[key]))
         .child(h_flex().min_w(0).items_center().gap(8)
-          .when(linear, el => el.child(div().min_w(0).truncate().text_color(t.dim).text_size(11).child(connection)))
+          .when(linear, el => {
+            const label = div().min_w(0).truncate().text_color(t.dim).text_size(11).child(connection);
+            el.child(machine ? v_flex().min_w(0).child(label)
+              .child(div().min_w(0).truncate().text_color(t.dim).text_size(11).child(`on ${machine}`)) : label);
+          })
           .child(toggle));
     }))
     .child(heading('Linear').pt(4).border_t(1).border_color(t.border))

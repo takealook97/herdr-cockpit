@@ -4,12 +4,13 @@ import { exec, spaces, agents, theme, props, shared, setShared } from 'herdr';
 import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell, barSpacing, LINEAR_WIDTH, GEAR_WIDTH, systemWidth } from './format.js';
 import { cell, groupLabel, systemRow, iconButton, linearButton } from './ui.js';
 import { readVisible, toggleVisible } from './prefs.js';
-import { badgeState, seenAccount, unreadIds, nextSeen } from './linear.js';
+import { badgeState, seenAccount, seenIds, unreadIds, nextSeen } from './linear.js';
 import { LinearDetails } from './linear-detail.js';
 import { linearPanel, settingsPanel, openPanel } from './panels.js';
 
 const LINEAR_REV = 'usage-bar.linear-rev';
 const LINEAR_ACCOUNT_REV = 'usage-bar.linear-account-rev';
+const LINEAR_ACCOUNT_MACHINE = 'usage-bar.linear-account-machine';
 const LINEAR_OPEN_REV = 'usage-bar.linear-open-rev';
 const LINEAR_SEEN = 'usage-bar.linear-seen';
 const LINEAR_POLL_MS = 30 * 60 * 1000;
@@ -25,13 +26,13 @@ function issuesMismatchStatus(issues, status) {
     !!(issues?.org_url && status?.org?.url && issues.org_url !== status.org.url);
 }
 
-function linearCommand(args) {
-  return ['sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear', ...args]];
+function linearCommand(args, machine) {
+  return hudCommand(machine, ['linear', ...args]);
 }
 
-async function execLinear(args) {
+async function execLinear(args, machine) {
   try {
-    const { code, stdout } = await exec(...linearCommand(args));
+    const { code, stdout } = await exec(...linearCommand(args, machine));
     const data = JSON.parse(stdout);
     if (typeof data?.error === 'string') return data;
     const valid = args[0] === 'issue' ? data?.issue?.identifier === args[1] :
@@ -45,12 +46,15 @@ async function execLinear(args) {
 
 export default class UsageBar extends View {
   init(_props, cx) {
-    this.panel = props()?.panel;
+    const popup = props();
+    this.panel = popup?.panel;
+    this.linearGen = 0;
     this.linearRev = linearRevision();
     this.linearAccountRev = linearRevision(LINEAR_ACCOUNT_REV);
     this.linearSeq = { issues: 0, status: 0 };
     this.linearVisible = readVisible(shared(VISIBLE_KEY)).linear;
     if (this.panel === 'linear' || this.panel === 'settings') {
+      this.linearTarget = popup?.machine ?? '';
       this.handle = cx.focus_handle();
       this.handle.focus();
       if (this.panel === 'settings') {
@@ -70,7 +74,9 @@ export default class UsageBar extends View {
     this.width = 1200;
     this.observedKey = null;
     this.agentStatus = new Map();
-    this.applyContext(this.context(), cx);
+    const snapshot = this.context();
+    this.linearTarget = snapshot.machine;
+    this.applyContext(snapshot, cx);
     this.refresh('sys', cx);
     this.refresh('usage', cx);
     cx.timer.every(1000, cx => this.refresh('sys', cx));
@@ -101,8 +107,32 @@ export default class UsageBar extends View {
       unread: this.linearUnreadAccount === this.linearSeenAccount ? this.linearUnread : undefined };
   }
 
+  linearMachine() {
+    return this.linearTarget;
+  }
+
+  switchLinearTarget(cx) {
+    const machine = this.context().machine;
+    if (machine === this.linearTarget) return;
+    this.linearTarget = machine;
+    this.linearGen++;
+    this.clearLinearSnapshot();
+    this.linearSeenReset = false;
+    if (this.linearVisible) {
+      this.readLinear('status', cx);
+      this.readLinear('issues', cx);
+    }
+    cx.notify();
+  }
+
   resetLinearAccount(rev) {
     this.linearAccountRev = rev;
+    this.clearLinearSnapshot();
+    const machine = shared(LINEAR_ACCOUNT_MACHINE);
+    this.linearSeenReset = (typeof machine === 'string' ? machine : '') === this.linearMachine();
+  }
+
+  clearLinearSnapshot() {
     this.linearSeq.issues++;
     this.linearSeq.status++;
     this.linearDetails?.clear();
@@ -112,7 +142,7 @@ export default class UsageBar extends View {
     this.linearStatusReadRev = null;
     this.linearIssuesRev = null;
     this.linearUnread = undefined;
-    this.linearSeenReset = true;
+    this.linearUnreadAccount = null;
     this.linearIssueError = null;
     this.linearStatusError = null;
   }
@@ -159,19 +189,23 @@ export default class UsageBar extends View {
       if (!reset) {
         for (const id of unreadIds(snapshot.issues, seen, account)) this.linearUnread.add(id);
       }
-      setShared(LINEAR_SEEN, nextSeen(snapshot.issues, account));
-    } else if (reset || seen?.account !== account || !Array.isArray(seen.ids)) {
-      setShared(LINEAR_SEEN, nextSeen(snapshot.issues, account));
+    } else if (!reset && seenIds(seen, account) !== null) {
+      return;
     }
+    setShared(LINEAR_SEEN, nextSeen(seen, snapshot.issues, account));
   }
 
   toggleLinearDetail(identifier, cx) {
+    const machine = this.linearMachine();
+    const gen = this.linearGen;
     const accountRev = this.linearAccountRev;
-    this.linearDetails.toggle(identifier, cx, execLinear,
-      () => !this.closed && accountRev === linearRevision(LINEAR_ACCOUNT_REV));
+    this.linearDetails.toggle(identifier, cx, args => execLinear(args, machine),
+      () => !this.closed && gen === this.linearGen && accountRev === linearRevision(LINEAR_ACCOUNT_REV));
   }
 
   readLinear(kind, cx, { refresh = false, observed = false } = {}) {
+    const machine = this.linearMachine();
+    const gen = this.linearGen;
     if (refresh) {
       this.linearDetails?.clear();
       cx.notify();
@@ -184,10 +218,10 @@ export default class UsageBar extends View {
     const args = [kind];
     if (kind === 'issues') args.push(...(refresh ? ['--refresh'] : ['--max-age', '60s']));
     cx.spawn(async cx => {
-      const data = await execLinear(args);
+      const data = await execLinear(args, machine);
       const currentRev = linearRevision();
       // A discarded status keeps its read revision so the bar can retry after an opening bump.
-      if (seq !== this.linearSeq[kind] ||
+      if (gen !== this.linearGen || seq !== this.linearSeq[kind] ||
           (kind === 'status' ? this.linearStatusReadRev : rev) !== currentRev ||
           accountRev !== linearRevision(LINEAR_ACCOUNT_REV)) return;
       if (kind === 'status') this.linearStatusReadRev = null;
@@ -224,6 +258,8 @@ export default class UsageBar extends View {
 
   changeLinear(action, cx) {
     if (this.linearBusy) return;
+    const machine = this.linearMachine();
+    const gen = this.linearGen;
     const args = [action];
     if (action === 'connect') {
       const key = this.input.value().trim();
@@ -235,12 +271,15 @@ export default class UsageBar extends View {
     this.linearActionError = null;
     cx.notify();
     cx.spawn(async cx => {
-      const data = await execLinear(args);
+      const data = await execLinear(args, machine);
+      if (gen !== this.linearGen) return;
       const accountRev = linearRevision(LINEAR_ACCOUNT_REV) + 1;
-      this.resetLinearAccount(accountRev);
+      setShared(LINEAR_ACCOUNT_MACHINE, machine);
       setShared(LINEAR_ACCOUNT_REV, accountRev);
+      this.resetLinearAccount(accountRev);
       this.bumpLinear();
-      if (action === 'connect' && data?.connected === true && !data.error) {
+      if (action === 'connect' && data?.connected === true && !data.error &&
+          machine === this.context().machine) {
         const visible = shared(VISIBLE_KEY);
         if (!readVisible(visible).linear) setShared(VISIBLE_KEY, toggleVisible(visible, 'linear'));
       }
@@ -291,7 +330,7 @@ export default class UsageBar extends View {
       .on_click(() => {
         const point = this.popupPointer?.panel === panel ? this.popupPointer.position : null;
         clearPointer();
-        openPanel(panel, point);
+        openPanel(panel, point, this.context().machine);
       });
   }
 
@@ -392,9 +431,15 @@ export default class UsageBar extends View {
       this.observeLinear(this.linearVisible, cx);
       return panel === 'linear' ? linearPanel(this) : settingsPanel(this, cx);
     }
-    // Render only compares and schedules. Apply context after render, and
-    // keep the last response visible until its replacement arrives.
+    // Apply usage context after render. Linear hides the prior machine's
+    // snapshot immediately and changes request ownership in its own timer.
     const snapshot = this.context();
+    const live = snapshot.machine;
+    const linearTargetChanged = live !== this.linearTarget;
+    if (linearTargetChanged) {
+      this.linearTransition?.cancel();
+      this.linearTransition = cx.timer.after(0, cx => this.switchLinearTarget(cx));
+    }
     if (snapshot.key !== this.observedKey) {
       this.observation?.cancel();
       this.observation = cx.timer.after(0, cx => { this.applyContext(snapshot, cx); cx.notify(); });
@@ -435,7 +480,7 @@ export default class UsageBar extends View {
       }
       groups.push(group(`account-${account.provider}`).child(content));
     }
-    const { status, issues, issueError, seenAccount: account } = this.linearSnapshot();
+    const { status, issues, issueError, seenAccount: account } = linearTargetChanged ? {} : this.linearSnapshot();
     const disconnected = ['not_connected', 'expired'].includes(issues?.error);
     const connected = disconnected ? false : (issues?.source ? true : status?.connected);
     const badge = badgeState(issues?.issues, now);

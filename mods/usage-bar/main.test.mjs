@@ -62,16 +62,20 @@ const nextAPIKeyStatus = { ...apiKeyStatus, user: { name: 'Second Viewer' } };
 const apiKeyIssues = { ...issuesReply, source: 'api_key' };
 const unavailable = { code: 127, stdout: '' };
 const reply = (data, code = 0, stderr = '') => ({ code, stdout: JSON.stringify(data), stderr });
-const linearCalls = h => h.calls.filter(call => call.args[3] === 'linear').map(call => call.args.slice(4));
+const linearExecs = h => h.calls.filter(call => call.args[3] === 'linear');
+const linearCalls = h => linearExecs(h).map(call => call.args.slice(4));
+const linearButton = h => byID(h.view.render(h.cx), 'linear');
+const linearPoll = h => h.intervals.find(job => job.ms === 1800000).fn(h.cx);
 const click = (tree, id, cx) => byID(tree, id).style.on_click({}, cx);
 
-function harness({ panel, machine, store = new Map(), initialResponse } = {}) {
+function harness({ panel, machine, popupMachine, store = new Map(), initialResponse } = {}) {
   const state = {
     spaces: [{ id: 's1', active: true, machine, tabs: [{ id: 'tb1' }] }],
     panes: [{ tab: 'tb1', terminal: 't2t' }, { tab: 'tb1', terminal: 't2w' },
       { tab: 'tb1', terminal: 'remote/t9' }, { tab: 'tb1', terminal: null }, { tab: 'other', terminal: 't99' }],
     agents: [{ space: 's1', address: 't2t', status: 'working' }],
   };
+  const popupProps = panel ? { panel, overlay: panel + '-overlay', machine: popupMachine } : {};
   const calls = [], tasks = [], timers = [], intervals = [];
   const overlays = [], closed = [], urls = [], writes = [];
   const fallback = args => args[1] === 'linear' ? reply(args[2] === 'status' ? statusReply : issuesReply)
@@ -99,18 +103,18 @@ function harness({ panel, machine, store = new Map(), initialResponse } = {}) {
     Input: { new: input => element('input').input(input) },
     exec: async (cmd, args, ...options) => {
       calls.push({ cmd, args, opts: options[0], options });
-      return respond(cmd === 'sh' ? ['hud', ...args.slice(3)] : args);
+      return respond(cmd === 'sh' ? ['hud', ...args.slice(3)] : args, options[0]);
     },
     spaces: () => state.spaces, panes: () => state.panes, agents: () => state.agents,
     theme: () => new Proxy({}, { get: (_obj, prop) => prop }), ...format, ...ui, ...prefs, ...linear,
-    props: () => panel ? { panel, overlay: panel + '-overlay' } : {},
+    props: () => popupProps,
     openOverlay: spec => overlays.push(spec), closeOverlay: id => closed.push(id),
     shared: key => store.get(key), setShared: (key, value) => { store.set(key, value); writes.push(key); } };
   const panels = evaluate('./panels.js', deps, '{linearPanel, settingsPanel, openPanel}');
   const UsageBar = evaluate('./main.js', { ...deps, ...panels }, 'UsageBar');
   const view = new UsageBar();
   view.init({}, cx);
-  return { view, cx, state, calls, timers, intervals, overlays, closed, urls, store, writes, fallback,
+  return { view, cx, state, popupProps, calls, timers, intervals, overlays, closed, urls, store, writes, fallback,
     stopped: () => stopped,
     respond(fn) { respond = fn; },
     async flush() { while (tasks.length) await Promise.all(tasks.splice(0)); },
@@ -375,7 +379,7 @@ test('popup initialization stays local and starts no bar timers', async () => {
     assert.equal(h.timers.length, 0);
     assert.equal(h.calls.length, expected.length);
     assert.deepEqual(linearCalls(h), expected);
-    assert.ok(h.calls.every(call => call.options.length === 0));
+    for (const call of h.calls) assert.deepEqual(call.options, [{ on: undefined }]);
     const externalRev = (store.get('usage-bar.linear-rev') ?? 0) + 1;
     store.set('usage-bar.linear-rev', externalRev);
     h.view.render(h.cx); h.tick(0); await h.flush();
@@ -383,15 +387,235 @@ test('popup initialization stays local and starts no bar timers', async () => {
       panel === 'linear' ? [['status'], ['issues', '--max-age', '60s']] : [['status']]);
     assert.equal(store.get('usage-bar.linear-rev'), externalRev);
   }
+});
 
-  const bar = harness({ machine: 'remote' }); await bar.flush();
-  bar.intervals.find(job => job.ms === 1800000).fn(bar.cx);
+test('the bar routes status and issues to the active remote machine or local exec', async () => {
+  for (const machine of ['R', undefined]) {
+    const bar = harness({ machine }); await bar.flush();
+    linearPoll(bar); await bar.flush();
+    assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s'], ['issues', '--max-age', '60s']]);
+    for (const call of linearExecs(bar)) {
+      assert.equal(call.cmd, 'sh');
+      assert.deepEqual(call.args.slice(0, 4), ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear']);
+      assert.deepEqual(call.options, [{ on: machine }]);
+    }
+  }
+});
+
+test('the first switched render hides the old Linear badge and late replies leave the new snapshot intact', async () => {
+  const store = new Map([['usage-bar.linear-seen', { account: seenAccount, ids: [] }]]);
+  const bar = harness({ machine: 'A', store }); await bar.flush();
+  bar.respond(() => unavailable);
+  linearPoll(bar); await bar.flush();
+  const before = linearButton(bar);
+  assert.deepEqual(text(before), ['◆', 'Linear', '1']);
+  assert.equal(before.style.tooltip, '1 new issue');
+  assert.equal(before.nodes[2].style.opacity, 0.6);
+  assert.equal(before.nodes[3].style.bg, 'blocked');
+
+  let finishA;
+  bar.respond((args, { on }) => {
+    if (on === 'A') return new Promise(resolve => { finishA = resolve; });
+    return args[2] === 'status' ? reply(statusReply) : reply({ ...issuesReply, issues: [] });
+  });
+  linearPoll(bar);
+  bar.state.spaces[0].machine = 'B';
+  const switched = linearButton(bar);
+  assert.deepEqual(text(switched), ['◆', 'Linear', '—']);
+  assert.equal(switched.style.tooltip, 'Assigned Linear issues');
+  assert.equal(switched.nodes[2].style.opacity, 1);
+  assert.equal(switched.nodes[2].style.text_color, 'dim');
+  assert.deepEqual(linearExecs(bar).map(call => call.opts.on), ['A', 'A', 'A', 'A']);
+
+  bar.tick(0);
+  assert.deepEqual(linearExecs(bar).slice(-2).map(call => [call.args[4], call.opts.on]),
+    [['status', 'B'], ['issues', 'B']]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(text(linearButton(bar)), ['◆', 'Linear', '0']);
+  finishA(reply({ error: 'not_connected' }));
   await bar.flush();
-  assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s'], ['issues', '--max-age', '60s']]);
-  for (const call of bar.calls.filter(call => call.args[3] === 'linear')) {
-    assert.equal(call.cmd, 'sh');
-    assert.deepEqual(call.args.slice(0, 4), ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear']);
-    assert.equal(call.options.length, 0);
+  assert.deepEqual(text(linearButton(bar)), ['◆', 'Linear', '0']);
+});
+
+test('a poll before the Linear transition still routes to A and cannot seed A with B issues', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const bStatus = { ...statusReply, user: { name: 'B Viewer' } };
+  const bIssue = { ...issue, identifier: 'B-1' };
+  const bar = harness({ machine: 'A', initialResponse: args =>
+    args[1] === 'linear' && args[2] === 'issues' ? unavailable :
+      reply(args[2] === 'status' ? statusReply : fixture[args[1]]) });
+  await bar.flush();
+  assert.equal(bar.store.has(seenKey), false);
+
+  let finishA;
+  bar.respond((args, { on }) => {
+    if (on === 'A') return new Promise(resolve => { finishA = resolve; });
+    return reply(args[2] === 'status' ? bStatus : { ...issuesReply, issues: [bIssue] });
+  });
+  bar.state.spaces[0].machine = 'B';
+  linearButton(bar);
+  linearPoll(bar);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(bar.store.has(seenKey), false);
+  assert.deepEqual(linearExecs(bar).at(-1).opts, { on: 'A' });
+
+  bar.tick(0);
+  await new Promise(resolve => setImmediate(resolve));
+  finishA(reply(issuesReply));
+  await bar.flush();
+  assert.deepEqual(bar.store.get(seenKey), {
+    v: 2, accounts: [{ account: linear.seenAccount(bStatus), ids: ['B-1'] }],
+  });
+  assert.deepEqual(bar.view.linearSnapshot().issues.issues, [bIssue]);
+});
+
+test('returning to A before the Linear transition runs preserves A and starts no extra reads', async () => {
+  const bar = harness({ machine: 'A' }); await bar.flush();
+  const original = bar.view.linearSnapshot();
+  bar.state.spaces[0].machine = 'B';
+  assert.ok(text(linearButton(bar)).includes('—'));
+  bar.state.spaces[0].machine = 'A';
+  assert.ok(text(linearButton(bar)).includes('1'));
+  bar.tick(0); await bar.flush();
+  assert.equal(linearExecs(bar).length, 2);
+  assert.equal(bar.view.linearSnapshot().status, original.status);
+  assert.equal(bar.view.linearSnapshot().issues, original.issues);
+});
+
+test('Linear and settings overlay commands stay pinned after the active machine changes', async () => {
+  const bar = harness({ machine: 'R' }); await bar.flush();
+  const tree = bar.view.render(bar.cx);
+  click(tree, 'linear', bar.cx);
+  assert.deepEqual(bar.overlays.at(-1).props, { panel: 'linear', machine: 'R' });
+  click(tree, 'gear', bar.cx);
+  assert.deepEqual(bar.overlays.at(-1).props, { panel: 'settings', machine: 'R' });
+  const popup = harness({ panel: 'linear', machine: 'R', popupMachine: bar.overlays[0].props.machine });
+  await popup.flush();
+  popup.state.spaces[0].machine = 'B';
+  popup.popupProps.machine = 'B';
+  popup.respond(args => reply(args[2] === 'issue' ? { issue } : { error: 'not_connected' }));
+  click(popup.view.render(popup.cx), 'issue-TEST-1', popup.cx);
+  await popup.flush();
+  click(popup.view.render(popup.cx), 'linear-refresh', popup.cx);
+  await popup.flush();
+  click(popup.view.render(popup.cx), 'linear-settings', popup.cx);
+  const handoff = popup.overlays.at(-1).props;
+  assert.deepEqual(handoff, { panel: 'settings', machine: 'R' });
+  const settings = harness({ panel: handoff.panel, popupMachine: handoff.machine,
+    machine: 'B', initialResponse: args => reply(args[2] === 'disconnect' ? disconnectedStatus : apiKeyStatus) });
+  await settings.flush();
+  settings.view.input.set_value('synthetic-test-key');
+  click(settings.view.render(settings.cx), 'linear-connect', settings.cx);
+  await settings.flush();
+  click(settings.view.render(settings.cx), 'linear-disconnect', settings.cx);
+  await settings.flush();
+  assert.deepEqual(linearCalls(popup), [['issues', '--max-age', '60s'], ['status'], ['issue', 'TEST-1'], ['issues', '--refresh']]);
+  assert.deepEqual(linearCalls(settings), [['status'], ['connect', '--key', 'synthetic-test-key'], ['status'], ['disconnect'], ['status']]);
+  for (const call of [...linearExecs(popup), ...linearExecs(settings)]) assert.deepEqual(call.opts, { on: 'R' });
+});
+
+test('connecting in settings pinned to A preserves the active B account’s unread baseline', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const store = new Map();
+  const bar = harness({ machine: 'B', store }); await bar.flush();
+  const baseline = store.get(seenKey);
+  const settings = harness({ panel: 'settings', popupMachine: 'A', machine: 'B', store,
+    initialResponse: () => reply(apiKeyStatus) });
+  await settings.flush();
+  const newIssues = { ...issuesReply, issues: [issue, { ...issue, identifier: 'B-2' }] };
+  bar.respond(args => reply(args[2] === 'status' ? statusReply : newIssues));
+  linearPoll(bar); await bar.flush();
+  assert.equal(linearButton(bar).style.tooltip, '1 new issue');
+
+  settings.view.input.set_value('synthetic-test-key');
+  click(settings.view.render(settings.cx), 'linear-connect', settings.cx);
+  await settings.flush();
+  assert.equal(store.get('usage-bar.linear-account-machine'), 'A');
+  assert.deepEqual(settings.writes.slice(0, 2), ['usage-bar.linear-account-machine', 'usage-bar.linear-account-rev']);
+  assert.deepEqual(text(linearButton(bar)), ['◆', 'Linear', '—']);
+  bar.tick(0); await bar.flush();
+  assert.equal(linearButton(bar).style.tooltip, '1 new issue');
+  assert.equal(store.get(seenKey), baseline);
+});
+
+test('settings must target the active machine to enable Linear, but can always turn it off', async () => {
+  const visibleKey = 'usage-bar.visible';
+  const store = new Map([[visibleKey, { linear: false }]]);
+  const h = harness({ panel: 'settings', popupMachine: 'A', machine: 'A', store });
+  await h.flush();
+  const active = h.view.render(h.cx);
+  assert.equal(typeof byID(active, 'visible-linear').style.on_click, 'function');
+  h.state.spaces[0].machine = 'B';
+  click(active, 'visible-linear', h.cx);
+  assert.equal(store.get(visibleKey).linear, false);
+  const disabled = byID(h.view.render(h.cx), 'visible-linear');
+  assert.equal(disabled.style.on_click, undefined);
+  assert.equal(disabled.style.tooltip, 'Open settings on this machine');
+  store.set(visibleKey, { linear: true });
+  click(h.view.render(h.cx), 'visible-linear', h.cx);
+  assert.equal(store.get(visibleKey).linear, false);
+
+  let finishConnect;
+  h.respond(args => args[2] === 'connect'
+    ? new Promise(resolve => { finishConnect = resolve; }) : reply(apiKeyStatus));
+  h.state.spaces[0].machine = 'A';
+  h.view.input.set_value('synthetic-test-key');
+  click(h.view.render(h.cx), 'linear-connect', h.cx);
+  h.state.spaces[0].machine = 'B';
+  finishConnect(reply(apiKeyStatus));
+  await h.flush();
+  assert.equal(store.get(visibleKey).linear, false);
+});
+
+test('switching between machines preserves both accounts’ unread issues', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const profiles = {
+    A: { status: statusReply, issues: [issue] },
+    B: { status: { ...statusReply, user: { name: 'B Viewer' } }, issues: [{ ...issue, identifier: 'B-1' }] },
+  };
+  const respond = (args, { on }) => {
+    if (args[1] !== 'linear') return reply(fixture[args[1]]);
+    const { status, issues } = profiles[on];
+    return reply(args[2] === 'status' ? status : { ...issuesReply, issues });
+  };
+  const bar = harness({ machine: 'A', initialResponse: respond }); await bar.flush();
+  const switchTo = async machine => {
+    bar.state.spaces[0].machine = machine;
+    linearButton(bar); bar.tick(0); await bar.flush();
+  };
+  await switchTo('B');
+  const baseline = bar.store.get(seenKey);
+  assert.deepEqual(baseline.accounts, [
+    { account: linear.seenAccount(profiles.B.status), ids: ['B-1'] }, { account: seenAccount, ids: ['TEST-1'] },
+  ]);
+  profiles.A.issues.push({ ...issue, identifier: 'A-2' });
+  profiles.B.issues.push({ ...issue, identifier: 'B-2' }, { ...issue, identifier: 'B-3' });
+  for (const [machine, tooltip] of [['A', '1 new issue'], ['B', '2 new issues'], ['A', '1 new issue']]) {
+    await switchTo(machine);
+    assert.equal(linearButton(bar).style.tooltip, tooltip);
+    assert.equal(bar.store.get(seenKey), baseline);
+  }
+});
+
+test('the settings connection label names a remote machine while loading, connected and disconnected', async () => {
+  for (const machine of ['R', undefined]) {
+    let finishStatus;
+    const h = harness({ panel: 'settings', popupMachine: machine,
+      initialResponse: () => new Promise(resolve => { finishStatus = resolve; }) });
+    const verify = connection => {
+      const labels = text(h.view.render(h.cx));
+      assert.ok(labels.includes(connection));
+      if (machine) assert.equal(labels[labels.indexOf(connection) + 1], 'on R');
+      else assert.ok(!labels.some(label => label.startsWith('on ')));
+    };
+    verify('Checking…');
+    finishStatus(reply(statusReply));
+    await h.flush();
+    verify('Connected · Example');
+    h.respond(() => reply(disconnectedStatus));
+    h.view.readLinear('status', h.cx);
+    await h.flush();
+    verify('Not connected');
   }
 });
 
@@ -436,7 +660,7 @@ test('a successful dropdown read updates the bar count without a revision loop',
     args[2] === 'status' ? new Promise(resolve => { finishStatus = resolve; }) : reply(newerIssues) });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(store.get('usage-bar.linear-rev'), 1);
-  assert.deepEqual(store.get('usage-bar.linear-seen').ids, ['TEST-1']);
+  assert.deepEqual(linear.seenIds(store.get('usage-bar.linear-seen'), seenAccount), ['TEST-1']);
   finishStatus(reply(statusReply));
   await popup.flush();
   assert.ok(text(popup.view.render(popup.cx)).includes(org.name));
@@ -530,7 +754,7 @@ test('a transient whoami failure preserves unread through recovery and the next 
   const bar = harness({ store });
   await bar.flush();
   const baseline = store.get(seenKey);
-  assert.deepEqual(baseline, { account: seenAccount, ids: ['TEST-1'] });
+  assert.deepEqual(baseline, { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-1'] }] });
   const two = { ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2' }] };
   const render = () => bar.view.render(bar.cx);
   const tooltip = () => byID(render(), 'linear').style.tooltip;
@@ -556,7 +780,7 @@ test('a transient whoami failure preserves unread through recovery and the next 
     reply(args[2] === 'status' ? statusReply : two) });
   await popup.flush();
   assert.equal(byID(popup.view.render(popup.cx), 'issue-TEST-2').nodes[0].style.bg, 'accent');
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-1', 'TEST-2'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-1', 'TEST-2'] }] });
 });
 
 test('partial identity before any complete status leaves the shared seen set alone', async () => {
@@ -584,7 +808,7 @@ test('the unread border clears on open and dropdown dots persist through refresh
   const third = { ...issue, identifier: 'TEST-3' };
   const fourth = { ...issue, identifier: 'TEST-4' };
   const withIssues = (...issues) => reply({ ...issuesReply, issues });
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-1'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-1'] }] });
   assert.equal(button().style.border, 1);
   assert.equal(button().style.border_color, 'muted66');
   assert.equal(button().style.tooltip, 'Assigned Linear issues');
@@ -599,21 +823,21 @@ test('the unread border clears on open and dropdown dots persist through refresh
   assert.equal(button().style.tooltip, 'Assigned Linear issues');
   assert.equal(linearCalls(bar).length, 3);
 
-  store.set(seenKey, { account: seenAccount, ids: ['TEST-1'] });
+  store.set(seenKey, { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-1'] }] });
   bar.respond(args => args[2] === 'issues' ? withIssues(issue, second, third) : bar.fallback(args));
   poll.fn(bar.cx); await bar.flush();
   assert.equal(button().style.border, 1.5);
   assert.equal(button().style.border_color, 'accent');
   assert.equal(button().style.tooltip, '2 new issues');
   assert.ok(button().nodes.some(node => node.style.bg === 'blocked'));
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-1'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-1'] }] });
 
   const popup = harness({ store, panel: 'linear', initialResponse: args =>
     args[2] === 'status' ? reply(statusReply) : withIssues(second, third) });
   await popup.flush();
   const render = () => popup.view.render(popup.cx);
   const dot = id => byID(render(), 'issue-' + id).nodes[0].style;
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-2', 'TEST-3'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-2', 'TEST-3'] }] });
   assert.equal(button().style.tooltip, 'Assigned Linear issues');
   assert.equal(button().style.border_color, 'muted66');
   assert.equal(dot('TEST-2').bg, 'accent');
@@ -624,7 +848,7 @@ test('the unread border clears on open and dropdown dots persist through refresh
   await popup.flush();
   assert.equal(dot('TEST-2').bg, 'accent');
   assert.equal(dot('TEST-4').bg, 'accent');
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-2', 'TEST-3', 'TEST-4'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-2', 'TEST-3', 'TEST-4'] }] });
 
   popup.view.close();
   const reopened = harness({ store, panel: 'linear', initialResponse: args =>
@@ -646,11 +870,13 @@ test('an error with cached issues leaves the seen set and opening revision intac
   assert.ok(byID(popup.view.render(popup.cx), 'issue-TEST-1'));
 });
 
-test('the first successful bar read of a different account replaces the unread baseline', async () => {
+test('the first successful bar read of a different account adds an unread baseline', async () => {
   const seenKey = 'usage-bar.linear-seen';
   const store = new Map([[seenKey, { account: 'https://linear.app/prior', ids: ['OLD-1'] }]]);
   const bar = harness({ store }); await bar.flush();
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-1'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [
+    { account: seenAccount, ids: ['TEST-1'] }, { account: 'https://linear.app/prior', ids: ['OLD-1'] },
+  ] });
   assert.deepEqual(bar.writes, [seenKey]);
   assert.equal(byID(bar.view.render(bar.cx), 'linear').style.tooltip, 'Assigned Linear issues');
 });
@@ -660,7 +886,7 @@ test('a different viewer in the same organization starts with zero unread', asyn
   const store = new Map();
   const bar = harness({ store, initialResponse: args => args[2] === 'status' ? reply(apiKeyStatus) : reply(apiKeyIssues) });
   await bar.flush();
-  assert.deepEqual(store.get(seenKey), { account: `api_key|${org.url}|First Viewer`, ids: ['TEST-1'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: `api_key|${org.url}|First Viewer`, ids: ['TEST-1'] }] });
 
   const issues = { ...apiKeyIssues, issues: [{ ...issue, identifier: 'TEST-7' }, { ...issue, identifier: 'TEST-8' }] };
   bar.respond(args => args[2] === 'status' ? reply(nextAPIKeyStatus) : reply(issues));
@@ -669,7 +895,10 @@ test('a different viewer in the same organization starts with zero unread', asyn
   bar.view.render(bar.cx);
   bar.tick(0);
   await bar.flush();
-  assert.deepEqual(store.get(seenKey), { account: `api_key|${org.url}|Second Viewer`, ids: ['TEST-7', 'TEST-8'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [
+    { account: `api_key|${org.url}|Second Viewer`, ids: ['TEST-7', 'TEST-8'] },
+    { account: `api_key|${org.url}|First Viewer`, ids: ['TEST-1'] },
+  ] });
   assert.equal(byID(bar.view.render(bar.cx), 'linear').style.tooltip, 'Assigned Linear issues');
 
   const popup = harness({ store, panel: 'linear', initialResponse: args =>
@@ -691,7 +920,7 @@ test('an account revision forces a fresh baseline even if the loaded viewer is u
   bar.view.render(bar.cx);
   bar.tick(0);
   await bar.flush();
-  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-2'] });
+  assert.deepEqual(store.get(seenKey), { v: 2, accounts: [{ account: seenAccount, ids: ['TEST-2'] }] });
   assert.equal(byID(bar.view.render(bar.cx), 'linear').style.tooltip, 'Assigned Linear issues');
 });
 
@@ -720,7 +949,7 @@ test('Linear groups issues and toggles inline details without opening an externa
   click(panel, 'issue-TEST-1', h.cx);
   assert.deepEqual(h.calls.at(-1), {
     cmd: 'sh', args: ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear', 'issue', 'TEST-1'],
-    opts: undefined, options: [],
+    opts: { on: undefined }, options: [{ on: undefined }],
   });
   const rendered = () => h.view.render(h.cx);
   const detail = () => byID(rendered(), 'issue-detail-TEST-1');
@@ -910,7 +1139,7 @@ test('masked settings input clears immediately and failed connect uses the JSON 
   assert.ok(!text(tree).some(label => label.includes('private') || label.includes(key)));
   assert.equal(h.store.get('usage-bar.linear-rev'), 1);
   assert.equal(h.store.get('usage-bar.linear-account-rev'), 1);
-  assert.equal(h.store.size, 3);
+  assert.equal(h.store.get('usage-bar.linear-account-machine'), '');
   assert.equal(h.store.get('usage-bar.visible'), hidden);
   assert.ok(!h.writes.includes('usage-bar.visible'));
   assert.deepEqual(linearCalls(h).at(-1), ['status']);
