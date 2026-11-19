@@ -25,7 +25,7 @@ export const load = (url, name, deps) => {
 };
 export function host(initial = {}) {
   const shared = new Map(Object.entries(initial)), calls = [], tasks = [], timers = [], intervals = [];
-  const cx = { notify() {}, stop_propagation() {}, focus_handle: () => ({ focus() {} }),
+  const cx = { sleep: () => new Promise(() => {}), notify() {}, stop_propagation() {}, focus_handle: () => ({ focus() {} }),
     spawn(fn) { const task = fn(cx); if (!fn.toString().includes('nextCommand')) tasks.push(task); return task; },
     timer: {
       after(ms, fn) { const timer = { ms, fn, canceled: false, cancel() { this.canceled = true; } }; timers.push(timer); return timer; },

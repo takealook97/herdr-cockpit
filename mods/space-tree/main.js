@@ -4,6 +4,7 @@ import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
+import { createPollGate, withTimeout, HUD_EXEC_TIMEOUT_MS, HUD_INFLIGHT_MAX_MS } from "./poll.js";
 import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors, SECTION_PALETTE } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow, hubRow, nexusRow } from "./rows.js";
@@ -22,6 +23,8 @@ export default class SpaceTree extends Plumbing {
     super.init(p, cx);
     this.cx = cx;
     try { this.treeFolded = JSON.parse(localStorage.getItem("tree.folded") ?? "{}"); } catch { this.treeFolded = {}; }
+    this.pollGate = createPollGate();
+    this.hudInflight = new Map();
     this.orch = {};
     this.lastModel = {};
     this.orchStale = false;
@@ -52,47 +55,74 @@ export default class SpaceTree extends Plumbing {
   }
 
   refreshOrch(cx) {
-    if (this.polling) return;
-    this.polling = true;
+    const token = this.pollGate.begin();
+    if (!token) return;
     cx.spawn(async cx => {
-      const names = [...new Set([null, ...machines().map(m => m.name), ...spaces().map(s => s.machine ?? null)])];
-      const results = await Promise.all(names.map(async machine => {
-        try {
-          const r = await exec("sh", ["-c", 'exec "$HOME/.local/bin/herdr-hud" "$@"', "hud", "panes"], { on: machine || undefined });
-          if (r.code !== 0) throw new Error("hud unavailable");
-          const data = JSON.parse(r.stdout);
-          if (data.error || !Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
-          const observed = new Map(panes().map(p => [p.terminal, p.program?.key]));
-          const qualify = id => !id || !machine || id.includes("/") ? id : `${machine}/${id}`;
-          const at = Date.now();
-          for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
-            const key = observed.get(qualify(info.address ?? info.terminal));
-            const reported = info.program?.replace(/-code$/, "");
-            info.programKey = !reported || reported === key?.replace(/-code$/, "") ? key : info.program;
-            info.at = at;
-          }
-          this.hub.snapshots.set(machine, { machine, data });
-          return true;
-        } catch { return false; }
-      }));
-      for (const machine of this.hub.snapshots.keys()) if (!names.includes(machine)) this.hub.snapshots.delete(machine);
-      const data = mergeHuds([...this.hub.snapshots.values()]);
-      for (const info of data.runs.flatMap(run => run.workers ?? [])) {
-        if (info.terminal && info.model && (!this.lastModel[info.terminal]?.model || this.lastModel[info.terminal].programKey !== info.programKey))
-          this.lastModel[info.terminal] = { model: info.model, effort: info.effort, programKey: info.programKey, at: info.at };
+      try {
+        const names = [...new Set([null, ...machines().map(m => m.name), ...spaces().map(s => s.machine ?? null)])];
+        const results = await Promise.all(names.map(machine => this.pollMachine(cx, machine, token)));
+        this.applyOrch(cx, names, results, token);
+      } catch {
+        if (this.pollGate.isCurrent(token)) {
+          this.orchStale = true;
+          try { setShared("hub.stale", true); } catch {}
+        }
+      } finally {
+        this.pollGate.end(token);
+        cx.notify();
       }
-      for (const info of data.terminals) {
-        if (info.address && info.model) this.lastModel[info.address] = { model: info.model, effort: info.effort, programKey: info.programKey, at: info.at };
-      }
-      data.lastModel = this.lastModel;
-      this.orch = data;
-      this.orchStale = results.some(ok => !ok);
-      this.orchLoaded = this.orchLoaded || results.some(Boolean);
-      setShared("hub.stale", this.orchStale);
-      this.hub.sync(cx);
-      this.polling = false;
-      cx.notify();
     });
+  }
+
+  async pollMachine(cx, machine, token) {
+    const previous = this.hudInflight.get(machine), startedAt = Date.now();
+    if (previous && startedAt - previous.startedAt < HUD_INFLIGHT_MAX_MS) return false;
+    const attempt = { startedAt };
+    this.hudInflight.set(machine, attempt);
+    const release = () => {
+      if (this.hudInflight.get(machine) === attempt) this.hudInflight.delete(machine);
+    };
+    let pending;
+    try {
+      pending = exec("sh", [...HUD, "panes"], { on: machine || undefined });
+      const r = await withTimeout(pending.finally(release), HUD_EXEC_TIMEOUT_MS, ms => cx.sleep(ms));
+      if (r.code !== 0) throw new Error("hud unavailable");
+      const data = JSON.parse(r.stdout);
+      if (data.error || !Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
+      const observed = new Map(panes().map(p => [p.terminal, p.program?.key]));
+      const qualify = id => !id || !machine || id.includes("/") ? id : `${machine}/${id}`;
+      const at = Date.now();
+      for (const info of [...data.terminals, ...data.runs.flatMap(run => run.workers ?? [])]) {
+        const key = observed.get(qualify(info.address ?? info.terminal));
+        const reported = info.program?.replace(/-code$/, "");
+        info.programKey = !reported || reported === key?.replace(/-code$/, "") ? key : info.program;
+        info.at = at;
+      }
+      if (this.pollGate.isCurrent(token)) this.hub.snapshots.set(machine, { machine, data });
+      return true;
+    } catch {
+      if (!pending) release();
+      return false;
+    }
+  }
+
+  applyOrch(cx, names, results, token) {
+    if (!this.pollGate.isCurrent(token)) return;
+    for (const machine of this.hub.snapshots.keys()) if (!names.includes(machine)) this.hub.snapshots.delete(machine);
+    const data = mergeHuds([...this.hub.snapshots.values()]);
+    for (const info of data.runs.flatMap(run => run.workers ?? [])) {
+      if (info.terminal && info.model && (!this.lastModel[info.terminal]?.model || this.lastModel[info.terminal].programKey !== info.programKey))
+        this.lastModel[info.terminal] = { model: info.model, effort: info.effort, programKey: info.programKey, at: info.at };
+    }
+    for (const info of data.terminals) {
+      if (info.address && info.model) this.lastModel[info.address] = { model: info.model, effort: info.effort, programKey: info.programKey, at: info.at };
+    }
+    data.lastModel = this.lastModel;
+    this.orch = data;
+    this.orchStale = results.some(ok => !ok);
+    this.orchLoaded = this.orchLoaded || results.some(Boolean);
+    setShared("hub.stale", this.orchStale);
+    this.hub.sync(cx);
   }
 
   inputs() {

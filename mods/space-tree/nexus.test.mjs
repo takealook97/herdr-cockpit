@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { load, host, element } from './host.test.mjs';
 import * as model from './hub-model.js';
+import * as poll from './poll.js';
 import { buildTree, assignSectionColors, machineId, rowId } from './model.js';
 
 function setup(existing) {
   const h = existing ?? host(); h.overlays = [];
-  const deps = { ...h.deps, ...model, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
+  const deps = { ...h.deps, ...model, ...poll, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
     focused: () => ({}), layout: () => ({}), nextCommand: () => new Promise(resolve => { h.command = resolve; }),
     exec: async () => ({ code: 0, stdout: '{"runs":[],"terminals":[]}' }),
     openOverlay: spec => { h.overlays.push(['open', spec]); return 'ov1'; },
@@ -27,7 +28,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function setupVoice(reply, existing) {
   const h = existing ?? host(); h.overlays = [];
-  const deps = { ...h.deps, ...model, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
+  const deps = { ...h.deps, ...model, ...poll, spaces: () => [], panes: () => [], terminals: () => [], machines: () => [],
     focused: () => ({ terminal: h.focusedTerminal }), layout: () => ({}), nextCommand: () => new Promise(resolve => { h.command = resolve; }), ...ensure(reply),
     openOverlay: spec => { h.overlays.push(['open', spec]); return 'ov1'; },
     closeOverlay: id => { h.overlays.push(['close', id]); return null; } };

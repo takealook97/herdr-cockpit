@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { load, host, element } from './host.test.mjs';
 import * as model from './hub-model.js';
+import * as poll from './poll.js';
 import { beginTabDrag, hoverTabTarget, dropTab } from './drag.js';
 import { buildTree, paneSub, orchIndexes, assignSectionColors, machineId, rowId } from './model.js';
 const layout = JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url)));
@@ -12,7 +13,7 @@ function setup() {
   h.panes = [{ pane: 'p', tab: 'tb', terminal: 't1', status: 'working' }];
   h.terminals = [{ address: 't1' }]; h.hud = { runs: [], terminals: [{ address: 't1' }] };
   h.focus = 't1'; h.writes = [];
-  const deps = { ...h.deps, ...model, focused: () => ({ terminal: h.focus }),
+  const deps = { ...h.deps, ...model, ...poll, focused: () => ({ terminal: h.focus }),
     layout: () => layout, spaces: () => h.spaces, panes: () => h.panes, terminals: () => h.terminals,
     machines: () => [], nextCommand: () => new Promise(resolve => { h.command = resolve; }),
     exec: async (command, args) => {
