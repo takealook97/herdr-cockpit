@@ -118,6 +118,9 @@ function harness({ panel, machine, popupMachine, store = new Map(), initialRespo
     stopped: () => stopped,
     respond(fn) { respond = fn; },
     async flush() { while (tasks.length) await Promise.all(tasks.splice(0)); },
+    tickIntervals(ms) {
+      for (const job of intervals.filter(job => job.ms === ms)) job.fn(cx);
+    },
     tick(ms) {
       const jobs = timers.filter(job => job.ms === ms && !job.canceled);
       for (const job of jobs) { job.canceled = true; job.fn(cx); }
@@ -127,7 +130,7 @@ function harness({ panel, machine, popupMachine, store = new Map(), initialRespo
 
 test('poll intervals and selected account arguments', async () => {
   const h = harness(); await h.flush();
-  assert.deepEqual(h.intervals.map(job => job.ms), [1000, 60000, 1800000]);
+  assert.deepEqual(h.intervals.map(job => job.ms), [1000, 60000, 1800000, 60000]);
   assert.deepEqual(h.calls.map(call => ['hud', ...call.args.slice(3)]).filter(args => args[1] === 'usage'), [['hud', 'usage', '--selected', '--max-age', '45s']]);
 });
 
@@ -401,6 +404,63 @@ test('the bar routes status and issues to the active remote machine or local exe
       assert.deepEqual(call.options, [{ on: machine }]);
     }
   }
+});
+
+test('the bar retries unknown Linear status and fetches issues after it confirms the connection', async () => {
+  const bar = harness({ initialResponse: args => args[1] === 'linear' ? unavailable : reply(fixture[args[1]]) });
+  await bar.flush();
+  assert.equal(linearButton(bar), undefined);
+  assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s']]);
+
+  let finishStatus;
+  bar.respond(args => args[2] === 'status'
+    ? new Promise(resolve => { finishStatus = resolve; }) : bar.fallback(args));
+  bar.tickIntervals(60000);
+  assert.deepEqual(linearCalls(bar).slice(2), [['status']]);
+  bar.tickIntervals(60000);
+  assert.deepEqual(linearCalls(bar).slice(2), [['status']]);
+  finishStatus(reply(statusReply));
+  await bar.flush();
+  assert.deepEqual(linearCalls(bar).slice(2), [['status'], ['issues', '--max-age', '60s']]);
+  assert.ok(text(linearButton(bar)).includes('1'));
+});
+
+test('the bar skips status retries after Linear is confirmed disconnected', async () => {
+  const bar = harness({ initialResponse: args => {
+    if (args[1] !== 'linear') return reply(fixture[args[1]]);
+    return args[2] === 'status' ? reply(disconnectedStatus) : unavailable;
+  } });
+  await bar.flush();
+  bar.tickIntervals(60000);
+  await bar.flush();
+  assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s']]);
+});
+
+test('Linear and settings popups do not retry unknown status on the minute', async () => {
+  for (const panel of ['linear', 'settings']) {
+    const popup = harness({ panel, initialResponse: () => unavailable });
+    await popup.flush();
+    const initialCalls = linearCalls(popup);
+    popup.tickIntervals(60000);
+    await popup.flush();
+    assert.deepEqual(linearCalls(popup), initialCalls);
+  }
+});
+
+test('hiding Linear gives provider cards the button width and gap', async () => {
+  const connected = harness();
+  const disconnected = harness({ initialResponse: args => {
+    if (args[1] !== 'linear') return reply(fixture[args[1]]);
+    return args[2] === 'status' ? reply(disconnectedStatus) : unavailable;
+  } });
+  await Promise.all([connected.flush(), disconnected.flush()]);
+  for (const bar of [connected, disconnected]) bar.view.width = 900;
+  const shown = connected.view.render(connected.cx);
+  const hidden = disconnected.view.render(disconnected.cx);
+  assert.ok(byID(shown, 'linear'));
+  assert.equal(byID(hidden, 'linear'), undefined);
+  assert.equal(byID(hidden, 'groups').style.max_w - byID(shown, 'groups').style.max_w,
+    format.LINEAR_WIDTH + shown.style.gap);
 });
 
 test('the bar hides Linear on a disconnected machine and shows it again on returning to a connected machine', async () => {

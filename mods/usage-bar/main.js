@@ -14,6 +14,7 @@ const LINEAR_ACCOUNT_MACHINE = 'usage-bar.linear-account-machine';
 const LINEAR_OPEN_REV = 'usage-bar.linear-open-rev';
 const LINEAR_SEEN = 'usage-bar.linear-seen';
 const LINEAR_POLL_MS = 30 * 60 * 1000;
+const LINEAR_STATUS_RETRY_MS = 60 * 1000;
 const VISIBLE_KEY = 'usage-bar.visible';
 const linearRevision = (key = LINEAR_REV) => {
   const value = shared(key);
@@ -88,6 +89,10 @@ export default class UsageBar extends View {
     cx.timer.every(LINEAR_POLL_MS, cx => {
       if (this.linearVisible && readVisible(shared(VISIBLE_KEY)).linear) this.readLinear('issues', cx);
     });
+    cx.timer.every(LINEAR_STATUS_RETRY_MS, cx => {
+      if (this.linearVisible && readVisible(shared(VISIBLE_KEY)).linear &&
+          this.linearStatus == null && this.linearStatusReadRev == null) this.readLinear('status', cx);
+    });
   }
 
   close() {
@@ -140,6 +145,7 @@ export default class UsageBar extends View {
     this.linearStatus = null;
     this.linearSeenAccount = null;
     this.linearStatusReadRev = null;
+    this.linearIssuesReadSeq = null;
     this.linearIssuesRev = null;
     this.linearUnread = undefined;
     this.linearUnreadAccount = null;
@@ -213,12 +219,14 @@ export default class UsageBar extends View {
     const seq = ++this.linearSeq[kind];
     const rev = linearRevision();
     if (kind === 'status') this.linearStatusReadRev = rev;
+    else this.linearIssuesReadSeq = seq;
     const accountRev = this.linearAccountRev;
     const statusAtStart = this.linearStatus;
     const args = [kind];
     if (kind === 'issues') args.push(...(refresh ? ['--refresh'] : ['--max-age', '60s']));
     cx.spawn(async cx => {
       const data = await execLinear(args, machine);
+      if (kind === 'issues' && this.linearIssuesReadSeq === seq) this.linearIssuesReadSeq = null;
       const currentRev = linearRevision();
       // A discarded status keeps its read revision so the bar can retry after an opening bump.
       if (gen !== this.linearGen || seq !== this.linearSeq[kind] ||
@@ -238,6 +246,9 @@ export default class UsageBar extends View {
         }
       } else if (!readError) {
         this.applyLinearStatus(data, currentRev);
+        if (!this.closed && !this.panel && data.connected && !this.linearIssues && this.linearIssuesReadSeq == null) {
+          this.readLinear('issues', cx);
+        }
       } else {
         this.linearStatusError = readError;
       }
