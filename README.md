@@ -45,6 +45,8 @@ Click the gear to the right of CPU/RAM to show or hide Codex, Claude, Gemini, Li
 
 The same popup shows the Linear connection status. The local helper uses your saved Linear API key if available, then uses the default Claude Code Linear MCP session. You can create an API key from the popup and connect with the masked input. **Disconnect** removes the saved API key and lets the helper fall back to the Claude Code session.
 
+You can turn Linear on once the popup confirms a connection and turn it off anytime. Connecting with an API key also shows the Linear button if it was hidden.
+
 ## nexus
 
 NEXUS is the locked top row above hub under **This computer**. Click it or press **Cmd-Shift-N** from any tab of the cockpit layout to open a dimmed, centered dialog with a dedicated Claude Code terminal. The same shortcut closes it. It works only in the cockpit layout, because the space-tree mod receives the bindings.

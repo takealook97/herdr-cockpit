@@ -179,22 +179,41 @@ export function linearPanel(view) {
 export function settingsPanel(view) {
   const t = theme(), visible = readVisible(shared(VISIBLE_KEY));
   const { status, statusError } = view.linearSnapshot();
+  const loading = view.linearStatusReadRev != null || (!status && !statusError);
+  const connected = status?.connected === true;
+  const orgName = status?.org?.name;
+  const connectedLabel = orgName ? `Connected · ${orgName}` : 'Connected';
+  const connection = loading ? 'Checking…' : (connected ? connectedLabel : 'Not connected');
   const busy = view.linearBusy;
   const error = view.linearActionError ?? statusError ?? (status?.error === 'not_connected' ? null : status?.error);
   return panelRoot(view, t, 'settings')
     .child(heading('Top bar'))
-    .children(VISIBLE_KEYS.map(key => h_flex().h(26).items_center().justify_between()
-      .child(div().child(LABELS[key]))
-      .child(Switch.new('visible-' + key).checked(visible[key]).tab_index(0)
-        .flex().items_center().w(32).h(18).px(3).rounded(9).cursor_pointer()
+    .children(VISIBLE_KEYS.map(key => {
+      const linear = key === 'linear';
+      const disabled = linear && !visible[key] && (loading || !connected);
+      const toggle = Switch.new('visible-' + key).checked(visible[key])
+        .flex().items_center().flex_none().w(32).h(18).px(3).rounded(9)
         .bg(visible[key] ? t.accent : t.border)
         .child(div().size(12).rounded(6).bg(visible[key] ? t.accent_foreground : t.dim))
-        .when(visible[key], el => el.justify_end())
-        .on_click(() => {
-          setShared('usage-bar.visible', toggleVisible(shared(VISIBLE_KEY), key));
-        }))))
+        .when(visible[key], el => el.justify_end());
+      if (disabled) {
+        toggle.opacity(0.5).tooltip('Connect Linear below first');
+      } else {
+        toggle.tab_index(0).cursor_pointer().on_click(() => {
+          const current = shared(VISIBLE_KEY);
+          if (linear && !readVisible(current).linear &&
+              (view.linearStatusReadRev != null || view.linearSnapshot().status?.connected !== true)) return;
+          setShared(VISIBLE_KEY, toggleVisible(current, key));
+        });
+      }
+      return h_flex().h(26).items_center().justify_between().gap(8)
+        .child(div().flex_none().child(LABELS[key]))
+        .child(h_flex().min_w(0).items_center().gap(8)
+          .when(linear, el => el.child(div().min_w(0).truncate().text_color(t.dim).text_size(11).child(connection)))
+          .child(toggle));
+    }))
     .child(heading('Linear').pt(4).border_t(1).border_color(t.border))
-    .child(div().text_color(t.dim).child(status ? statusLine(status) : 'Checking connection…'))
+    .when(connected, el => el.child(div().text_color(t.dim).child(statusLine(status))))
     .when(!!error, el => el.child(div().text_color(t.blocked).child(errorText(error))))
     .child(h_flex().min_w(0).items_center().gap(6)
       .child(h_flex().flex_1().min_w(0).on_key_down(dismissOnEscape)

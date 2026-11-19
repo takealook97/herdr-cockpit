@@ -54,6 +54,7 @@ const issue = { identifier: 'TEST-1', title: 'An assigned issue', url: org.url +
   status: 'Blocked', status_type: 'started', priority: 1, project: 'Example / Test Project', due_date: '2000-01-01' };
 const statusReply = { connected: true, source: 'claude_mcp', org, user: { name: 'Viewer' },
   expires_at: '2099-07-10T12:00:00Z', error: null };
+const disconnectedStatus = { connected: false, source: null, error: 'not_connected' };
 const seenAccount = `claude_mcp|${org.url}|Viewer`;
 const issuesReply = { source: 'claude_mcp', issues: [issue], org_url: org.url, stale: false, error: null };
 const apiKeyStatus = { ...statusReply, source: 'api_key', user: { name: 'First Viewer' }, expires_at: null };
@@ -267,6 +268,75 @@ test('settings switches apply immediately and persist across bar instances', asy
   restarted.tick(0); await restarted.flush();
   restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
   assert.deepEqual(linearCalls(restarted), startup);
+});
+
+test('settings shows connection status beside the Linear switch and enables it only once connected', async () => {
+  const visibleKey = 'usage-bar.visible';
+  const hidden = { linear: false, codex: false };
+  for (const [status, label] of [
+    [statusReply, 'Connected · Example'],
+    [{ ...statusReply, org: null }, 'Connected'],
+    [disconnectedStatus, 'Not connected'],
+  ]) {
+    const store = new Map([[visibleKey, hidden]]);
+    let finishStatus;
+    const h = harness({ store, panel: 'settings', initialResponse: () =>
+      new Promise(resolve => { finishStatus = resolve; }) });
+    const inspect = expected => {
+      const popup = h.view.render(h.cx);
+      const toggle = byID(popup, 'visible-linear');
+      const controls = walk(popup).find(node => node?.nodes?.includes(toggle));
+      const [connection] = controls.nodes;
+      assert.deepEqual(text(connection), [expected]);
+      assert.equal(connection.style.text_color, 'dim');
+      assert.equal(connection.style.text_size, 11);
+      return toggle.style;
+    };
+    const assertDisabled = toggle => {
+      assert.equal(toggle.opacity, 0.5);
+      assert.equal(toggle.tooltip, 'Connect Linear below first');
+      assert.equal(toggle.cursor_pointer, undefined);
+      assert.equal(toggle.tab_index, undefined);
+      toggle.on_click?.({}, h.cx);
+      assert.equal(store.get(visibleKey), hidden);
+      assert.deepEqual(h.writes, []);
+    };
+    assertDisabled(inspect('Checking…'));
+    assert.deepEqual(linearCalls(h), [['status']]);
+
+    finishStatus(reply(status));
+    await h.flush();
+    const toggle = inspect(label);
+    if (status.connected) {
+      assert.equal(toggle.opacity, undefined);
+      toggle.on_click({}, h.cx);
+      assert.equal(store.get(visibleKey).linear, true);
+      assert.equal(store.get(visibleKey).codex, false);
+    } else {
+      assertDisabled(toggle);
+    }
+  }
+});
+
+test('settings can turn Linear off while disconnected or checking', async () => {
+  const visibleKey = 'usage-bar.visible';
+  let finishStatus;
+  const h = harness({ panel: 'settings', initialResponse: () =>
+    new Promise(resolve => { finishStatus = resolve; }) });
+  const render = () => h.view.render(h.cx);
+  click(render(), 'visible-linear', h.cx);
+  assert.equal(h.store.get(visibleKey).linear, false);
+  finishStatus(reply(disconnectedStatus));
+  await h.flush();
+
+  h.store.set(visibleKey, { linear: true });
+  const tree = render();
+  click(tree, 'visible-linear', h.cx);
+  assert.equal(h.store.get(visibleKey).linear, false);
+  // A second event on the previously visible switch still cannot turn it back on.
+  click(tree, 'visible-linear', h.cx);
+  assert.equal(h.store.get(visibleKey).linear, false);
+  assert.equal(byID(render(), 'visible-linear').style.on_click, undefined);
 });
 
 test('right-hand cards fit at 320 pixels, with providers clipped inside their group', async () => {
@@ -819,7 +889,9 @@ test('a failed status read keeps the last connection in settings and shows the h
 });
 
 test('masked settings input clears immediately and failed connect uses the JSON error', async () => {
-  const h = harness({ panel: 'settings' }); await h.flush();
+  const hidden = { linear: false };
+  const h = harness({ panel: 'settings', store: new Map([['usage-bar.visible', hidden]]) });
+  await h.flush();
   assert.equal(h.view.input.masked, true);
   assert.equal(h.view.input.options.placeholder, 'lin_api_…');
   assert.equal(byID(h.view.render(h.cx), 'linear-disconnect'), undefined);
@@ -838,12 +910,33 @@ test('masked settings input clears immediately and failed connect uses the JSON 
   assert.ok(!text(tree).some(label => label.includes('private') || label.includes(key)));
   assert.equal(h.store.get('usage-bar.linear-rev'), 1);
   assert.equal(h.store.get('usage-bar.linear-account-rev'), 1);
-  assert.equal(h.store.size, 2);
+  assert.equal(h.store.size, 3);
+  assert.equal(h.store.get('usage-bar.visible'), hidden);
+  assert.ok(!h.writes.includes('usage-bar.visible'));
   assert.deepEqual(linearCalls(h).at(-1), ['status']);
   click(tree, 'linear-create-key', h.cx);
   assert.deepEqual(h.urls, ['https://linear.app/settings/account/security']);
   tree.style.on_key_down({ key: 'escape' }, h.cx);
   assert.deepEqual(h.closed, ['settings-overlay']);
+});
+
+test('a successful settings connect reveals Linear and keeps other visibility choices', async () => {
+  const visibleKey = 'usage-bar.visible';
+  const store = new Map([[visibleKey, { linear: false, claude: false }]]);
+  const bar = harness({ store });
+  const settings = harness({ panel: 'settings', store, initialResponse: () => reply(disconnectedStatus) });
+  await Promise.all([bar.flush(), settings.flush()]);
+  const render = () => settings.view.render(settings.cx);
+  assert.equal(byID(bar.view.render(bar.cx), 'linear'), undefined);
+  assert.equal(byID(render(), 'visible-linear').style.checked, false);
+
+  settings.respond(() => reply(apiKeyStatus));
+  settings.view.input.set_value('synthetic-test-key');
+  click(render(), 'linear-connect', settings.cx);
+  await settings.flush();
+  assert.deepEqual(store.get(visibleKey), { codex: true, claude: false, gemini: true, linear: true, system: true });
+  assert.equal(byID(render(), 'visible-linear').style.checked, true);
+  assert.ok(byID(bar.view.render(bar.cx), 'linear'));
 });
 
 test('Disconnect is offered for an API key and re-reads status for the fallback', async () => {
@@ -925,7 +1018,7 @@ test('failed reads after connect cannot restore issues or status in open popups'
   assert.equal(byID(tree, 'linear-open'), undefined);
   assert.ok(text(tree).includes('herdr-hud unavailable'));
   assert.ok(!text(otherSettings.view.render(otherSettings.cx)).includes('API key · First Viewer'));
-  assert.ok(text(otherSettings.view.render(otherSettings.cx)).includes('Checking connection…'));
+  assert.ok(text(otherSettings.view.render(otherSettings.cx)).includes('Not connected'));
 });
 
 test('the account revision clears the bar count when its initial status is unknown', async () => {

@@ -3,7 +3,7 @@ import { h_flex, v_flex, InputState } from 'gpui-base';
 import { exec, spaces, agents, theme, props, shared, setShared } from 'herdr';
 import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell, barSpacing, LINEAR_WIDTH, GEAR_WIDTH, systemWidth } from './format.js';
 import { cell, groupLabel, systemRow, iconButton, linearButton } from './ui.js';
-import { readVisible } from './prefs.js';
+import { readVisible, toggleVisible } from './prefs.js';
 import { badgeState, seenAccount, unreadIds, nextSeen } from './linear.js';
 import { LinearDetails } from './linear-detail.js';
 import { linearPanel, settingsPanel, openPanel } from './panels.js';
@@ -240,6 +240,10 @@ export default class UsageBar extends View {
       this.resetLinearAccount(accountRev);
       setShared(LINEAR_ACCOUNT_REV, accountRev);
       this.bumpLinear();
+      if (action === 'connect' && data?.connected === true && !data.error) {
+        const visible = shared(VISIBLE_KEY);
+        if (!readVisible(visible).linear) setShared(VISIBLE_KEY, toggleVisible(visible, 'linear'));
+      }
       if (this.closed) return;
       this.linearBusy = false;
       this.linearActionError = data?.connected === undefined ? data?.error ?? 'helper' : null;
