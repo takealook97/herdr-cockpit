@@ -17,6 +17,8 @@ const (
 	linearErrBadResponse  = "bad_response"
 	linearErrInvalidKey   = "invalid_key"
 	linearErrStoreFailed  = "store_failed"
+	// linearErrBusy: the credential lock was unavailable, so nothing was read.
+	linearErrBusy = "busy"
 )
 
 const (

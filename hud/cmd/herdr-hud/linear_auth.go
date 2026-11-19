@@ -228,19 +228,37 @@ func linearReplaceAPIKey(ctx context.Context, key string, meta linearMeta) error
 	if err := linearAPIKeyStore(ctx, key); err != nil {
 		return err
 	}
-	if err := linearRename(tmp, linearMetaFilePath()); err != nil {
-		if prev != "" {
-			_ = linearAPIKeyStore(ctx, prev)
-		} else {
-			_ = linearAPIKeyDelete(ctx)
-		}
-		return err
+	// The store now holds the new key, so the cached issues may belong to a
+	// different key than the one that ends up stored. Drop them on every path.
+	err = linearRename(tmp, linearMetaFilePath())
+	_ = linearRemoveIfPresent(linearCachePath())
+	if err != nil {
+		linearRollbackAPIKey(ctx, prev)
 	}
-	return nil
+	return err
+}
+
+// linearRollbackAPIKey restores prev after a failed replacement. When that
+// fails too, it removes the stored key and meta so no key is ever paired with
+// another key's generation; the end state is not_connected.
+func linearRollbackAPIKey(ctx context.Context, prev string) {
+	var err error
+	if prev != "" {
+		err = linearAPIKeyStore(ctx, prev)
+	} else {
+		err = linearAPIKeyDelete(ctx)
+	}
+	if err == nil {
+		return
+	}
+	_ = linearAPIKeyDelete(ctx)
+	// Even if the key survives, a missing meta forces a fresh generation.
+	_ = linearRemoveIfPresent(linearMetaFilePath())
 }
 
 // linearCredentialLock serializes credential mutations with every reader that
-// pairs a key with its generation. Lock order: credential lock, then cache lock.
+// pairs a key with its generation. Holding it is mandatory: readers that cannot
+// acquire it report busy instead of reading credentials or writing meta.
 func linearCredentialLock(ctx context.Context) (func(), error) {
 	return hudLockFile(ctx, filepath.Join(linearConfigDir(), "linear-credential"))
 }
@@ -310,8 +328,8 @@ func linearMCPEntry(raw []byte, now time.Time) (cred linearCred, found, expired 
 
 // linearResolve picks the herdr-hud API key first, then the Claude Code MCP
 // token. code is "" for a usable credential, else not_connected, expired, or
-// store_failed when the herdr-hud key store cannot be read. Callers that use the
-// generation hold the credential lock.
+// store_failed when the herdr-hud key store cannot be read. Callers must hold the
+// credential lock: resolution may write meta and pairs a key with its generation.
 func linearResolve(ctx context.Context, now time.Time) (linearCred, string) {
 	key, err := linearAPIKeyLoad(ctx)
 	if err != nil {
