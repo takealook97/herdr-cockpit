@@ -19,7 +19,7 @@ import (
 // Operational errors remain in JSON so mods can retain their last good values.
 func cmdHud(args []string, stdout, stderr io.Writer) int {
 	usage := func() int {
-		fmt.Fprintln(stderr, "usage: herdr-hud sys|usage|panes [--terminals t1,t2 | --selected] [--max-age 120s] [--refresh]\n       herdr-hud hub-layout --space ID --tab ID --order t1,t2,...\n       herdr-hud nexus route|send|log|listen")
+		fmt.Fprintln(stderr, "usage: herdr-hud sys|usage|panes [--terminals t1,t2 | --selected] [--max-age 120s] [--refresh]\n       herdr-hud hub-layout --space ID --tab ID --order t1,t2,...\n       herdr-hud nexus route|send|log|listen\n       herdr-hud linear status|issues [--max-age 60s] [--refresh]|connect --key KEY|disconnect")
 		return 2
 	}
 	if len(args) == 0 {
@@ -31,6 +31,8 @@ func cmdHud(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "nexus":
 		return cmdNexus(args[1:], stdout, stderr)
+	case "linear":
+		return cmdLinear(ctx, args[1:], stdout, stderr)
 	case "hub-layout":
 		fs := flag.NewFlagSet("herdr-hud hub-layout", flag.ContinueOnError)
 		fs.SetOutput(stderr)

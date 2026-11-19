@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -420,27 +419,11 @@ func hudReadCache() map[string]hudCacheEntry {
 	return cache
 }
 func hudWriteCache(cache map[string]hudCacheEntry) error {
-	path := hudCachePath()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
 	raw, err := json.Marshal(cache)
 	if err != nil {
 		return err
 	}
-	f, err := os.CreateTemp(filepath.Dir(path), ".hud-usage-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	if _, err = f.Write(raw); err != nil {
-		f.Close()
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	return os.Rename(f.Name(), path)
+	return hudWritePrivateFile(hudCachePath(), raw)
 }
 
 // Defaults and active-space polls may overlap. Merge only fetched entries under
@@ -449,18 +432,11 @@ func hudMergeCache(updates map[string]hudCacheEntry) error {
 	if len(updates) == 0 {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(hudCachePath()), 0700); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(hudCachePath()+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	unlock, err := hudLockFile(context.Background(), hudCachePath())
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer unlock()
 	cache := hudReadCache()
 	for key, entry := range updates {
 		cache[key] = entry

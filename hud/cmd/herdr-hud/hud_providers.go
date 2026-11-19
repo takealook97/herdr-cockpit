@@ -225,7 +225,9 @@ func hudParseCodex(raw []byte) (HUDAccount, error) {
 	return a, nil
 }
 
-func hudClaudeToken(ctx context.Context, home string) (string, error) {
+// hudClaudeCredentialsRaw only reads the Claude Code credential (keychain, then
+// file); it never refreshes, rewrites or deletes it.
+func hudClaudeCredentialsRaw(ctx context.Context, home string) ([]byte, error) {
 	var raw []byte
 	if runtime.GOOS == "darwin" {
 		service := "Claude Code-credentials"
@@ -235,14 +237,19 @@ func hudClaudeToken(ctx context.Context, home string) (string, error) {
 		}
 		raw, _ = exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-w").Output()
 	}
-	if len(raw) == 0 {
-		path := filepath.Join(home, ".credentials.json")
-		if home == "" {
-			user, _ := os.UserHomeDir()
-			path = filepath.Join(user, ".claude", ".credentials.json")
-		}
-		raw, _ = os.ReadFile(path)
+	if len(raw) > 0 {
+		return raw, nil
 	}
+	path := filepath.Join(home, ".credentials.json")
+	if home == "" {
+		user, _ := os.UserHomeDir()
+		path = filepath.Join(user, ".claude", ".credentials.json")
+	}
+	return os.ReadFile(path)
+}
+
+func hudClaudeToken(ctx context.Context, home string) (string, error) {
+	raw, _ := hudClaudeCredentialsRaw(ctx, home)
 	return hudParseClaudeCredentials(raw, time.Now())
 }
 func hudParseClaudeCredentials(raw []byte, now time.Time) (string, error) {

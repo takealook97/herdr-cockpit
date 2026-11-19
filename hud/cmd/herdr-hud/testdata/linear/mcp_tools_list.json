@@ -1,0 +1,1 @@
+{"tools":[{"name":"whoami","inputSchema":{"type":"object","properties":{}}},{"name":"list_issues","inputSchema":{"type":"object","properties":{"assignee":{"type":"string"},"limit":{"type":"number"},"cursor":{"type":"string"},"orderBy":{"type":"string"},"fields":{"type":"array"}}}},{"name":"get_issue","inputSchema":{"type":"object","properties":{"id":{"type":"string"}}}}]}
