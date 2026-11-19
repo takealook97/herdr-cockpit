@@ -43,7 +43,7 @@ function buttonCard(t, id, tooltip) {
 }
 
 export function iconButton(t, id, glyph, tooltip) {
-  return buttonCard(t, id, tooltip).w(GEAR_WIDTH).text_size(16).child(glyph);
+  return buttonCard(t, id, tooltip).w(GEAR_WIDTH).text_size(22).justify_center().child(glyph);
 }
 
 export function linearButton(t, { count, alert, connected, stale }) {
