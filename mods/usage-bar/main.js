@@ -97,8 +97,8 @@ export default class UsageBar extends View {
     }
     return { issues: this.linearIssues, status: this.linearStatus,
       issueError: this.linearIssueError, statusError: this.linearStatusError,
-      details: this.linearDetails,
-      unread: this.linearUnreadAccount === seenAccount(this.linearStatus) ? this.linearUnread : undefined };
+      details: this.linearDetails, seenAccount: this.linearSeenAccount,
+      unread: this.linearUnreadAccount === this.linearSeenAccount ? this.linearUnread : undefined };
   }
 
   resetLinearAccount(rev) {
@@ -108,6 +108,7 @@ export default class UsageBar extends View {
     this.linearDetails?.clear();
     this.linearIssues = null;
     this.linearStatus = null;
+    this.linearSeenAccount = null;
     this.linearStatusReadRev = null;
     this.linearIssuesRev = null;
     this.linearUnread = undefined;
@@ -117,9 +118,9 @@ export default class UsageBar extends View {
   }
 
   applyLinearStatus(status, rev) {
-    const prior = this.linearStatus;
-    const viewerChanged = (prior?.user?.name && status.user?.name && prior.user.name !== status.user.name) ||
-      (prior?.org?.url && status.org?.url && prior.org.url !== status.org.url);
+    const account = seenAccount(status);
+    const viewerChanged = this.linearSeenAccount && account && this.linearSeenAccount !== account;
+    const needsSeenUpdate = account && account !== seenAccount(this.linearStatus);
     // A new issues reply can arrive before status for the same revision.
     if (issuesMismatchStatus(this.linearIssues, status) ||
         (this.linearIssuesRev !== rev && viewerChanged)) {
@@ -129,8 +130,10 @@ export default class UsageBar extends View {
       this.linearUnread = undefined;
     }
     this.linearStatus = status;
+    // A connected status can temporarily omit identity when whoami fails.
+    if (account) this.linearSeenAccount = account;
     this.linearStatusError = null;
-    if (!this.closed && this.linearIssuesRev === rev && seenAccount(prior) !== seenAccount(status)) {
+    if (!this.closed && this.linearIssuesRev === rev && needsSeenUpdate) {
       this.updateLinearSeen();
     }
   }
@@ -428,14 +431,14 @@ export default class UsageBar extends View {
       }
       groups.push(group(`account-${account.provider}`).child(content));
     }
-    const { status, issues, issueError } = this.linearSnapshot();
+    const { status, issues, issueError, seenAccount: account } = this.linearSnapshot();
     const disconnected = ['not_connected', 'expired'].includes(issues?.error);
     const connected = disconnected ? false : (issues?.source ? true : status?.connected);
     const badge = badgeState(issues?.issues, now);
     const seen = shared(LINEAR_SEEN);
     // A dropdown can prune IDs before the bar receives the corresponding issues list.
     const unread = !this.linearSeenReset && this.linearIssuesRev === linearRevision() && !issuesMismatchStatus(issues, status)
-      ? unreadIds(issues?.issues, seen, seenAccount(status)).size : 0;
+      ? unreadIds(issues?.issues, seen, account).size : 0;
     const linear = this.popupButton(linearButton(t, {
       count: Array.isArray(issues?.issues) && connected ? badge.count : null,
       alert: !!connected && badge.alert,

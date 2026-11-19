@@ -81,8 +81,8 @@ export function badgeState(issues, now = new Date()) {
 }
 
 export function seenAccount(status) {
-  if (!status?.source) return null;
-  return `${status.source}|${status.org?.url ?? ''}|${status.user?.name ?? ''}`;
+  if (!status?.source || !status.org?.url || !status.user?.name) return null;
+  return `${status.source}|${status.org.url}|${status.user.name}`;
 }
 
 function openIdentifiers(issues) {

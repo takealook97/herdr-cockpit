@@ -52,8 +52,9 @@ const byID = (node, id) => walk(node).find(value => value?.style?.id === id);
 const org = { name: 'Example', url: 'https://linear.app/example' };
 const issue = { identifier: 'TEST-1', title: 'An assigned issue', url: org.url + '/issue/TEST-1',
   status: 'Blocked', status_type: 'started', priority: 1, project: 'Example / Test Project', due_date: '2000-01-01' };
-const statusReply = { connected: true, source: 'claude_mcp', org, expires_at: '2099-07-10T12:00:00Z', error: null };
-const seenAccount = `claude_mcp|${org.url}|`;
+const statusReply = { connected: true, source: 'claude_mcp', org, user: { name: 'Viewer' },
+  expires_at: '2099-07-10T12:00:00Z', error: null };
+const seenAccount = `claude_mcp|${org.url}|Viewer`;
 const issuesReply = { source: 'claude_mcp', issues: [issue], org_url: org.url, stale: false, error: null };
 const apiKeyStatus = { ...statusReply, source: 'api_key', user: { name: 'First Viewer' }, expires_at: null };
 const nextAPIKeyStatus = { ...apiKeyStatus, user: { name: 'Second Viewer' } };
@@ -451,6 +452,57 @@ test('the bar shows zero unread and leaves seen alone until status loads', async
   finishStatus(reply(statusReply));
   await bar.flush();
   assert.equal(button().style.tooltip, '1 new issue');
+});
+
+test('a transient whoami failure preserves unread through recovery and the next dropdown open', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const store = new Map();
+  const bar = harness({ store });
+  await bar.flush();
+  const baseline = store.get(seenKey);
+  assert.deepEqual(baseline, { account: seenAccount, ids: ['TEST-1'] });
+  const two = { ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2' }] };
+  const render = () => bar.view.render(bar.cx);
+  const tooltip = () => byID(render(), 'linear').style.tooltip;
+  const respond = status => bar.respond(args => reply(args[2] === 'status' ? status : two));
+
+  respond(statusReply);
+  bar.intervals.find(job => job.ms === 1800000).fn(bar.cx);
+  await bar.flush();
+  assert.equal(tooltip(), '1 new issue');
+
+  for (const [rev, status] of [[1, { ...statusReply, user: null, org: null }], [2, statusReply]]) {
+    respond(status);
+    store.set('usage-bar.linear-rev', rev);
+    render();
+    bar.tick(0);
+    await bar.flush();
+    assert.equal(tooltip(), '1 new issue');
+    assert.equal(store.get(seenKey), baseline);
+    assert.deepEqual(bar.writes, [seenKey]);
+  }
+
+  const popup = harness({ store, panel: 'linear', initialResponse: args =>
+    reply(args[2] === 'status' ? statusReply : two) });
+  await popup.flush();
+  assert.equal(byID(popup.view.render(popup.cx), 'issue-TEST-2').nodes[0].style.bg, 'accent');
+  assert.deepEqual(store.get(seenKey), { account: seenAccount, ids: ['TEST-1', 'TEST-2'] });
+});
+
+test('partial identity before any complete status leaves the shared seen set alone', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const baseline = { account: seenAccount, ids: [] };
+  const store = new Map([[seenKey, baseline]]);
+  const initialResponse = args => reply(args[2] === 'status'
+    ? { ...statusReply, user: null, org: null } : issuesReply);
+  const bar = harness({ store, initialResponse });
+  await bar.flush();
+  const popup = harness({ store, panel: 'linear', initialResponse });
+  await popup.flush();
+  assert.equal(byID(bar.view.render(bar.cx), 'linear').style.tooltip, 'Assigned Linear issues');
+  assert.equal(byID(popup.view.render(popup.cx), 'issue-TEST-1').nodes[0].style.bg, undefined);
+  assert.equal(store.get(seenKey), baseline);
+  assert.ok(![...bar.writes, ...popup.writes].includes(seenKey));
 });
 
 test('the unread border clears on open and dropdown dots persist through refresh', async () => {

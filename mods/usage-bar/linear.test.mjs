@@ -6,7 +6,8 @@ import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plain
 test('unread tracking baselines new accounts and compares only current open issue identifiers', () => {
   const account = seenAccount({ org: { url: 'https://linear.app/fixture' }, source: 'api_key', user: { name: 'Viewer A' } });
   assert.equal(account, 'api_key|https://linear.app/fixture|Viewer A');
-  assert.equal(seenAccount({ org: null, source: 'api_key' }), 'api_key||');
+  assert.equal(seenAccount({ org: null, source: 'api_key', user: { name: 'Viewer A' } }), null);
+  assert.equal(seenAccount({ org: { url: 'https://linear.app/fixture' }, source: 'api_key' }), null);
   assert.equal(seenAccount({ source: null }), null);
   assert.equal(seenAccount(undefined), null);
   const issue = (identifier, status_type = 'unstarted') => ({ identifier, status_type, title: 'Fixture title' });

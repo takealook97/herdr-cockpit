@@ -18,8 +18,9 @@ const (
 var (
 	linearDetailIdentifierPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]{0,8}$`)
 	linearIssueMissingPattern     = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:` +
-		`(?:issue|entity)(?:\s+["']?[a-z][a-z0-9]*-[0-9]+["']?)?\s+` +
-		`(?:(?:was |is )?not found|does not exist|is not visible)|no issue found|could not find (?:the )?issue)\b`)
+		`(?:issue|entity)(?:\s+(?:with identifier\s+)?["']?[a-z][a-z0-9]*-[0-9]+["']?)?\s+` +
+		`(?:(?:was |is )?not found|does not exist|is not visible)|` +
+		`no (?:issue|entity) found|could not find (?:the )?(?:referenced )?(?:issue|entity))\b`)
 )
 
 type linearIssueDetail struct {
