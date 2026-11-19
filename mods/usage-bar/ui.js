@@ -46,9 +46,11 @@ export function iconButton(t, id, glyph, tooltip) {
   return buttonCard(t, id, tooltip).w(GEAR_WIDTH).text_size(22).justify_center().child(glyph);
 }
 
-export function linearButton(t, { count, alert, connected, stale }) {
+export function linearButton(t, { count, alert, connected, stale, unread }) {
   const label = connected === false ? 'Connect' : count ?? '—';
-  return buttonCard(t, 'linear', 'Assigned Linear issues').w(LINEAR_WIDTH).text_size(12)
+  const tooltip = unread > 0 ? `${unread} new ${unread === 1 ? 'issue' : 'issues'}` : 'Assigned Linear issues';
+  return buttonCard(t, 'linear', tooltip).w(LINEAR_WIDTH).text_size(12)
+    .when(unread > 0, el => el.border(1.5).border_color(t.accent))
     .child(div().text_color(t.accent).child('◆'))
     .child(div().font_semibold().child('Linear'))
     .child(div().opacity(stale ? 0.6 : 1).text_color(connected && count !== null ? t.foreground : t.dim).child(String(label)))

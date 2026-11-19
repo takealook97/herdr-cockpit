@@ -4,12 +4,15 @@ import { exec, spaces, agents, theme, props, shared, setShared } from 'herdr';
 import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell, barSpacing, LINEAR_WIDTH, GEAR_WIDTH, systemWidth } from './format.js';
 import { cell, groupLabel, systemRow, iconButton, linearButton } from './ui.js';
 import { readVisible } from './prefs.js';
-import { badgeState } from './linear.js';
+import { badgeState, seenAccount, unreadIds, nextSeen } from './linear.js';
 import { LinearDetails } from './linear-detail.js';
 import { linearPanel, settingsPanel, openPanel } from './panels.js';
 
 const LINEAR_REV = 'usage-bar.linear-rev';
 const LINEAR_ACCOUNT_REV = 'usage-bar.linear-account-rev';
+const LINEAR_OPEN_REV = 'usage-bar.linear-open-rev';
+const LINEAR_SEEN = 'usage-bar.linear-seen';
+const LINEAR_POLL_MS = 30 * 60 * 1000;
 const VISIBLE_KEY = 'usage-bar.visible';
 const linearRevision = (key = LINEAR_REV) => {
   const value = shared(key);
@@ -76,7 +79,7 @@ export default class UsageBar extends View {
       this.readLinear('status', cx);
       this.readLinear('issues', cx);
     }
-    cx.timer.every(120000, cx => {
+    cx.timer.every(LINEAR_POLL_MS, cx => {
       if (this.linearVisible && readVisible(shared(VISIBLE_KEY)).linear) this.readLinear('issues', cx);
     });
   }
@@ -93,7 +96,8 @@ export default class UsageBar extends View {
       return { issues: null, status: null, issueError: null, statusError: null };
     }
     return { issues: this.linearIssues, status: this.linearStatus,
-      issueError: this.linearIssueError, statusError: this.linearStatusError, details: this.linearDetails };
+      issueError: this.linearIssueError, statusError: this.linearStatusError,
+      details: this.linearDetails, unread: this.linearUnread };
   }
 
   resetLinearAccount(rev) {
@@ -104,6 +108,7 @@ export default class UsageBar extends View {
     this.linearIssues = null;
     this.linearStatus = null;
     this.linearIssuesRev = null;
+    this.linearUnread = undefined;
     this.linearIssueError = null;
     this.linearStatusError = null;
   }
@@ -118,14 +123,31 @@ export default class UsageBar extends View {
       this.linearIssues = null;
       this.linearIssueError = null;
       this.linearDetails?.clear();
+      this.linearUnread = undefined;
     }
     this.linearStatus = status;
     this.linearStatusError = null;
   }
 
-  bumpLinear() {
+  bumpLinear(fromOpening = false) {
     this.linearRev = linearRevision() + 1;
+    if (fromOpening) setShared(LINEAR_OPEN_REV, this.linearRev);
     setShared(LINEAR_REV, this.linearRev);
+  }
+
+  updateLinearSeen(snapshot) {
+    const account = seenAccount(snapshot);
+    if (!account) return;
+    const seen = shared(LINEAR_SEEN);
+    if (this.panel === 'linear') {
+      if (this.linearUnreadAccount !== account) this.linearUnread = undefined;
+      this.linearUnreadAccount = account;
+      this.linearUnread ??= new Set();
+      for (const id of unreadIds(snapshot.issues, seen, account)) this.linearUnread.add(id);
+      setShared(LINEAR_SEEN, nextSeen(snapshot.issues, account));
+    } else if (seen?.account !== account || !Array.isArray(seen.ids)) {
+      setShared(LINEAR_SEEN, nextSeen(snapshot.issues, account));
+    }
   }
 
   toggleLinearDetail(identifier, cx) {
@@ -134,28 +156,37 @@ export default class UsageBar extends View {
       () => !this.closed && accountRev === linearRevision(LINEAR_ACCOUNT_REV));
   }
 
-  readLinear(kind, cx, refresh = false) {
+  readLinear(kind, cx, { refresh = false, observed = false } = {}) {
     if (refresh) {
       this.linearDetails?.clear();
       cx.notify();
     }
     const seq = ++this.linearSeq[kind];
     const rev = linearRevision();
+    if (kind === 'status') this.linearStatusReadRev = rev;
     const accountRev = this.linearAccountRev;
     const statusAtStart = this.linearStatus;
     const args = [kind];
     if (kind === 'issues') args.push(...(refresh ? ['--refresh'] : ['--max-age', '60s']));
     cx.spawn(async cx => {
       const data = await execLinear(args);
-      if (seq !== this.linearSeq[kind] || rev !== linearRevision() ||
+      const currentRev = linearRevision();
+      if (seq !== this.linearSeq[kind] ||
+          (kind === 'status' ? this.linearStatusReadRev : rev) !== currentRev ||
           accountRev !== linearRevision(LINEAR_ACCOUNT_REV)) return;
       const readError = data?.error === 'busy' ? 'busy' : data ? null : 'helper';
+      let announce = false;
       if (kind === 'issues') {
         this.linearIssueError = readError;
         // A newer status can rule out an issues reply already in flight.
         if (!readError && (statusAtStart === this.linearStatus || !issuesMismatchStatus(data, this.linearStatus))) {
           this.linearIssues = data;
           this.linearIssuesRev = rev;
+          if (!this.closed && !data.error && !data.stale) {
+            this.updateLinearSeen(data);
+            // Reads triggered by an observed revision already have a publisher.
+            announce = this.panel === 'linear' && !observed;
+          }
         }
       } else if (!readError) {
         this.applyLinearStatus(data, rev);
@@ -165,6 +196,10 @@ export default class UsageBar extends View {
       if (refresh) {
         this.bumpLinear();
         if (!this.closed && !this.linearStatus) this.readLinear('status', cx);
+      } else if (announce) {
+        this.bumpLinear(true);
+        // This popup's issues announcement doesn't invalidate its pending status.
+        if (this.linearStatusReadRev === rev) this.linearStatusReadRev = this.linearRev;
       }
       if (!this.closed) cx.notify();
     });
@@ -208,12 +243,14 @@ export default class UsageBar extends View {
       const changed = rev !== this.linearRev;
       const accountChanged = accountRev !== this.linearAccountRev;
       const enabled = !this.panel && visible && !this.linearVisible;
+      const opening = !this.panel && changed && rev === shared(LINEAR_OPEN_REV);
       if (accountChanged) this.resetLinearAccount(accountRev);
       this.linearRev = rev;
       this.linearVisible = visible;
       if ((this.panel || visible) && (changed || accountChanged || enabled)) {
-        this.readLinear('status', cx);
-        if (this.panel !== 'settings') this.readLinear('issues', cx);
+        // Opening the dropdown already populated the issues cache. Avoid another whoami call from the bar.
+        if (!opening || accountChanged || enabled) this.readLinear('status', cx);
+        if (this.panel !== 'settings') this.readLinear('issues', cx, { observed: true });
       }
       cx.notify();
     });
@@ -378,9 +415,14 @@ export default class UsageBar extends View {
     const disconnected = ['not_connected', 'expired'].includes(issues?.error);
     const connected = disconnected ? false : (issues?.source ? true : status?.connected);
     const badge = badgeState(issues?.issues, now);
+    const seen = shared(LINEAR_SEEN);
+    // A dropdown can prune IDs before the bar receives the corresponding issues list.
+    const unread = this.linearIssuesRev === linearRevision()
+      ? unreadIds(issues?.issues, seen, seenAccount(issues)).size : 0;
     const linear = this.popupButton(linearButton(t, {
       count: Array.isArray(issues?.issues) && connected ? badge.count : null,
       alert: !!connected && badge.alert,
+      unread: connected ? unread : 0,
       connected,
       stale: !!(issues?.stale || issueError),
     }), 'linear');

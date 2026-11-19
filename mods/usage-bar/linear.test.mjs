@@ -1,7 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, errorText, statusLine } from './linear.js';
+import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, seenAccount, unreadIds, nextSeen, errorText, statusLine } from './linear.js';
+
+test('unread tracking baselines new accounts and compares only current open issue identifiers', () => {
+  const account = seenAccount({ org_url: 'https://linear.app/fixture', source: 'api_key' });
+  assert.equal(account, 'https://linear.app/fixture');
+  assert.equal(seenAccount({ org_url: null, source: 'api_key' }), 'api_key');
+  const issue = (identifier, status_type = 'unstarted') => ({ identifier, status_type, title: 'Fixture title' });
+  const current = [issue('TEST-3'), issue('TEST-2'), issue('TEST-2'), issue('TEST-4', 'completed')];
+  const before = nextSeen([issue('TEST-2'), issue('TEST-1')], account);
+  assert.deepEqual(unreadIds(current, undefined, account), new Set());
+  assert.deepEqual(unreadIds(current, before, 'another-account'), new Set());
+  assert.deepEqual(unreadIds(current, before, account), new Set(['TEST-3']));
+  assert.deepEqual(nextSeen(current, account), { account, ids: ['TEST-2', 'TEST-3'] });
+  const tooMany = Array.from({ length: 501 }, (_, i) => issue(`TEST-${501 - i}`));
+  assert.deepEqual(nextSeen(tooMany, account).ids, tooMany.map(row => row.identifier).sort().slice(0, 500));
+});
 
 test('visibility defaults, malformed inputs and immutable toggles', () => {
   const defaults = { codex: true, claude: true, gemini: true, linear: true, system: true };

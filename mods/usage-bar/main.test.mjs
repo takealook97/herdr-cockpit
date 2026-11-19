@@ -120,7 +120,7 @@ function harness({ panel, machine, store = new Map(), initialResponse } = {}) {
 
 test('poll intervals and selected account arguments', async () => {
   const h = harness(); await h.flush();
-  assert.deepEqual(h.intervals.map(job => job.ms), [1000, 60000, 120000]);
+  assert.deepEqual(h.intervals.map(job => job.ms), [1000, 60000, 1800000]);
   assert.deepEqual(h.calls.map(call => ['hud', ...call.args.slice(3)]).filter(args => args[1] === 'usage'), [['hud', 'usage', '--selected', '--max-age', '45s']]);
 });
 
@@ -254,13 +254,13 @@ test('settings switches apply immediately and persist across bar instances', asy
   assert.deepEqual(restarted.view.render(restarted.cx).nodes.map(node => node.style.id), [undefined, 'gear']);
   const startup = [['status'], ['issues', '--max-age', '60s']];
   assert.deepEqual(linearCalls(restarted), []);
-  restarted.intervals.find(job => job.ms === 120000).fn(restarted.cx);
+  restarted.intervals.find(job => job.ms === 1800000).fn(restarted.cx);
   restarted.store.set('usage-bar.linear-rev', 1);
   restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
   assert.deepEqual(linearCalls(restarted), []);
   click(popup, 'visible-linear', settings.cx);
   assert.ok(byID(restarted.view.render(restarted.cx), 'linear'));
-  restarted.intervals.find(job => job.ms === 120000).fn(restarted.cx);
+  restarted.intervals.find(job => job.ms === 1800000).fn(restarted.cx);
   assert.deepEqual(linearCalls(restarted), []);
   restarted.tick(0); await restarted.flush();
   restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
@@ -304,14 +304,16 @@ test('popup initialization stays local and starts no bar timers', async () => {
     assert.equal(h.calls.length, expected.length);
     assert.deepEqual(linearCalls(h), expected);
     assert.ok(h.calls.every(call => call.options.length === 0));
-    store.set('usage-bar.linear-rev', 1);
+    const externalRev = (store.get('usage-bar.linear-rev') ?? 0) + 1;
+    store.set('usage-bar.linear-rev', externalRev);
     h.view.render(h.cx); h.tick(0); await h.flush();
     assert.deepEqual(linearCalls(h).slice(expected.length),
       panel === 'linear' ? [['status'], ['issues', '--max-age', '60s']] : [['status']]);
+    assert.equal(store.get('usage-bar.linear-rev'), externalRev);
   }
 
   const bar = harness({ machine: 'remote' }); await bar.flush();
-  bar.intervals.find(job => job.ms === 120000).fn(bar.cx);
+  bar.intervals.find(job => job.ms === 1800000).fn(bar.cx);
   await bar.flush();
   assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s'], ['issues', '--max-age', '60s']]);
   for (const call of bar.calls.filter(call => call.args[3] === 'linear')) {
@@ -333,7 +335,7 @@ test('refresh drops older helper completions and makes the bar re-read after ren
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(linearCalls(popup), [['issues', '--max-age', '60s'], ['status'], ['issues', '--refresh']]);
   assert.equal(store.get('usage-bar.linear-rev'), 1);
-  assert.deepEqual(popup.writes, ['usage-bar.linear-rev']);
+  assert.deepEqual(popup.writes, ['usage-bar.linear-seen', 'usage-bar.linear-rev']);
   finishInitial(reply(issuesReply)); await popup.flush();
   const labels = text(popup.view.render(popup.cx));
   assert.ok(labels.includes('New title'));
@@ -351,6 +353,113 @@ test('refresh drops older helper completions and makes the bar re-read after ren
   finishBarRead(reply({ ...issuesReply, issues: [] }));
   await bar.flush();
   assert.ok(text(byID(bar.view.render(bar.cx), 'linear')).includes('0'));
+});
+
+test('a successful dropdown read updates the bar count without a revision loop', async () => {
+  const store = new Map();
+  const bar = harness({ store }); await bar.flush();
+  const newerIssues = { ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2' }] };
+  let finishStatus;
+  const popup = harness({ store, panel: 'linear', initialResponse: args =>
+    args[2] === 'status' ? new Promise(resolve => { finishStatus = resolve; }) : reply(newerIssues) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store.get('usage-bar.linear-rev'), 1);
+  finishStatus(reply(statusReply));
+  await popup.flush();
+  assert.ok(text(popup.view.render(popup.cx)).includes(org.name));
+  assert.deepEqual(popup.writes, ['usage-bar.linear-seen', 'usage-bar.linear-open-rev', 'usage-bar.linear-rev']);
+  const button = () => byID(bar.view.render(bar.cx), 'linear');
+  assert.ok(text(button()).includes('1'));
+  bar.respond(args => args[2] === 'issues' ? reply(newerIssues) : bar.fallback(args));
+  bar.tick(0); await bar.flush();
+  assert.ok(text(button()).includes('2'));
+  popup.view.render(popup.cx);
+  bar.tick(0);
+  popup.tick(0);
+  await Promise.all([bar.flush(), popup.flush()]);
+  assert.deepEqual(linearCalls(bar), [['status'], ['issues', '--max-age', '60s'], ['issues', '--max-age', '60s']]);
+  assert.deepEqual(linearCalls(popup), [['issues', '--max-age', '60s'], ['status']]);
+  assert.equal(store.get('usage-bar.linear-rev'), 1);
+});
+
+test('the unread border clears on open and dropdown dots persist through refresh', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const store = new Map();
+  const bar = harness({ store }); await bar.flush();
+  const button = () => byID(bar.view.render(bar.cx), 'linear');
+  const second = { ...issue, identifier: 'TEST-2' };
+  const third = { ...issue, identifier: 'TEST-3' };
+  const fourth = { ...issue, identifier: 'TEST-4' };
+  const withIssues = (...issues) => reply({ ...issuesReply, issues });
+  assert.deepEqual(store.get(seenKey), { account: org.url, ids: ['TEST-1'] });
+  assert.equal(button().style.border, 1);
+  assert.equal(button().style.border_color, 'muted66');
+  assert.equal(button().style.tooltip, 'Assigned Linear issues');
+
+  bar.respond(args => args[2] === 'issues' ? withIssues(issue, second) : bar.fallback(args));
+  const poll = bar.intervals.find(job => job.ms === 1800000);
+  poll.fn(bar.cx); await bar.flush();
+  assert.equal(button().style.tooltip, '1 new issue');
+
+  // Reading the key also updates the badge without making another Linear request.
+  store.set(seenKey, { account: org.url, ids: ['TEST-1', 'TEST-2'] });
+  assert.equal(button().style.tooltip, 'Assigned Linear issues');
+  assert.equal(linearCalls(bar).length, 3);
+
+  store.set(seenKey, { account: org.url, ids: ['TEST-1'] });
+  bar.respond(args => args[2] === 'issues' ? withIssues(issue, second, third) : bar.fallback(args));
+  poll.fn(bar.cx); await bar.flush();
+  assert.equal(button().style.border, 1.5);
+  assert.equal(button().style.border_color, 'accent');
+  assert.equal(button().style.tooltip, '2 new issues');
+  assert.ok(button().nodes.some(node => node.style.bg === 'blocked'));
+  assert.deepEqual(store.get(seenKey), { account: org.url, ids: ['TEST-1'] });
+
+  const popup = harness({ store, panel: 'linear', initialResponse: args =>
+    args[2] === 'status' ? reply(statusReply) : withIssues(second, third) });
+  await popup.flush();
+  const render = () => popup.view.render(popup.cx);
+  const dot = id => byID(render(), 'issue-' + id).nodes[0].style;
+  assert.deepEqual(store.get(seenKey), { account: org.url, ids: ['TEST-2', 'TEST-3'] });
+  assert.equal(button().style.tooltip, 'Assigned Linear issues');
+  assert.equal(button().style.border_color, 'muted66');
+  assert.equal(dot('TEST-2').bg, 'accent');
+  assert.equal(dot('TEST-3').size, 6);
+
+  popup.respond(args => args[2] === 'issues' ? withIssues(second, third, fourth) : popup.fallback(args));
+  click(render(), 'linear-refresh', popup.cx);
+  await popup.flush();
+  assert.equal(dot('TEST-2').bg, 'accent');
+  assert.equal(dot('TEST-4').bg, 'accent');
+  assert.deepEqual(store.get(seenKey), { account: org.url, ids: ['TEST-2', 'TEST-3', 'TEST-4'] });
+
+  popup.view.close();
+  const reopened = harness({ store, panel: 'linear', initialResponse: args =>
+    args[2] === 'status' ? reply(statusReply) : withIssues(second, third, fourth) });
+  await reopened.flush();
+  const reserved = byID(reopened.view.render(reopened.cx), 'issue-TEST-2').nodes[0].style;
+  assert.equal(reserved.size, 6);
+  assert.equal(reserved.bg, undefined);
+});
+
+test('an error with cached issues leaves the seen set and opening revision intact', async () => {
+  const seen = { account: org.url, ids: [] };
+  const store = new Map([['usage-bar.linear-seen', seen]]);
+  const popup = harness({ store, panel: 'linear', initialResponse: args => reply(args[2] === 'status'
+    ? statusReply : { ...issuesReply, error: 'network', stale: true }) });
+  await popup.flush();
+  assert.deepEqual(popup.writes, []);
+  assert.equal(store.get('usage-bar.linear-seen'), seen);
+  assert.ok(byID(popup.view.render(popup.cx), 'issue-TEST-1'));
+});
+
+test('the first successful bar read of a different account replaces the unread baseline', async () => {
+  const seenKey = 'usage-bar.linear-seen';
+  const store = new Map([[seenKey, { account: 'https://linear.app/prior', ids: ['OLD-1'] }]]);
+  const bar = harness({ store }); await bar.flush();
+  assert.deepEqual(store.get(seenKey), { account: org.url, ids: ['TEST-1'] });
+  assert.deepEqual(bar.writes, [seenKey]);
+  assert.equal(byID(bar.view.render(bar.cx), 'linear').style.tooltip, 'Assigned Linear issues');
 });
 
 test('Linear groups issues and toggles inline details without opening an external URL', async () => {
@@ -431,10 +540,10 @@ test('Linear issue rows render project lines, priority indicators and due pill t
   const withProject = byID(panel, 'issue-TEST-1');
   const singleLine = byID(panel, 'issue-TEST-2');
   assert.equal(withProject.style.min_h, 40);
-  assert.deepEqual(withProject.nodes[2].nodes.map(text), [[issue.title], ['Test Project']]);
+  assert.deepEqual(withProject.nodes[3].nodes.map(text), [[issue.title], ['Test Project']]);
   assert.equal(singleLine.style.h, 30);
-  assert.deepEqual(singleLine.nodes[2].nodes, [issue.title]);
-  assert.equal(singleLine.nodes[1].style.w, 58);
+  assert.deepEqual(singleLine.nodes[3].nodes, [issue.title]);
+  assert.equal(singleLine.nodes[2].style.w, 58);
 
   for (const [index, label, filled] of [[1, 'High', 3], [2, 'Medium', 2], [3, 'Low', 1], [4, 'No priority', 0]]) {
     const box = byID(panel, 'priority-' + rows[index].identifier);
@@ -451,12 +560,12 @@ test('Linear issue rows render project lines, priority indicators and due pill t
   for (const [id, color, bg] of [
     ['TEST-1', 'blocked', 'blocked26'], ['TEST-2', 'working', 'working26'], ['TEST-3', 'dim', 'raised'],
   ]) {
-    const pill = byID(panel, 'issue-' + id).nodes[3];
+    const pill = byID(panel, 'issue-' + id).nodes[4];
     assert.equal(pill.style.h, 18);
     assert.equal(pill.style.text_color, color);
     assert.equal(pill.style.bg, bg);
   }
-  assert.equal(byID(panel, 'issue-TEST-4').nodes.length, 3);
+  assert.equal(byID(panel, 'issue-TEST-4').nodes.length, 4);
 });
 
 test('Linear panel handles connection, expiry, stale, empty and helper errors', async () => {
@@ -522,7 +631,7 @@ test('helper launch failure keeps the last Linear list and shows the error above
 test('unparsable Linear poll output keeps the bar count and alert and dims the count', async () => {
   const h = harness(); await h.flush();
   h.respond(args => args[2] === 'issues' ? { code: 1, stdout: 'garbage' } : h.fallback(args));
-  h.intervals.find(job => job.ms === 120000).fn(h.cx);
+  h.intervals.find(job => job.ms === 1800000).fn(h.cx);
   await h.flush();
   const button = byID(h.view.render(h.cx), 'linear');
   const count = button.nodes.find(node => text(node).includes('1'));
@@ -603,7 +712,7 @@ test('connect clears another popup before its new status arrives and discards in
   assert.deepEqual(linearCalls(settings), [['status'], ['connect', '--key', 'synthetic-test-key'], ['status']]);
   assert.ok(text(settings.view.render(settings.cx)).includes('API key · Second Viewer'));
   assert.equal(store.get('usage-bar.linear-account-rev'), 5);
-  assert.equal(store.get('usage-bar.linear-rev'), 10);
+  assert.equal(store.get('usage-bar.linear-rev'), 11);
 
   const assertNoOldSnapshot = () => {
     const tree = popup.view.render(popup.cx);
@@ -626,9 +735,10 @@ test('failed reads after connect cannot restore issues or status in open popups'
   const store = new Map();
   const initialResponse = args => reply(args[2] === 'status' ? apiKeyStatus : apiKeyIssues);
   const popup = harness({ panel: 'linear', store, initialResponse });
+  await popup.flush();
   const settings = harness({ panel: 'settings', store, initialResponse });
   const otherSettings = harness({ panel: 'settings', store, initialResponse });
-  await Promise.all([popup.flush(), settings.flush(), otherSettings.flush()]);
+  await Promise.all([settings.flush(), otherSettings.flush()]);
   assert.ok(byID(popup.view.render(popup.cx), 'issue-TEST-1'));
   assert.ok(text(otherSettings.view.render(otherSettings.cx)).includes('API key · First Viewer'));
   settings.respond(args => args[2] === 'connect' ? reply(nextAPIKeyStatus) : unavailable);
@@ -694,11 +804,13 @@ test('the hidden bar invalidates its account snapshot without reading until re-e
 test('busy replies preserve issues and connection status and show the generic error', async () => {
   const store = new Map();
   const popup = harness({ panel: 'linear', store });
+  await popup.flush();
   const settings = harness({ panel: 'settings', store });
-  await Promise.all([popup.flush(), settings.flush()]);
+  await settings.flush();
   const busyReply = args => reply(args[2] === 'issues'
     ? { issues: [], source: null, error: 'busy' }
     : { connected: false, source: null, error: 'busy' }, 1);
+  popup.writes.length = 0;
   popup.respond(busyReply);
   settings.respond(busyReply);
   click(popup.view.render(popup.cx), 'linear-refresh', popup.cx);
@@ -717,7 +829,7 @@ test('busy replies preserve issues and connection status and show the generic er
   assert.ok(labels.includes("Couldn't load Linear issues"));
 
   popup.respond(args => args[2] === 'status' ? busyReply(args) : popup.fallback(args));
-  store.set('usage-bar.linear-rev', 2);
+  store.set('usage-bar.linear-rev', 3);
   popup.view.render(popup.cx);
   popup.tick(0);
   await popup.flush();
@@ -733,7 +845,7 @@ test('disconnected status removes old issues even if the in-flight issues read f
   h.respond(args => args[2] === 'status'
     ? reply({ connected: false, source: null, org: null, error: 'not_connected' })
     : new Promise(resolve => { finishIssues = resolve; }));
-  h.store.set('usage-bar.linear-rev', 1);
+  h.store.set('usage-bar.linear-rev', (h.store.get('usage-bar.linear-rev') ?? 0) + 1);
   h.view.render(h.cx); h.tick(0);
   await new Promise(resolve => setImmediate(resolve));
   const assertDisconnected = () => {
@@ -755,7 +867,7 @@ test('a different viewer on the same source clears the issues retained from an e
   await h.flush();
   h.respond(args => args[2] === 'status'
     ? reply({ ...firstStatus, user: { name: 'Second Viewer' } }) : { code: 127, stdout: '' });
-  h.store.set('usage-bar.linear-rev', 1);
+  h.store.set('usage-bar.linear-rev', (h.store.get('usage-bar.linear-rev') ?? 0) + 1);
   const pending = h.view.render(h.cx);
   assert.ok(byID(pending, 'issue-TEST-1'));
   h.tick(0); await h.flush();

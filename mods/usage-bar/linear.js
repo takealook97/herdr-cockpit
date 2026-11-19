@@ -1,4 +1,5 @@
 const DAY = 86400000;
+const SEEN_LIMIT = 500;
 const STATUS_TITLES = new Map([
   ['started', 'In Progress'],
   ['unstarted', 'Todo'],
@@ -77,6 +78,26 @@ export function badgeState(issues, now = new Date()) {
     count: open.length,
     alert: open.some(issue => groupType(issue) === 'blocked' || dueBadge(issue.due_date, now)?.tone === 'crit'),
   };
+}
+
+export function seenAccount(snapshot) {
+  return snapshot?.org_url || snapshot?.source || null;
+}
+
+function openIdentifiers(issues) {
+  return (Array.isArray(issues) ? issues : [])
+    .filter(issue => groupType(issue) && typeof issue.identifier === 'string' && issue.identifier)
+    .map(issue => issue.identifier);
+}
+
+export function unreadIds(issues, seen, account) {
+  if (!account || seen?.account !== account || !Array.isArray(seen.ids)) return new Set();
+  const known = new Set(seen.ids);
+  return new Set(openIdentifiers(issues).filter(id => !known.has(id)));
+}
+
+export function nextSeen(issues, account) {
+  return { account, ids: [...new Set(openIdentifiers(issues))].sort().slice(0, SEEN_LIMIT) };
 }
 
 export function plainDescription(md, max = 1500) {

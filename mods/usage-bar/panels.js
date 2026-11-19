@@ -82,7 +82,7 @@ function duePill(t, due) {
     .text_color(color).bg(due.tone === 'dim' ? t.raised : color + '26').child(due.text);
 }
 
-function issueRow(t, issue, now, view, expanded) {
+function issueRow(t, issue, now, view, expanded, unread) {
   const due = dueBadge(issue.due_date, now);
   const project = projectShort(issue.project);
   const title = div().min_w(0).truncate().child(issue.title);
@@ -91,6 +91,7 @@ function issueRow(t, issue, now, view, expanded) {
     .when(expanded, el => el.bg(t.raised))
     .when(!expanded, el => el.hover(s => s.bg(t.hover)))
     .on_click((_event, cx) => view.toggleLinearDetail(issue.identifier, cx))
+    .child(div().size(6).flex_none().rounded(3).when(unread, el => el.bg(t.accent)))
     .child(priorityBox(t, issue))
     .child(div().w(58).flex_none().text_size(11).text_color(t.dim).child(issue.identifier));
   if (project) {
@@ -105,7 +106,7 @@ function issueRow(t, issue, now, view, expanded) {
 
 function issueDetail(t, identifier, group, data, now) {
   const block = v_flex().id('issue-detail-' + identifier).w_full().min_w(0)
-    .pl(94).pr(6).pt(4).pb(8).gap(5);
+    .pl(108).pr(6).pt(4).pb(8).gap(5);
   if (!data) return block.child(div().text_color(t.dim).child('Loading…'));
   if (data.error) return block.child(div().text_color(t.blocked).child(errorText(data.error)));
 
@@ -131,7 +132,7 @@ function issueDetail(t, identifier, group, data, now) {
 
 export function linearPanel(view) {
   const t = theme(), now = new Date();
-  const { issues: snapshot, status, issueError, statusError, details } = view.linearSnapshot();
+  const { issues: snapshot, status, issueError, statusError, details, unread } = view.linearSnapshot();
   const org = status?.org;
   const matchingOrg = !snapshot || (snapshot.source === status?.source &&
     (!snapshot.org_url || snapshot.org_url === org?.url));
@@ -147,7 +148,7 @@ export function linearPanel(view) {
       .when(!!orgName, el => el.child(div().min_w(0).truncate().text_color(t.dim).child(orgName)))
       .child(div().flex_none().text_color(t.dim).child(String(count)))
       .child(div().flex_1())
-      .child(headerButton(t, 'linear-refresh', '↻', 'Refresh', (_event, cx) => view.readLinear('issues', cx, true))))
+      .child(headerButton(t, 'linear-refresh', '↻', 'Refresh', (_event, cx) => view.readLinear('issues', cx, { refresh: true }))))
     .child(div().w_full().h(1).flex_none().bg(t.border));
 
   if (error === 'not_connected') return root.child(action(t, 'linear-settings', errorText(error), () => {
@@ -170,7 +171,7 @@ export function linearPanel(view) {
         .child(div().flex_none().text_color(t.dim).child(String(group.issues.length))))
       .children(group.issues.flatMap(issue => {
         const expanded = details?.expanded === issue.identifier;
-        const row = issueRow(t, issue, now, view, expanded);
+        const row = issueRow(t, issue, now, view, expanded, unread?.has(issue.identifier) ?? false);
         return expanded ? [row, issueDetail(t, issue.identifier, group, details.data, now)] : [row];
       })))));
 }
