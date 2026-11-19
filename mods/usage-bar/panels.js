@@ -70,7 +70,8 @@ export function linearPanel(view) {
     (!snapshot.org_url || snapshot.org_url === org?.url));
   const orgName = matchingOrg ? org?.name : null;
   const orgURL = snapshot?.org_url ?? (matchingOrg ? org?.url : null);
-  const error = issueError ?? (snapshot ? snapshot.error : status?.error ?? statusError);
+  const error = issueError ?? (statusError === 'busy' ? statusError : null) ??
+    (snapshot ? snapshot.error : status?.error ?? statusError);
 
   const root = panelRoot(view, t, 'linear').max_h(520)
     .child(h_flex().min_w(0).items_center().gap(6)

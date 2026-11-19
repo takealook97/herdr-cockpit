@@ -104,5 +104,5 @@ test('connection status and public errors use fixed copy', () => {
     helper: 'herdr-hud unavailable',
   };
   for (const [code, message] of Object.entries(expected)) assert.equal(errorText(code), message);
-  for (const code of ['network', 'bad_response', 'private diagnostic']) assert.equal(errorText(code), "Couldn't load Linear issues");
+  for (const code of ['network', 'bad_response', 'busy', 'private diagnostic']) assert.equal(errorText(code), "Couldn't load Linear issues");
 });

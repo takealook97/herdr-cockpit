@@ -8,9 +8,10 @@ import { badgeState } from './linear.js';
 import { linearPanel, settingsPanel, openPanel } from './panels.js';
 
 const LINEAR_REV = 'usage-bar.linear-rev';
+const LINEAR_ACCOUNT_REV = 'usage-bar.linear-account-rev';
 const VISIBLE_KEY = 'usage-bar.visible';
-const linearRevision = () => {
-  const value = shared(LINEAR_REV);
+const linearRevision = (key = LINEAR_REV) => {
+  const value = shared(key);
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 };
 
@@ -41,6 +42,7 @@ export default class UsageBar extends View {
   init(_props, cx) {
     this.panel = props()?.panel;
     this.linearRev = linearRevision();
+    this.linearAccountRev = linearRevision(LINEAR_ACCOUNT_REV);
     this.linearSeq = { issues: 0, status: 0 };
     this.linearVisible = readVisible(shared(VISIBLE_KEY)).linear;
     if (this.panel === 'linear' || this.panel === 'settings') {
@@ -83,8 +85,23 @@ export default class UsageBar extends View {
   }
 
   linearSnapshot() {
+    // Hide the old snapshot on the first render, before the observation timer clears it.
+    if (this.linearAccountRev !== linearRevision(LINEAR_ACCOUNT_REV)) {
+      return { issues: null, status: null, issueError: null, statusError: null };
+    }
     return { issues: this.linearIssues, status: this.linearStatus,
       issueError: this.linearIssueError, statusError: this.linearStatusError };
+  }
+
+  resetLinearAccount(rev) {
+    this.linearAccountRev = rev;
+    this.linearSeq.issues++;
+    this.linearSeq.status++;
+    this.linearIssues = null;
+    this.linearStatus = null;
+    this.linearIssuesRev = null;
+    this.linearIssueError = null;
+    this.linearStatusError = null;
   }
 
   applyLinearStatus(status, rev) {
@@ -109,23 +126,26 @@ export default class UsageBar extends View {
   readLinear(kind, cx, refresh = false) {
     const seq = ++this.linearSeq[kind];
     const rev = linearRevision();
+    const accountRev = this.linearAccountRev;
     const statusAtStart = this.linearStatus;
     const args = [kind];
     if (kind === 'issues') args.push(...(refresh ? ['--refresh'] : ['--max-age', '60s']));
     cx.spawn(async cx => {
       const data = await execLinear(args);
-      if (seq !== this.linearSeq[kind] || rev !== linearRevision()) return;
+      if (seq !== this.linearSeq[kind] || rev !== linearRevision() ||
+          accountRev !== linearRevision(LINEAR_ACCOUNT_REV)) return;
+      const readError = data?.error === 'busy' ? 'busy' : data ? null : 'helper';
       if (kind === 'issues') {
-        this.linearIssueError = data ? null : 'helper';
+        this.linearIssueError = readError;
         // A newer status can rule out an issues reply already in flight.
-        if (data && (statusAtStart === this.linearStatus || !issuesMismatchStatus(data, this.linearStatus))) {
+        if (!readError && (statusAtStart === this.linearStatus || !issuesMismatchStatus(data, this.linearStatus))) {
           this.linearIssues = data;
           this.linearIssuesRev = rev;
         }
-      } else if (data) {
+      } else if (!readError) {
         this.applyLinearStatus(data, rev);
       } else {
-        this.linearStatusError = 'helper';
+        this.linearStatusError = readError;
       }
       if (refresh) {
         this.bumpLinear();
@@ -149,6 +169,9 @@ export default class UsageBar extends View {
     cx.notify();
     cx.spawn(async cx => {
       const data = await execLinear(args);
+      const accountRev = linearRevision(LINEAR_ACCOUNT_REV) + 1;
+      this.resetLinearAccount(accountRev);
+      setShared(LINEAR_ACCOUNT_REV, accountRev);
       this.bumpLinear();
       if (this.closed) return;
       this.linearBusy = false;
@@ -160,16 +183,20 @@ export default class UsageBar extends View {
   }
 
   observeLinear(visible, cx) {
-    if (linearRevision() === this.linearRev && visible === this.linearVisible) return;
+    if (linearRevision() === this.linearRev && visible === this.linearVisible &&
+        linearRevision(LINEAR_ACCOUNT_REV) === this.linearAccountRev) return;
     this.linearObservation?.cancel();
     this.linearObservation = cx.timer.after(0, cx => {
       const rev = linearRevision();
+      const accountRev = linearRevision(LINEAR_ACCOUNT_REV);
       const visible = this.panel ? this.linearVisible : readVisible(shared(VISIBLE_KEY)).linear;
       const changed = rev !== this.linearRev;
+      const accountChanged = accountRev !== this.linearAccountRev;
       const enabled = !this.panel && visible && !this.linearVisible;
+      if (accountChanged) this.resetLinearAccount(accountRev);
       this.linearRev = rev;
       this.linearVisible = visible;
-      if ((this.panel || visible) && (changed || enabled)) {
+      if ((this.panel || visible) && (changed || accountChanged || enabled)) {
         this.readLinear('status', cx);
         if (this.panel !== 'settings') this.readLinear('issues', cx);
       }
