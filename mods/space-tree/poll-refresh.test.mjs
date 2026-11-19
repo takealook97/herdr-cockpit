@@ -55,37 +55,16 @@ async function finishTick(h) {
   await h.flush();
 }
 
-test('a never-settling remote exec retries only when its 45 second guard expires', async () => {
+test('a never-settling remote exec is never overlapped, even after 45 seconds', async () => {
   const h = setup({ remoteHung: true });
   await finishTick(h);
-  for (let now = 3000; now < poll.HUD_INFLIGHT_MAX_MS; now += 3000) {
+  for (let now = 3000; now <= 120000; now += 3000) {
     h.now = now;
     h.refresh(); await finishTick(h);
-    assert.equal(h.execs.filter(on => on === 'remote').length, 1);
   }
-  h.now = poll.HUD_INFLIGHT_MAX_MS - 1;
-  h.refresh(); await finishTick(h);
   assert.equal(h.execs.filter(on => on === 'remote').length, 1);
-  h.now++;
-  h.refresh(); await finishTick(h);
-  assert.equal(h.execs.filter(on => on === 'remote').length, 2);
-  assert.deepEqual(h.errors, []);
-});
-
-test('an old exec settling late cannot release the newer attempt guard', async () => {
-  const pending = [];
-  const h = setup({ execute: on => on
-    ? new Promise(resolve => pending.push(resolve)) : Promise.resolve(hud('current')) });
-  await finishTick(h);
-  h.now = poll.HUD_INFLIGHT_MAX_MS;
-  h.refresh(); await finishTick(h);
-  assert.equal(pending.length, 2);
-  const current = h.tree.hudInflight.get('remote');
-  pending[0](hud('old')); await settle();
-  assert.equal(h.tree.hudInflight.get('remote'), current);
-  h.now += 3000;
-  h.refresh(); await finishTick(h);
-  assert.equal(pending.length, 2, 'the next tick must still skip the newer attempt');
+  assert.match(h.shared.get('hub.lastError'), /remote: previous poll still running/);
+  assert.equal(h.shared.get('hub.stale'), true);
   assert.deepEqual(h.errors, []);
 });
 
@@ -197,4 +176,23 @@ test('a superseded poll that throws cannot mark the current hud stale', async ()
   assert.equal(h.tree.orchStale, false);
   assert.equal(h.shared.get('hub.stale'), false);
   assert.deepEqual(h.errors, []);
+});
+
+test('a superseded success must preserve the current refresh failure reason', async () => {
+  let finishRemote, finishPeer;
+  const h = setup({ execute: on => on === 'remote'
+    ? new Promise(resolve => { finishRemote = resolve; }) : Promise.resolve(hud('local')) });
+  await settle();
+  h.now = poll.POLL_STALE_MS + 1;
+  h.machineNames = ['remote', 'peer'];
+  h.execute = on => on === 'peer'
+    ? new Promise(resolve => { finishPeer = resolve; }) : Promise.resolve(hud('local'));
+  h.refresh();
+  assert.equal(h.tree.pollFailures.get('remote'), 'previous poll still running');
+  finishRemote(hud('superseded'));
+  await settle();
+  finishPeer(hud('peer'));
+  await finishTick(h);
+  assert.equal(h.shared.get('hub.stale'), true);
+  assert.equal(h.shared.get('hub.lastError'), 'remote: previous poll still running');
 });

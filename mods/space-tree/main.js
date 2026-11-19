@@ -4,7 +4,7 @@ import { spaces, machines, panes, terminals, run, exec, shared, setShared, theme
 import Plumbing from "./plumbing.js";
 import Hub from "./hub.js";
 import { mergeHuds } from "./hub-model.js";
-import { createPollGate, withTimeout, HUD_EXEC_TIMEOUT_MS, HUD_INFLIGHT_MAX_MS } from "./poll.js";
+import { createPollGate, withTimeout, HUD_EXEC_TIMEOUT_MS, pollFailureReason, summarizePollFailures } from "./poll.js";
 import { buildTree, aliasKey, machineId, rowId, pruneFolded, assignSectionColors, SECTION_PALETTE } from "./model.js";
 import { clearDrag, beginTabDrag, hoverTabTarget, dropTab } from "./drag.js";
 import { treeRow, hubRow, nexusRow } from "./rows.js";
@@ -25,6 +25,7 @@ export default class SpaceTree extends Plumbing {
     try { this.treeFolded = JSON.parse(localStorage.getItem("tree.folded") ?? "{}"); } catch { this.treeFolded = {}; }
     this.pollGate = createPollGate();
     this.hudInflight = new Map();
+    this.pollFailures = new Map();
     this.orch = {};
     this.lastModel = {};
     this.orchStale = false;
@@ -62,10 +63,10 @@ export default class SpaceTree extends Plumbing {
         const names = [...new Set([null, ...machines().map(m => m.name), ...spaces().map(s => s.machine ?? null)])];
         const results = await Promise.all(names.map(machine => this.pollMachine(cx, machine, token)));
         this.applyOrch(cx, names, results, token);
-      } catch {
+      } catch (error) {
         if (this.pollGate.isCurrent(token)) {
           this.orchStale = true;
-          try { setShared("hub.stale", true); } catch {}
+          try { setShared("hub.stale", true); setShared("hub.lastError", "poll failed: " + pollFailureReason(error)); } catch {}
         }
       } finally {
         this.pollGate.end(token);
@@ -76,7 +77,7 @@ export default class SpaceTree extends Plumbing {
 
   async pollMachine(cx, machine, token) {
     const previous = this.hudInflight.get(machine), startedAt = Date.now();
-    if (previous && startedAt - previous.startedAt < HUD_INFLIGHT_MAX_MS) return false;
+    if (previous) { this.pollFailures.set(machine, "previous poll still running"); return false; }
     const attempt = { startedAt };
     this.hudInflight.set(machine, attempt);
     const release = () => {
@@ -85,9 +86,12 @@ export default class SpaceTree extends Plumbing {
     let pending;
     try {
       pending = exec("sh", [...HUD, "panes"], { on: machine || undefined });
-      const r = await withTimeout(pending.finally(release), HUD_EXEC_TIMEOUT_MS, ms => cx.sleep(ms));
-      if (r.code !== 0) throw new Error("hud unavailable");
-      const data = JSON.parse(r.stdout);
+      const settled = pending.finally(release);
+      settled.catch(() => {});
+      const r = await withTimeout(settled, HUD_EXEC_TIMEOUT_MS, ms => cx.sleep(ms));
+      if (r.code !== 0) throw new Error(`exit code ${r.code}`);
+      let data;
+      try { data = JSON.parse(r.stdout); } catch { throw new Error("invalid JSON"); }
       if (data.error || !Array.isArray(data.runs) || !Array.isArray(data.terminals)) throw new Error("bad hud data");
       const observed = new Map(panes().map(p => [p.terminal, p.program?.key]));
       const qualify = id => !id || !machine || id.includes("/") ? id : `${machine}/${id}`;
@@ -99,9 +103,11 @@ export default class SpaceTree extends Plumbing {
         info.at = at;
       }
       if (this.pollGate.isCurrent(token)) this.hub.snapshots.set(machine, { machine, data });
+      if (this.pollGate.isCurrent(token)) this.pollFailures.delete(machine);
       return true;
-    } catch {
+    } catch (error) {
       if (!pending) release();
+      if (this.pollGate.isCurrent(token)) this.pollFailures.set(machine, pollFailureReason(error));
       return false;
     }
   }
@@ -122,6 +128,7 @@ export default class SpaceTree extends Plumbing {
     this.orchStale = results.some(ok => !ok);
     this.orchLoaded = this.orchLoaded || results.some(Boolean);
     setShared("hub.stale", this.orchStale);
+    setShared("hub.lastError", summarizePollFailures(names, this.pollFailures));
     this.hub.sync(cx);
   }
 
