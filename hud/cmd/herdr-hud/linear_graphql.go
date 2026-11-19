@@ -82,7 +82,8 @@ func linearGraphQL(ctx context.Context, key, query string, variables map[string]
 	}
 	if parsed && query == linearIssueQuery {
 		for _, e := range envelope.Errors {
-			if e.Extensions.Code == "ENTITY_NOT_FOUND" || linearIssueMissing(e.Message) {
+			code := strings.ToUpper(e.Extensions.Code)
+			if code == "ENTITY_NOT_FOUND" || code == "ISSUE_NOT_FOUND" || linearIssueMissing(e.Message) {
 				return linearError(linearErrNotFound)
 			}
 		}

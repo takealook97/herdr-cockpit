@@ -4,9 +4,11 @@ import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
 import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, seenAccount, unreadIds, nextSeen, errorText, statusLine } from './linear.js';
 
 test('unread tracking baselines new accounts and compares only current open issue identifiers', () => {
-  const account = seenAccount({ org_url: 'https://linear.app/fixture', source: 'api_key' });
-  assert.equal(account, 'https://linear.app/fixture');
-  assert.equal(seenAccount({ org_url: null, source: 'api_key' }), 'api_key');
+  const account = seenAccount({ org: { url: 'https://linear.app/fixture' }, source: 'api_key', user: { name: 'Viewer A' } });
+  assert.equal(account, 'api_key|https://linear.app/fixture|Viewer A');
+  assert.equal(seenAccount({ org: null, source: 'api_key' }), 'api_key||');
+  assert.equal(seenAccount({ source: null }), null);
+  assert.equal(seenAccount(undefined), null);
   const issue = (identifier, status_type = 'unstarted') => ({ identifier, status_type, title: 'Fixture title' });
   const current = [issue('TEST-3'), issue('TEST-2'), issue('TEST-2'), issue('TEST-4', 'completed')];
   const before = nextSeen([issue('TEST-2'), issue('TEST-1')], account);

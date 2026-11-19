@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -23,6 +24,12 @@ const (
 var linearMCPEndpointOverride string
 
 var linearMCPIssueFields = []string{"id", "title", "status", "statusType", "priority", "team", "project", "dueDate", "url", "updatedAt"}
+
+var (
+	linearMCPAuthError = regexp.MustCompile(`(?i)^(?:unauthorized|authentication (?:required|failed)|` +
+		`(?:invalid|expired|missing) (?:access )?token|(?:access )?token (?:not found|expired|is invalid))\b`)
+	linearMCPForbiddenError = regexp.MustCompile(`(?i)^(?:forbidden|access denied|permission denied)\b`)
+)
 
 type mcpSession struct {
 	client   *http.Client
@@ -290,14 +297,7 @@ func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]
 	if json.Unmarshal(result, &body) != nil {
 		return nil, linearError(linearErrBadResponse)
 	}
-	if body.IsError {
-		if name == "get_issue" {
-			for _, item := range body.Content {
-				if item.Type == "text" && linearIssueMissing(item.Text) {
-					return nil, linearError(linearErrNotFound)
-				}
-			}
-		}
+	if body.IsError && name != "get_issue" {
 		return nil, linearError(linearErrBadResponse)
 	}
 	for _, item := range body.Content {
@@ -305,14 +305,22 @@ func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]
 		if item.Type != "text" {
 			continue
 		}
-		if name == "get_issue" && (text == "null" || (!strings.HasPrefix(text, "{") && linearIssueMissing(text))) {
-			return nil, linearError(linearErrNotFound)
+		if name == "get_issue" && !strings.HasPrefix(text, "{") {
+			message := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(text), "error:"))
+			switch {
+			case linearMCPAuthError.MatchString(message):
+				return nil, linearError(linearErrExpired)
+			case linearMCPForbiddenError.MatchString(message):
+				return nil, linearError(linearErrForbidden)
+			case linearIssueMissing(message), !body.IsError && text == "null":
+				return nil, linearError(linearErrNotFound)
+			}
 		}
-		if strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
+		if !body.IsError && strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
 			return json.RawMessage(text), nil
 		}
 	}
-	if len(body.Structured) > 0 && body.Structured[0] == '{' {
+	if !body.IsError && len(body.Structured) > 0 && body.Structured[0] == '{' {
 		return body.Structured, nil
 	}
 	return nil, linearError(linearErrBadResponse)

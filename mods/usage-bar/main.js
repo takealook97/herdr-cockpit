@@ -97,7 +97,8 @@ export default class UsageBar extends View {
     }
     return { issues: this.linearIssues, status: this.linearStatus,
       issueError: this.linearIssueError, statusError: this.linearStatusError,
-      details: this.linearDetails, unread: this.linearUnread };
+      details: this.linearDetails,
+      unread: this.linearUnreadAccount === seenAccount(this.linearStatus) ? this.linearUnread : undefined };
   }
 
   resetLinearAccount(rev) {
@@ -107,8 +108,10 @@ export default class UsageBar extends View {
     this.linearDetails?.clear();
     this.linearIssues = null;
     this.linearStatus = null;
+    this.linearStatusReadRev = null;
     this.linearIssuesRev = null;
     this.linearUnread = undefined;
+    this.linearSeenReset = true;
     this.linearIssueError = null;
     this.linearStatusError = null;
   }
@@ -127,6 +130,9 @@ export default class UsageBar extends View {
     }
     this.linearStatus = status;
     this.linearStatusError = null;
+    if (!this.closed && this.linearIssuesRev === rev && seenAccount(prior) !== seenAccount(status)) {
+      this.updateLinearSeen();
+    }
   }
 
   bumpLinear(fromOpening = false) {
@@ -135,17 +141,23 @@ export default class UsageBar extends View {
     setShared(LINEAR_REV, this.linearRev);
   }
 
-  updateLinearSeen(snapshot) {
-    const account = seenAccount(snapshot);
-    if (!account) return;
+  updateLinearSeen() {
+    const snapshot = this.linearIssues;
+    const account = seenAccount(this.linearStatus);
+    if (!account || !snapshot || snapshot.error || snapshot.stale ||
+        issuesMismatchStatus(snapshot, this.linearStatus)) return;
     const seen = shared(LINEAR_SEEN);
+    const reset = this.linearSeenReset;
+    this.linearSeenReset = false;
     if (this.panel === 'linear') {
       if (this.linearUnreadAccount !== account) this.linearUnread = undefined;
       this.linearUnreadAccount = account;
       this.linearUnread ??= new Set();
-      for (const id of unreadIds(snapshot.issues, seen, account)) this.linearUnread.add(id);
+      if (!reset) {
+        for (const id of unreadIds(snapshot.issues, seen, account)) this.linearUnread.add(id);
+      }
       setShared(LINEAR_SEEN, nextSeen(snapshot.issues, account));
-    } else if (seen?.account !== account || !Array.isArray(seen.ids)) {
+    } else if (reset || seen?.account !== account || !Array.isArray(seen.ids)) {
       setShared(LINEAR_SEEN, nextSeen(snapshot.issues, account));
     }
   }
@@ -171,33 +183,35 @@ export default class UsageBar extends View {
     cx.spawn(async cx => {
       const data = await execLinear(args);
       const currentRev = linearRevision();
+      // A discarded status keeps its read revision so the bar can retry after an opening bump.
       if (seq !== this.linearSeq[kind] ||
           (kind === 'status' ? this.linearStatusReadRev : rev) !== currentRev ||
           accountRev !== linearRevision(LINEAR_ACCOUNT_REV)) return;
+      if (kind === 'status') this.linearStatusReadRev = null;
       const readError = data?.error === 'busy' ? 'busy' : data ? null : 'helper';
-      let announce = false;
+      let freshIssues = false;
       if (kind === 'issues') {
         this.linearIssueError = readError;
         // A newer status can rule out an issues reply already in flight.
         if (!readError && (statusAtStart === this.linearStatus || !issuesMismatchStatus(data, this.linearStatus))) {
           this.linearIssues = data;
           this.linearIssuesRev = rev;
-          if (!this.closed && !data.error && !data.stale) {
-            this.updateLinearSeen(data);
-            // Reads triggered by an observed revision already have a publisher.
-            announce = this.panel === 'linear' && !observed;
-          }
+          freshIssues = !data.error && !data.stale;
+          if (!this.closed && freshIssues) this.updateLinearSeen();
         }
       } else if (!readError) {
-        this.applyLinearStatus(data, rev);
+        this.applyLinearStatus(data, currentRev);
       } else {
         this.linearStatusError = readError;
       }
       if (refresh) {
         this.bumpLinear();
+        if (freshIssues) this.linearIssuesRev = this.linearRev;
         if (!this.closed && !this.linearStatus) this.readLinear('status', cx);
-      } else if (announce) {
+      } else if (!this.closed && freshIssues && this.panel === 'linear' && !observed) {
+        // Reads triggered by an observed revision already have a publisher.
         this.bumpLinear(true);
+        this.linearIssuesRev = this.linearRev;
         // This popup's issues announcement doesn't invalidate its pending status.
         if (this.linearStatusReadRev === rev) this.linearStatusReadRev = this.linearRev;
       }
@@ -248,8 +262,11 @@ export default class UsageBar extends View {
       this.linearRev = rev;
       this.linearVisible = visible;
       if ((this.panel || visible) && (changed || accountChanged || enabled)) {
-        // Opening the dropdown already populated the issues cache. Avoid another whoami call from the bar.
-        if (!opening || accountChanged || enabled) this.readLinear('status', cx);
+        // Reuse the bar's status on open unless the bump invalidated its latest read.
+        const statusInvalidated = this.linearStatusReadRev != null && this.linearStatusReadRev !== rev;
+        if (!opening || accountChanged || enabled || !this.linearStatus || statusInvalidated) {
+          this.readLinear('status', cx);
+        }
         if (this.panel !== 'settings') this.readLinear('issues', cx, { observed: true });
       }
       cx.notify();
@@ -417,8 +434,8 @@ export default class UsageBar extends View {
     const badge = badgeState(issues?.issues, now);
     const seen = shared(LINEAR_SEEN);
     // A dropdown can prune IDs before the bar receives the corresponding issues list.
-    const unread = this.linearIssuesRev === linearRevision()
-      ? unreadIds(issues?.issues, seen, seenAccount(issues)).size : 0;
+    const unread = !this.linearSeenReset && this.linearIssuesRev === linearRevision() && !issuesMismatchStatus(issues, status)
+      ? unreadIds(issues?.issues, seen, seenAccount(status)).size : 0;
     const linear = this.popupButton(linearButton(t, {
       count: Array.isArray(issues?.issues) && connected ? badge.count : null,
       alert: !!connected && badge.alert,

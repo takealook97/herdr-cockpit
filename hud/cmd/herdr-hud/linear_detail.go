@@ -15,7 +15,12 @@ const (
 	linearDetailMaxLabels      = 20
 )
 
-var linearDetailIdentifierPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]{0,8}$`)
+var (
+	linearDetailIdentifierPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{0,9}-[1-9][0-9]{0,8}$`)
+	linearIssueMissingPattern     = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:` +
+		`(?:issue|entity)(?:\s+["']?[a-z][a-z0-9]*-[0-9]+["']?)?\s+` +
+		`(?:(?:was |is )?not found|does not exist|is not visible)|no issue found|could not find (?:the )?issue)\b`)
+)
 
 type linearIssueDetail struct {
 	Identifier  string   `json:"identifier"`
@@ -129,10 +134,5 @@ func linearDetailPriority(value *float64) *int {
 // Linear uses these phrases in provider errors. Match only for issue detail,
 // preserving the public error behavior of the other Linear commands.
 func linearIssueMissing(message string) bool {
-	message = strings.ToLower(message)
-	return strings.Contains(message, "not found") ||
-		strings.Contains(message, "no issue found") ||
-		strings.Contains(message, "could not find issue") ||
-		strings.Contains(message, "issue does not exist") ||
-		strings.Contains(message, "issue is not visible")
+	return linearIssueMissingPattern.MatchString(strings.TrimSpace(message))
 }

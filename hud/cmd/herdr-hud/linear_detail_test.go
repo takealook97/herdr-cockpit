@@ -133,6 +133,11 @@ func TestLinearIssueGraphQLErrors(t *testing.T) {
 		name, body, code string
 	}{
 		{"missing", `{"errors":[{"message":"Entity not found: ` + linearTestAPIKey + `"}]}`, linearErrNotFound},
+		{"missing entity code", `{"errors":[{"extensions":{"code":"ENTITY_NOT_FOUND"}}]}`, linearErrNotFound},
+		{"missing issue code", `{"errors":[{"extensions":{"code":"ISSUE_NOT_FOUND"}}]}`, linearErrNotFound},
+		{"field not found", `{"errors":[{"message":"Field issue not found on Query"}]}`, linearErrBadResponse},
+		{"generic not found code", `{"errors":[{"extensions":{"code":"NOT_FOUND"}}]}`, linearErrBadResponse},
+		{"auth", `{"errors":[{"message":"Token not found","extensions":{"code":"AUTHENTICATION_ERROR"}}]}`, linearErrInvalidKey},
 		{"null issue", `{"data":{"issue":null}}`, linearErrNotFound},
 		{"missing field", `{"data":{}}`, linearErrBadResponse},
 		{"wrong issue", `{"data":{"issue":{"identifier":"FIX-13","title":"Other"}}}`, linearErrBadResponse},
@@ -147,6 +152,17 @@ func TestLinearIssueGraphQLErrors(t *testing.T) {
 			linearDetailReply(t, "FIX-12", linearSourceAPIKey, tc.code)
 			linearAssertDetailNoCache(t, env)
 		})
+	}
+}
+
+func TestLinearMissingEntityErrorOnOtherGraphQLQueries(t *testing.T) {
+	setupLinear(t)
+	graphQLServer(t, func(_ string, _ map[string]any, w http.ResponseWriter) {
+		fmt.Fprint(w, `{"errors":[{"message":"Entity not found","extensions":{"code":"ENTITY_NOT_FOUND"}}]}`)
+	})
+	_, err := linearGraphQLIssues(t.Context(), linearTestAPIKey)
+	if code := linearCode(err); code != linearErrBadResponse {
+		t.Fatalf("got %q, want %q", code, linearErrBadResponse)
 	}
 }
 
@@ -209,6 +225,13 @@ func TestLinearIssueMCPErrors(t *testing.T) {
 	}{
 		{"missing tool", "", linearErrBadResponse, true, 3},
 		{"missing issue", `{"isError":true,"content":[{"type":"text","text":"Issue not found: ` + linearTestMCPToken + `"}]}`, linearErrNotFound, false, 4},
+		{"missing entity in text", linearDetailMCPResult("Entity not found"), linearErrNotFound, false, 4},
+		{"missing named issue", linearDetailMCPResult(`Issue "FIX-12" was not found`), linearErrNotFound, false, 4},
+		{"tool not found in text", linearDetailMCPResult("Tool get_issue not found"), linearErrBadResponse, false, 4},
+		{"tool not found in error", `{"isError":true,"content":[{"type":"text","text":"Tool for issue not found"}]}`, linearErrBadResponse, false, 4},
+		{"missing token", `{"isError":true,"content":[{"type":"text","text":"Error: Access token not found"}]}`, linearErrExpired, false, 4},
+		{"invalid token", linearDetailMCPResult("Invalid token for issue lookup: issue not found"), linearErrExpired, false, 4},
+		{"forbidden", linearDetailMCPResult("Forbidden: issue not found"), linearErrForbidden, false, 4},
 		{"echo in error", `{"isError":true,"content":[{"type":"text","text":"Error: ` + linearTestMCPToken + `"}]}`, linearErrBadResponse, false, 4},
 		{"echo in success", linearDetailMCPResult(`{"id":"FIX-12","title":"Issue","labels":["` + linearTestMCPToken + `"]}`), linearErrBadResponse, false, 4},
 	} {
