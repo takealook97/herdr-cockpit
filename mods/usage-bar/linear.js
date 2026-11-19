@@ -7,7 +7,7 @@ const STATUS_TITLES = new Map([
 ]);
 const GROUP_ORDER = ['blocked', 'review', ...STATUS_TITLES.keys()];
 
-function groupType(issue) {
+export function groupType(issue) {
   const type = issue?.status_type;
   if (type === 'started') {
     if (/blocked/i.test(issue.status)) return 'blocked';
@@ -67,6 +67,10 @@ export function priorityLevel(value) {
   return ['urgent', 'high', 'medium', 'low', 'none'][priority(value) - 1];
 }
 
+export function priorityName(value) {
+  return ['Urgent', 'High', 'Medium', 'Low', 'No priority'][priority(value) - 1];
+}
+
 export function badgeState(issues, now = new Date()) {
   const open = (Array.isArray(issues) ? issues : []).filter(issue => groupType(issue));
   return {
@@ -75,8 +79,21 @@ export function badgeState(issues, now = new Date()) {
   };
 }
 
-export function isLinearURL(url) {
-  return typeof url === 'string' && url.startsWith('https://linear.app/');
+export function plainDescription(md, max = 1500) {
+  if (typeof md !== 'string') return '';
+  const plain = md
+    .replace(/\r\n?/g, '\n')
+    .replace(/!\[[^\]\n]*\]\((?:[^()\n]|\([^()\n]*\))*\)/g, '[image]')
+    .replace(/\[([^\]\n]*)\]\((?:[^()\n]|\([^()\n]*\))*\)/g, '$1')
+    .replace(/^[ \t]*(?:>[ \t]*)+/gm, '')
+    .replace(/^[ \t]*#+[ \t]+/gm, '')
+    .replace(/^[ \t]*(?:[-+*]|\d+[.)])[ \t]+/gm, '• ')
+    .replace(/\*\*|__|`/g, '')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{4,}/g, '\n\n')
+    .trim();
+  const chars = Array.from(plain);
+  return chars.length > max ? chars.slice(0, max).join('') + '…' : plain;
 }
 
 const errors = new Map([
@@ -86,6 +103,8 @@ const errors = new Map([
   ['invalid_key', 'That API key was rejected'],
   ['store_failed', "Couldn't save the key"],
   ['helper', 'herdr-hud unavailable'],
+  ['not_found', 'Issue not found'],
+  ['bad_request', 'Invalid issue id'],
 ]);
 
 export function errorText(code) {

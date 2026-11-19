@@ -5,6 +5,7 @@ import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode,
 import { cell, groupLabel, systemRow, iconButton, linearButton } from './ui.js';
 import { readVisible } from './prefs.js';
 import { badgeState } from './linear.js';
+import { LinearDetails } from './linear-detail.js';
 import { linearPanel, settingsPanel, openPanel } from './panels.js';
 
 const LINEAR_REV = 'usage-bar.linear-rev';
@@ -30,7 +31,8 @@ async function execLinear(args) {
     const { code, stdout } = await exec(...linearCommand(args));
     const data = JSON.parse(stdout);
     if (typeof data?.error === 'string') return data;
-    const valid = args[0] === 'issues' ? Array.isArray(data?.issues) : typeof data?.connected === 'boolean';
+    const valid = args[0] === 'issue' ? data?.issue?.identifier === args[1] :
+      args[0] === 'issues' ? Array.isArray(data?.issues) : typeof data?.connected === 'boolean';
     if (code === 0 && valid) return data;
   } catch {
     // Launch and JSON failures use fixed copy. Never surface helper diagnostics.
@@ -53,6 +55,7 @@ export default class UsageBar extends View {
         this.input.set_masked(true);
         this.input.on('submit', (_event, cx) => this.changeLinear('connect', cx));
       } else {
+        this.linearDetails = new LinearDetails();
         this.readLinear('issues', cx);
       }
       this.readLinear('status', cx);
@@ -90,13 +93,14 @@ export default class UsageBar extends View {
       return { issues: null, status: null, issueError: null, statusError: null };
     }
     return { issues: this.linearIssues, status: this.linearStatus,
-      issueError: this.linearIssueError, statusError: this.linearStatusError };
+      issueError: this.linearIssueError, statusError: this.linearStatusError, details: this.linearDetails };
   }
 
   resetLinearAccount(rev) {
     this.linearAccountRev = rev;
     this.linearSeq.issues++;
     this.linearSeq.status++;
+    this.linearDetails?.clear();
     this.linearIssues = null;
     this.linearStatus = null;
     this.linearIssuesRev = null;
@@ -113,6 +117,7 @@ export default class UsageBar extends View {
         (this.linearIssuesRev !== rev && viewerChanged)) {
       this.linearIssues = null;
       this.linearIssueError = null;
+      this.linearDetails?.clear();
     }
     this.linearStatus = status;
     this.linearStatusError = null;
@@ -123,7 +128,17 @@ export default class UsageBar extends View {
     setShared(LINEAR_REV, this.linearRev);
   }
 
+  toggleLinearDetail(identifier, cx) {
+    const accountRev = this.linearAccountRev;
+    this.linearDetails.toggle(identifier, cx, execLinear,
+      () => !this.closed && accountRev === linearRevision(LINEAR_ACCOUNT_REV));
+  }
+
   readLinear(kind, cx, refresh = false) {
+    if (refresh) {
+      this.linearDetails?.clear();
+      cx.notify();
+    }
     const seq = ++this.linearSeq[kind];
     const rev = linearRevision();
     const accountRev = this.linearAccountRev;
@@ -314,7 +329,7 @@ export default class UsageBar extends View {
     const panel = props()?.panel;
     if (panel === 'linear' || panel === 'settings') {
       this.observeLinear(this.linearVisible, cx);
-      return panel === 'linear' ? linearPanel(this, cx) : settingsPanel(this, cx);
+      return panel === 'linear' ? linearPanel(this) : settingsPanel(this, cx);
     }
     // Render only compares and schedules. Apply context after render, and
     // keep the last response visible until its replacement arrives.

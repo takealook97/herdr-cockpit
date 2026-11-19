@@ -141,14 +141,16 @@ func linearMCPCred(expiresAt int64) map[string]any {
 
 // fakeMCP serves the Linear MCP fixtures over TLS.
 type fakeMCP struct {
-	t        *testing.T
-	srv      *httptest.Server
-	mu       sync.Mutex
-	sse      bool
-	status   int
-	failPage int
-	whoami   string // "" serves the fixture; "rpc" a JSON-RPC error; "tool" an isError result
-	requests []fakeMCPRequest
+	t           *testing.T
+	srv         *httptest.Server
+	mu          sync.Mutex
+	sse         bool
+	status      int
+	failPage    int
+	whoami      string // "" serves the fixture; "rpc" a JSON-RPC error; "tool" an isError result
+	noIssueTool bool
+	issueResult string
+	requests    []fakeMCPRequest
 }
 
 type fakeMCPRequest struct {
@@ -195,6 +197,9 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 		result = `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture"}}`
 	case "tools/list":
 		result = linearFixture(f.t, "mcp_tools_list.json")
+		if f.noIssueTool {
+			result = `{"tools":[]}`
+		}
 	case "tools/call":
 		var call struct {
 			Name      string         `json:"name"`
@@ -203,6 +208,8 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(msg.Params, &call)
 		text := ""
 		switch {
+		case call.Name == "get_issue":
+			result = f.issueResult
 		case call.Name == "whoami" && whoami == "rpc":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32603,"message":"internal"}}`, *msg.ID)

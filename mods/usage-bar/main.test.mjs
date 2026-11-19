@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as format from './format.js';
 import * as linear from './linear.js';
+import { LinearDetails } from './linear-detail.js';
 import * as prefs from './prefs.js';
 
 // Real HUD fixture shape, with Gemini added. No network or app state is used.
@@ -43,7 +44,7 @@ const controls = kind => ({ new: id => element(kind).id(id) });
 const evaluate = (filename, deps, result) =>
   new Function(...Object.keys(deps), `${source(filename)}; return ${result};`)(...Object.values(deps));
 const ui = evaluate('./ui.js', { div, h_flex, v_flex, Button: controls('button'), ...format },
-  '{cell, groupLabel, systemRow, iconButton, linearButton}');
+  '{cell, groupLabel, systemRow, iconButton, linearButton, openLinearKeySettings}');
 const walk = node => typeof node === 'object' ? [node, ...node.nodes.flatMap(walk)] : [node];
 const text = node => walk(node).filter(value => typeof value === 'string');
 const byID = (node, id) => walk(node).find(value => value?.style?.id === id);
@@ -91,7 +92,7 @@ function harness({ panel, machine, store = new Map(), initialResponse } = {}) {
       value: () => value, set_value(next) { value = next; },
       on(event, handler) { handlers[event] = handler; }, release() { value = ''; } };
   } };
-  const deps = { View: class {}, div, h_flex, v_flex, Switch: controls('switch'), InputState,
+  const deps = { View: class {}, LinearDetails, div, h_flex, v_flex, Switch: controls('switch'), InputState,
     Input: { new: input => element('input').input(input) },
     exec: async (cmd, args, ...options) => {
       calls.push({ cmd, args, opts: options[0], options });
@@ -352,15 +353,19 @@ test('refresh drops older helper completions and makes the bar re-read after ren
   assert.ok(text(byID(bar.view.render(bar.cx), 'linear')).includes('0'));
 });
 
-test('Linear panel shows grouped issue details and opens only Linear links', async () => {
-  const h = harness({ panel: 'linear', initialResponse: args => args[2] === 'status' ? reply(statusReply) :
-    reply({ ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2', url: 'https://example.invalid/' }] }) });
+test('Linear groups issues and toggles inline details without opening an external URL', async () => {
+  let finishDetail;
+  const h = harness({ panel: 'linear', machine: 'remote', initialResponse: args => {
+    if (args[2] === 'status') return reply(statusReply);
+    if (args[2] === 'issue') return new Promise(resolve => { finishDetail = resolve; });
+    return reply({ ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2', url: null }] });
+  } });
   await h.flush();
   const panel = h.view.render(h.cx), labels = text(panel);
   const [header, divider] = panel.nodes;
-  assert.deepEqual(text(header), ['My issues', 'Example', '2', '↻', '↗']);
+  assert.deepEqual(text(header), ['My issues', 'Example', '2', '↻']);
   assert.equal(byID(header, 'linear-refresh').style.tooltip, 'Refresh');
-  assert.equal(byID(header, 'linear-open').style.tooltip, 'Open in Linear');
+  assert.equal(byID(header, 'linear-open'), undefined);
   assert.equal(divider.style.h, 1);
   assert.equal(divider.style.bg, 'border');
   assert.ok(['Blocked', '!', 'TEST-1', issue.title, 'Test Project'].every(label => labels.includes(label)));
@@ -370,10 +375,41 @@ test('Linear panel shows grouped issue details and opens only Linear links', asy
   assert.equal(list.style.gap, 10);
   assert.deepEqual(text(list.nodes[0].nodes[0]), ['Blocked', '2']);
   assert.ok(labels.some(label => /d over$/.test(label)));
-  assert.equal(byID(panel, 'issue-TEST-2').style.on_click, undefined);
-  click(panel, 'linear-open', h.cx);
   click(panel, 'issue-TEST-1', h.cx);
-  assert.deepEqual(h.urls, [org.url + '/my-issues/assigned', issue.url]);
+  assert.deepEqual(h.calls.at(-1), {
+    cmd: 'sh', args: ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear', 'issue', 'TEST-1'],
+    opts: undefined, options: [],
+  });
+  const rendered = () => h.view.render(h.cx);
+  const detail = () => byID(rendered(), 'issue-detail-TEST-1');
+  assert.equal(byID(rendered(), 'issue-TEST-1').style.bg, 'raised');
+  assert.deepEqual(text(detail()), ['Loading…']);
+  const longLine = 'A wrapped line '.repeat(25).trimEnd();
+  finishDetail(reply({ source: 'claude_mcp', issue: { ...issue, assignee: 'Fixture Owner',
+    labels: ['Customer', 'Follow-up'], description: '# Summary\n' + longLine + '\n**Next**' }, error: null }));
+  await h.flush();
+  const expanded = detail();
+  assert.deepEqual(text(expanded), [
+    'Blocked', '·', 'Urgent', '·', '2000-01-01', '·', 'Fixture Owner',
+    'Example / Test Project', 'Customer', 'Follow-up', 'Summary', longLine, 'Next',
+  ]);
+  assert.equal(expanded.nodes[0].nodes[4].style.text_color, 'blocked');
+  assert.equal(expanded.nodes[2].nodes[0].style.bg, 'raised');
+  assert.equal(expanded.nodes[2].nodes[0].style.rounded, 4);
+  assert.deepEqual(expanded.nodes[4].style.whitespace_normal, []);
+  assert.equal(expanded.nodes[4].style.truncate, undefined);
+  const rows = byID(rendered(), 'linear-issue-list').nodes[0].nodes;
+  assert.deepEqual(rows.slice(1).map(node => node.style.id), ['issue-TEST-1', 'issue-detail-TEST-1', 'issue-TEST-2']);
+
+  click(rendered(), 'issue-TEST-1', h.cx);
+  assert.equal(detail(), undefined);
+  click(rendered(), 'issue-TEST-2', h.cx);
+  finishDetail(reply({ source: 'claude_mcp', issue: { ...issue, identifier: 'TEST-2', description: null }, error: null }));
+  await h.flush();
+  assert.ok(text(byID(rendered(), 'issue-detail-TEST-2')).includes('No description'));
+  assert.deepEqual(h.urls, []);
+  assert.deepEqual(h.closed, []);
+  rendered().style.on_key_down({ key: 'escape' }, h.cx);
   assert.deepEqual(h.closed, ['linear-overlay']);
 });
 
@@ -454,7 +490,7 @@ test('Linear panel handles connection, expiry, stale, empty and helper errors', 
   }
 });
 
-test('helper launch failure keeps the last Linear list and link and shows the error above it', async () => {
+test('helper launch failure keeps the last Linear list and shows the error above it', async () => {
   const h = harness({ panel: 'linear' }); await h.flush();
   h.respond(args => args[2] === 'issues' ? { code: 127, stdout: '', stderr: 'private diagnostic' } : h.fallback(args));
   click(h.view.render(h.cx), 'linear-refresh', h.cx);
@@ -464,8 +500,8 @@ test('helper launch failure keeps the last Linear list and link and shows the er
   assert.ok(errorIndex >= 0 && errorIndex < labels.indexOf('TEST-1'));
   assert.equal(byID(tree, 'linear-issue-list').style.opacity, 0.6);
   assert.ok(!labels.includes('private diagnostic'));
-  click(tree, 'linear-open', h.cx);
-  assert.deepEqual(h.urls, [org.url + '/my-issues/assigned']);
+  assert.equal(byID(tree, 'linear-open'), undefined);
+  assert.deepEqual(h.urls, []);
 
   h.respond(args => args[2] === 'issues'
     ? reply({ ...issuesReply, org_url: null, issues: [], error: 'network' }) : h.fallback(args));
@@ -670,7 +706,7 @@ test('busy replies preserve issues and connection status and show the generic er
   assert.deepEqual(popup.writes, ['usage-bar.linear-rev']);
   const tree = popup.view.render(popup.cx);
   assert.ok(byID(tree, 'issue-TEST-1'));
-  assert.ok(byID(tree, 'linear-open'));
+  assert.equal(byID(tree, 'linear-open'), undefined);
   assert.equal(byID(tree, 'linear-issue-list').style.opacity, 0.6);
   assert.ok(text(tree).includes("Couldn't load Linear issues"));
   settings.view.render(settings.cx);
@@ -724,4 +760,92 @@ test('a different viewer on the same source clears the issues retained from an e
   assert.ok(byID(pending, 'issue-TEST-1'));
   h.tick(0); await h.flush();
   assert.equal(byID(h.view.render(h.cx), 'issue-TEST-1'), undefined);
+});
+
+
+test('Linear dropdown source has no external navigation', () => {
+  for (const file of ['./panels.js', './main.js', './linear-detail.js']) {
+    assert.doesNotMatch(readFileSync(new URL(file, import.meta.url), 'utf8'), /\bopen_url\b/);
+  }
+});
+
+test('Linear details reuse a successful read for 60 seconds and clear on Refresh', async t => {
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const h = harness({ panel: 'linear' }); await h.flush();
+  h.respond(args => args[2] === 'issue'
+    ? reply({ issue: { ...issue, description: 'Cached detail' }, error: null }) : h.fallback(args));
+  const render = () => h.view.render(h.cx);
+  const toggle = () => click(render(), 'issue-TEST-1', h.cx);
+  const detailCalls = () => linearCalls(h).filter(([kind]) => kind === 'issue');
+  toggle(); await h.flush();
+  assert.deepEqual(detailCalls(), [['issue', 'TEST-1']]);
+  now += 59999;
+  toggle(); toggle(); await h.flush();
+  assert.ok(text(render()).includes('Cached detail'));
+  assert.equal(detailCalls().length, 1);
+  now++;
+  toggle(); toggle(); await h.flush();
+  assert.equal(detailCalls().length, 2);
+  click(render(), 'linear-refresh', h.cx);
+  assert.equal(byID(render(), 'issue-detail-TEST-1'), undefined);
+  await h.flush();
+  toggle(); await h.flush();
+  assert.equal(detailCalls().length, 3);
+});
+
+test('switching rows drops the previous Linear detail reply and shows in-place errors', async () => {
+  const second = { ...issue, identifier: 'TEST-2' };
+  const h = harness({ panel: 'linear', initialResponse: args => args[2] === 'status' ? reply(statusReply)
+    : reply({ ...issuesReply, issues: [issue, second] }) });
+  await h.flush();
+  const pending = new Map();
+  h.respond(args => new Promise(resolve => pending.set(args[3], resolve)));
+  const render = () => h.view.render(h.cx);
+  click(render(), 'issue-TEST-1', h.cx);
+  click(render(), 'issue-TEST-2', h.cx);
+  assert.equal(byID(render(), 'issue-detail-TEST-1'), undefined);
+  pending.get('TEST-2')(reply({ issue: null, error: 'not_found' }));
+  pending.get('TEST-1')(reply({ issue: { ...issue, description: 'Late stale issue' }, error: null }));
+  await h.flush();
+  const error = byID(render(), 'issue-detail-TEST-2').nodes[0];
+  assert.deepEqual(text(error), ['Issue not found']);
+  assert.equal(error.style.text_color, 'blocked');
+  assert.ok(!text(render()).includes('Late stale issue'));
+  click(render(), 'issue-TEST-1', h.cx);
+  assert.deepEqual(linearCalls(h).slice(-3), [['issue', 'TEST-1'], ['issue', 'TEST-2'], ['issue', 'TEST-1']]);
+  pending.get('TEST-1')(reply({ issue: null, error: 'bad_request' }, 2));
+  await h.flush();
+  assert.ok(text(render()).includes('Invalid issue id'));
+});
+
+test('account revision drops a pending detail and invalidates the popup cache', async () => {
+  const second = { ...issue, identifier: 'TEST-2' };
+  const fallback = args => args[2] === 'status' ? reply(statusReply)
+    : reply({ ...issuesReply, issues: [issue, second] });
+  const h = harness({ panel: 'linear', initialResponse: fallback }); await h.flush();
+  let finishOldDetail;
+  h.respond(args => {
+    if (args[2] !== 'issue') return fallback(args);
+    if (args[3] === 'TEST-2') return new Promise(resolve => { finishOldDetail = resolve; });
+    return reply({ issue: { ...issue, description: 'First account' }, error: null });
+  });
+  const render = () => h.view.render(h.cx);
+  click(render(), 'issue-TEST-1', h.cx);
+  await h.flush();
+  click(render(), 'issue-TEST-2', h.cx);
+  h.store.set('usage-bar.linear-account-rev', 1);
+  assert.equal(byID(render(), 'issue-detail-TEST-2'), undefined);
+  h.respond(args => args[2] === 'issue'
+    ? reply({ issue: { ...issue, description: 'Second account' }, error: null }) : fallback(args));
+  h.tick(0);
+  finishOldDetail(reply({ issue: { ...second, description: 'Old pending detail' }, error: null }));
+  await h.flush();
+  assert.ok(!text(render()).includes('Old pending detail'));
+  assert.equal(byID(render(), 'issue-detail-TEST-2'), undefined);
+  click(render(), 'issue-TEST-1', h.cx);
+  await h.flush();
+  assert.ok(text(render()).includes('Second account'));
+  assert.deepEqual(linearCalls(h).filter(([kind]) => kind === 'issue'),
+    [['issue', 'TEST-1'], ['issue', 'TEST-2'], ['issue', 'TEST-1']]);
 });

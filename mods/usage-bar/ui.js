@@ -54,3 +54,7 @@ export function linearButton(t, { count, alert, connected, stale }) {
     .child(div().opacity(stale ? 0.6 : 1).text_color(connected && count !== null ? t.foreground : t.dim).child(String(label)))
     .when(alert, el => el.child(div().size(5).rounded(3).bg(t.blocked)));
 }
+
+export function openLinearKeySettings(cx) {
+  cx.open_url('https://linear.app/settings/account/security');
+}

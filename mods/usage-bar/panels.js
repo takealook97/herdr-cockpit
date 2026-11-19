@@ -2,7 +2,8 @@ import { div } from 'gpui-kit';
 import { h_flex, v_flex, Switch, Input } from 'gpui-base';
 import { props, shared, setShared, theme, closeOverlay, openOverlay } from 'herdr';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, dueBadge, projectShort, priorityLevel, isLinearURL, errorText, statusLine } from './linear.js';
+import { groupIssues, groupType, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, errorText, statusLine } from './linear.js';
+import { openLinearKeySettings } from './ui.js';
 
 const PANEL_WIDTH = { linear: 440, settings: 320 };
 const LABELS = { codex: 'Codex', claude: 'Claude', gemini: 'Gemini', linear: 'Linear', system: 'CPU · RAM' };
@@ -48,13 +49,12 @@ function headerButton(t, id, glyph, label, onClick) {
     .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click(onClick).child(glyph);
 }
 
-const PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low', none: 'No priority' };
 const PRIORITY_BARS = { high: 3, medium: 2, low: 1, none: 0 };
 
 function priorityBox(t, issue) {
   const level = priorityLevel(issue.priority);
   const box = h_flex().id('priority-' + issue.identifier).size(14).flex_none()
-    .justify_center().tooltip(PRIORITY_LABELS[level]);
+    .justify_center().tooltip(priorityName(issue.priority));
   if (level === 'urgent') {
     return box.items_center().rounded(3).bg(t.blocked).text_color('#fffaf0')
       .text_size(10).font_bold().child('!');
@@ -82,12 +82,15 @@ function duePill(t, due) {
     .text_color(color).bg(due.tone === 'dim' ? t.raised : color + '26').child(due.text);
 }
 
-function issueRow(t, issue, now) {
+function issueRow(t, issue, now, view, expanded) {
   const due = dueBadge(issue.due_date, now);
   const project = projectShort(issue.project);
   const title = div().min_w(0).truncate().child(issue.title);
   const row = h_flex().id('issue-' + issue.identifier).flex_none().items_center()
-    .px(6).gap(8).rounded(4).hover(s => s.bg(t.hover))
+    .px(6).gap(8).rounded(4).cursor_pointer()
+    .when(expanded, el => el.bg(t.raised))
+    .when(!expanded, el => el.hover(s => s.bg(t.hover)))
+    .on_click((_event, cx) => view.toggleLinearDetail(issue.identifier, cx))
     .child(priorityBox(t, issue))
     .child(div().w(58).flex_none().text_size(11).text_color(t.dim).child(issue.identifier));
   if (project) {
@@ -97,21 +100,42 @@ function issueRow(t, issue, now) {
     row.h(30).child(title.flex_1());
   }
   if (due) row.child(duePill(t, due));
-  if (isLinearURL(issue.url)) row.cursor_pointer().on_click((_event, cx) => {
-    cx.open_url(issue.url);
-    dismiss();
-  });
   return row;
+}
+
+function issueDetail(t, identifier, group, data, now) {
+  const block = v_flex().id('issue-detail-' + identifier).w_full().min_w(0)
+    .pl(94).pr(6).pt(4).pb(8).gap(5);
+  if (!data) return block.child(div().text_color(t.dim).child('Loading…'));
+  if (data.error) return block.child(div().text_color(t.blocked).child(errorText(data.error)));
+
+  const issue = data.issue;
+  const due = dueBadge(issue.due_date, now);
+  const status = issue.status || group.title;
+  const type = groupType(issue) ?? (issue.status_type || group.type);
+  const dot = () => div().text_color(t.dim).child('·');
+  const meta = h_flex().items_center().flex_wrap().gap(5)
+    .child(h_flex().items_center().gap(5).child(statusMark(t, type)).child(div().child(status)))
+    .child(dot()).child(div().child(priorityName(issue.priority)));
+  if (due) meta.child(dot()).child(duePill(t, { ...due, text: issue.due_date }));
+  if (issue.assignee) meta.child(dot()).child(div().min_w(0).whitespace_normal().child(issue.assignee));
+  block.child(meta);
+  if (issue.project) block.child(div().min_w(0).whitespace_normal().text_color(t.dim).child(issue.project));
+  if (issue.labels?.length) block.child(h_flex().flex_wrap().gap(4).children(issue.labels.map(label =>
+    div().min_w(0).px(6).py(2).rounded(4).bg(t.raised).text_size(11).whitespace_normal().child(label))));
+  const description = plainDescription(issue.description);
+  if (!description) return block.child(div().text_color(t.dim).child('No description'));
+  return block.children(description.split('\n').map(line =>
+    line ? div().w_full().min_w(0).whitespace_normal().child(line) : div().h(8)));
 }
 
 export function linearPanel(view) {
   const t = theme(), now = new Date();
-  const { issues: snapshot, status, issueError, statusError } = view.linearSnapshot();
+  const { issues: snapshot, status, issueError, statusError, details } = view.linearSnapshot();
   const org = status?.org;
   const matchingOrg = !snapshot || (snapshot.source === status?.source &&
     (!snapshot.org_url || snapshot.org_url === org?.url));
   const orgName = matchingOrg ? org?.name : null;
-  const orgURL = snapshot?.org_url ?? (matchingOrg ? org?.url : null);
   const error = issueError ?? (statusError === 'busy' ? statusError : null) ??
     (snapshot ? snapshot.error : status?.error ?? statusError);
   const groups = groupIssues(snapshot?.issues);
@@ -123,10 +147,7 @@ export function linearPanel(view) {
       .when(!!orgName, el => el.child(div().min_w(0).truncate().text_color(t.dim).child(orgName)))
       .child(div().flex_none().text_color(t.dim).child(String(count)))
       .child(div().flex_1())
-      .child(headerButton(t, 'linear-refresh', '↻', 'Refresh', (_event, cx) => view.readLinear('issues', cx, true)))
-      .when(isLinearURL(orgURL), el => el.child(headerButton(t, 'linear-open', '↗', 'Open in Linear', (_event, cx) => {
-        cx.open_url(orgURL.replace(/\/$/, '') + '/my-issues/assigned');
-      }))))
+      .child(headerButton(t, 'linear-refresh', '↻', 'Refresh', (_event, cx) => view.readLinear('issues', cx, true))))
     .child(div().w_full().h(1).flex_none().bg(t.border));
 
   if (error === 'not_connected') return root.child(action(t, 'linear-settings', errorText(error), () => {
@@ -147,7 +168,11 @@ export function linearPanel(view) {
         .child(statusMark(t, group.type))
         .child(heading(group.title).text_color(t.foreground))
         .child(div().flex_none().text_color(t.dim).child(String(group.issues.length))))
-      .children(group.issues.map(issue => issueRow(t, issue, now))))));
+      .children(group.issues.flatMap(issue => {
+        const expanded = details?.expanded === issue.identifier;
+        const row = issueRow(t, issue, now, view, expanded);
+        return expanded ? [row, issueDetail(t, issue.identifier, group, details.data, now)] : [row];
+      })))));
 }
 
 export function settingsPanel(view) {
@@ -176,9 +201,7 @@ export function settingsPanel(view) {
           .bg(t.input).text_color(t.foreground).border(1).border_color(t.border)))
       .child(action(t, 'linear-connect', busy ? 'Working…' : 'Connect', (_event, cx) => view.changeLinear('connect', cx), busy)))
     .child(h_flex().gap(6)
-      .child(action(t, 'linear-create-key', 'Create API key', (_event, cx) => {
-        cx.open_url('https://linear.app/settings/account/security');
-      }))
+      .child(action(t, 'linear-create-key', 'Create API key', (_event, cx) => openLinearKeySettings(cx)))
       .when(status?.source === 'api_key', el => el.child(action(t, 'linear-disconnect', 'Disconnect',
         (_event, cx) => view.changeLinear('disconnect', cx), busy))));
 }

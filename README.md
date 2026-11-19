@@ -39,7 +39,7 @@ Omit machine names to target all connected machines. This explicitly writes to t
 
 ## Linear and top-bar settings
 
-Click **Linear** to the left of CPU/RAM to see your open assigned issues. The dropdown groups them by status and shows their priority, project, and due date. Click an issue to open it in your browser. **Refresh** fetches the list again, and **Open in Linear** opens your assigned issues in the workspace. The button shows the issue count and a dot if any issue is blocked or overdue.
+Click **Linear** to the left of CPU/RAM to see your open assigned issues. The dropdown groups them by status and shows their priority, project, and due date. Click a row to expand its status, priority, due date, assignee, full project name, labels, and description inline. Click it again to collapse the details. The dropdown never opens the Linear app or site. **Refresh** fetches the list again and clears cached details. The button shows the issue count and a dot if any issue is blocked or overdue.
 
 Click the gear to the right of CPU/RAM to show or hide Codex, Claude, Gemini, Linear, or CPU/RAM. Changes apply immediately and persist across restarts. The gear stays visible.
 
@@ -87,6 +87,7 @@ herdr-hud usage --terminals t1,t2 --max-age 120s
 herdr-hud usage --refresh
 herdr-hud linear status
 herdr-hud linear issues [--max-age D] [--refresh]
+herdr-hud linear issue IDENTIFIER
 herdr-hud linear connect --key KEY
 herdr-hud linear disconnect
 herdr-hud nexus route --text TEXT --roster ROSTER_JSON
@@ -109,7 +110,7 @@ With no cr registry, `usage` and `usage --selected` use ordinary homes (`~/.code
 
 The usage bar polls system readings every second and selected-account usage every minute (`--max-age 45s`). Machine switches and agent completion trigger debounced reads. The space tree polls pane metadata every three seconds and the agent list every five seconds. See each mod's recipe for UI behavior.
 
-`linear issues` fetches open assigned issues on this computer, including when a remote space is active. The bar polls every two minutes while the Linear button is visible. Opening the dropdown reads the issues with a 60-second cache allowance. Manual refresh bypasses that allowance.
+`linear issues` fetches open assigned issues on this computer, including when a remote space is active. The bar polls every two minutes while the Linear button is visible. Opening the dropdown reads the issues with a 60-second cache allowance. Manual refresh bypasses that allowance. `linear issue` reads one issue by identifier, such as `ABC-123`, using the same connection. The dropdown reuses each in-memory detail reply for 60 seconds.
 
 ## Privacy
 

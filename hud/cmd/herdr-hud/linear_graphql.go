@@ -39,7 +39,7 @@ func (e linearGraphQLError) isAuth() bool {
 }
 
 // linearGraphQL posts one query. HTTP 401 and authentication errors in the
-// errors envelope map to invalid_key; any other errors entry is bad_response.
+// errors envelope map to invalid_key. Issue detail also recognizes missing entities.
 func linearGraphQL(ctx context.Context, key, query string, variables map[string]any, out any) error {
 	raw, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
@@ -79,7 +79,15 @@ func linearGraphQL(ctx context.Context, key, query string, variables map[string]
 		return linearError(linearErrForbidden)
 	case resp.StatusCode >= 500:
 		return linearError(linearErrNetwork)
-	case resp.StatusCode != http.StatusOK, !parsed, len(envelope.Errors) > 0, len(envelope.Data) == 0:
+	}
+	if parsed && query == linearIssueQuery {
+		for _, e := range envelope.Errors {
+			if e.Extensions.Code == "ENTITY_NOT_FOUND" || linearIssueMissing(e.Message) {
+				return linearError(linearErrNotFound)
+			}
+		}
+	}
+	if resp.StatusCode != http.StatusOK || !parsed || len(envelope.Errors) > 0 || len(envelope.Data) == 0 {
 		return linearError(linearErrBadResponse)
 	}
 	if json.Unmarshal(envelope.Data, out) != nil {
@@ -171,6 +179,59 @@ func linearGraphQLIssues(ctx context.Context, key string) (linearIssuesPayload, 
 		}
 		next := issues.PageInfo.EndCursor
 		cursor = &next
+	}
+	return out, nil
+}
+
+const linearIssueQuery = `query HerdrHudIssue($id: String!) {
+  issue(id: $id) {
+    identifier title description url priority dueDate updatedAt
+    state { name type }
+    project { name }
+    team { key }
+    assignee { name }
+    labels(first: 20) { nodes { name } }
+  }
+}`
+
+func linearGraphQLIssue(ctx context.Context, key, identifier string) (linearIssueDetail, error) {
+	var data struct {
+		Issue json.RawMessage `json:"issue"`
+	}
+	if err := linearGraphQL(ctx, key, linearIssueQuery, map[string]any{"id": identifier}, &data); err != nil {
+		return linearIssueDetail{}, err
+	}
+	if string(data.Issue) == "null" {
+		return linearIssueDetail{}, linearError(linearErrNotFound)
+	}
+	var node struct {
+		Identifier  string
+		Title       string
+		Description *string
+		URL         *string
+		Priority    *float64
+		DueDate     *string
+		UpdatedAt   *string
+		State       struct{ Name, Type string }
+		Project     struct{ Name string }
+		Team        struct{ Key string }
+		Assignee    struct{ Name string }
+		Labels      struct{ Nodes []struct{ Name string } }
+	}
+	if json.Unmarshal(data.Issue, &node) != nil {
+		return linearIssueDetail{}, linearError(linearErrBadResponse)
+	}
+	out := linearIssueDetail{
+		Identifier: node.Identifier, Title: node.Title, Description: node.Description, URL: node.URL,
+		Priority: linearDetailPriority(node.Priority), DueDate: node.DueDate, UpdatedAt: node.UpdatedAt,
+		Status: linearOptional(node.State.Name), StatusType: linearOptional(strings.ToLower(node.State.Type)),
+		Project: linearOptional(node.Project.Name), TeamKey: linearOptional(node.Team.Key),
+		Assignee: linearOptional(node.Assignee.Name),
+	}
+	for _, label := range node.Labels.Nodes {
+		if label.Name != "" {
+			out.Labels = append(out.Labels, label.Name)
+		}
 	}
 	return out, nil
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, dueBadge, projectShort, priorityLevel, badgeState, isLinearURL, errorText, statusLine } from './linear.js';
+import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, errorText, statusLine } from './linear.js';
 
 test('visibility defaults, malformed inputs and immutable toggles', () => {
   const defaults = { codex: true, claude: true, gemini: true, linear: true, system: true };
@@ -111,16 +111,14 @@ test('badge counts open issues and alerts on blocked or overdue work', () => {
   assert.deepEqual(badgeState(undefined, now), { count: 0, alert: false });
 });
 
-test('projects, priorities and issue links use the mod display formats', () => {
+test('projects and priorities use the mod display formats', () => {
   assert.equal(projectShort('Company / Country /  Project '), 'Project');
   assert.equal(projectShort('Project'), 'Project');
   assert.equal(projectShort(null), '');
   assert.deepEqual([0, undefined, 1, 2, 3, 4, 5, '__proto__'].map(priorityLevel),
     ['none', 'none', 'urgent', 'high', 'medium', 'low', 'none', 'none']);
-  assert.equal(isLinearURL('https://linear.app/team/issue/X-1'), true);
-  for (const bad of [null, 'http://linear.app/', 'https://linear.app', 'https://linear.app.evil.test/', 'https://linear.app@evil.test/']) {
-    assert.equal(isLinearURL(bad), false);
-  }
+  assert.deepEqual([0, 1, 2, 3, 4, 5].map(priorityName),
+    ['No priority', 'Urgent', 'High', 'Medium', 'Low', 'No priority']);
 });
 
 test('connection status and public errors use fixed copy', () => {
@@ -136,7 +134,27 @@ test('connection status and public errors use fixed copy', () => {
     invalid_key: 'That API key was rejected',
     store_failed: "Couldn't save the key",
     helper: 'herdr-hud unavailable',
+    not_found: 'Issue not found',
+    bad_request: 'Invalid issue id',
   };
   for (const [code, message] of Object.entries(expected)) assert.equal(errorText(code), message);
   for (const code of ['network', 'bad_response', 'busy', 'private diagnostic']) assert.equal(errorText(code), "Couldn't load Linear issues");
+});
+
+
+test('plain description strips supported Markdown, preserves line breaks and caps text', () => {
+  const md = [
+    '  ## Summary', '![diagram](https://example.invalid/diagram_(a).png) and [notes](https://example.invalid/notes)',
+    '> **Important** __detail__ with `code`', '- first', '  + second', '* third', '3. fourth',
+    '', '  ', '', 'Last paragraph  ',
+  ].join('\r\n');
+  assert.equal(plainDescription(md), [
+    'Summary', '[image] and notes', 'Important detail with code', '• first', '• second', '• third', '• fourth',
+    '', 'Last paragraph',
+  ].join('\n'));
+  assert.equal(plainDescription('   > `   '), '');
+  assert.equal(plainDescription(null), '');
+  assert.equal(plainDescription('😀😀z', 2), '😀😀…');
+  assert.equal(plainDescription('a'.repeat(1500)), 'a'.repeat(1500));
+  assert.equal(plainDescription('a'.repeat(1501)), 'a'.repeat(1500) + '…');
 });

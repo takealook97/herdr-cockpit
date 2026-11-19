@@ -22,7 +22,7 @@ const (
 	// linearCleanupTimeout bounds post-commit steps; they never reuse the
 	// possibly canceled command context.
 	linearCleanupTimeout = 5 * time.Second
-	linearUsage          = "usage: herdr-hud linear status|issues [--max-age 60s] [--refresh]|connect --key KEY|disconnect"
+	linearUsage          = "usage: herdr-hud linear status|issues [--max-age 60s] [--refresh]|issue IDENTIFIER|connect --key KEY|disconnect"
 )
 
 var (
@@ -156,6 +156,12 @@ func cmdLinear(ctx context.Context, args []string, stdout, stderr io.Writer) int
 			return usage()
 		}
 		out = linearIssues(ctx, *age, *refresh, time.Now())
+	case "issue":
+		if len(args) != 2 || !linearDetailIdentifierPattern.MatchString(args[1]) {
+			out, code = linearIssuePayload{Error: strPtr(linearErrBadRequest)}, 2
+			break
+		}
+		out = linearReadIssue(ctx, args[1])
 	case "connect":
 		fs := flag.NewFlagSet("herdr-hud linear connect", flag.ContinueOnError)
 		// Never echo flag errors: the offending argument may be the key.

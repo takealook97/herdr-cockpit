@@ -287,12 +287,28 @@ func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]
 		} `json:"content"`
 		Structured json.RawMessage `json:"structuredContent"`
 	}
-	if json.Unmarshal(result, &body) != nil || body.IsError {
+	if json.Unmarshal(result, &body) != nil {
+		return nil, linearError(linearErrBadResponse)
+	}
+	if body.IsError {
+		if name == "get_issue" {
+			for _, item := range body.Content {
+				if item.Type == "text" && linearIssueMissing(item.Text) {
+					return nil, linearError(linearErrNotFound)
+				}
+			}
+		}
 		return nil, linearError(linearErrBadResponse)
 	}
 	for _, item := range body.Content {
 		text := strings.TrimSpace(item.Text)
-		if item.Type == "text" && strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
+		if item.Type != "text" {
+			continue
+		}
+		if name == "get_issue" && (text == "null" || (!strings.HasPrefix(text, "{") && linearIssueMissing(text))) {
+			return nil, linearError(linearErrNotFound)
+		}
+		if strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
 			return json.RawMessage(text), nil
 		}
 	}
@@ -457,4 +473,73 @@ func linearMCPProject(raw json.RawMessage) *string {
 		return linearOptional(obj.Name)
 	}
 	return nil
+}
+
+func linearMCPIssue(ctx context.Context, cred linearCred, identifier string) (linearIssueDetail, error) {
+	s, err := newMCPSession(cred)
+	if err != nil {
+		return linearIssueDetail{}, err
+	}
+	if err := s.start(ctx); err != nil {
+		return linearIssueDetail{}, err
+	}
+	tools, err := s.tools(ctx)
+	if err != nil {
+		return linearIssueDetail{}, err
+	}
+	tool, ok := tools["get_issue"]
+	if !ok || tool.InputSchema.Properties["id"] == nil {
+		return linearIssueDetail{}, linearError(linearErrBadResponse)
+	}
+	raw, err := s.callTool(ctx, "get_issue", map[string]any{"id": identifier})
+	if err != nil {
+		return linearIssueDetail{}, err
+	}
+	var item struct {
+		ID, Identifier, Title, Status, StatusType, TeamKey string
+		URL, DueDate, UpdatedAt, Description               *string
+		Team, Project, Assignee, Priority                  json.RawMessage
+		Labels                                             []json.RawMessage
+		Error, Message                                     json.RawMessage
+	}
+	if json.Unmarshal(raw, &item) != nil {
+		return linearIssueDetail{}, linearError(linearErrBadResponse)
+	}
+	if item.Title == "" && (linearIssueMissing(string(item.Error)) || linearIssueMissing(string(item.Message))) {
+		return linearIssueDetail{}, linearError(linearErrNotFound)
+	}
+	if item.Identifier == "" {
+		item.Identifier = item.ID
+	}
+	statusType := strings.ToLower(item.StatusType)
+	if !linearStatusTypes[statusType] && statusType != "completed" && statusType != "canceled" {
+		statusType = ""
+	}
+	var priority *int
+	if len(item.Priority) != 0 && string(item.Priority) != "null" {
+		value := linearMCPPriority(item.Priority)
+		priority = linearDetailPriority(&value)
+	}
+	teamKey := item.TeamKey
+	if teamKey == "" {
+		var team struct{ Key string }
+		if json.Unmarshal(item.Team, &team) == nil {
+			teamKey = team.Key
+		}
+	}
+	if teamKey == "" && linearDetailIdentifierPattern.MatchString(item.Identifier) {
+		teamKey, _, _ = strings.Cut(item.Identifier, "-")
+	}
+	out := linearIssueDetail{
+		Identifier: item.Identifier, Title: item.Title, Description: item.Description, URL: item.URL,
+		Status: linearOptional(item.Status), StatusType: &statusType, Priority: priority,
+		Project: linearMCPProject(item.Project), TeamKey: linearOptional(teamKey), DueDate: item.DueDate,
+		UpdatedAt: item.UpdatedAt, Assignee: linearMCPProject(item.Assignee),
+	}
+	for _, label := range item.Labels {
+		if name := linearMCPProject(label); name != nil {
+			out.Labels = append(out.Labels, *name)
+		}
+	}
+	return out, nil
 }
