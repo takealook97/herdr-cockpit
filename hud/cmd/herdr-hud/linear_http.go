@@ -68,17 +68,31 @@ func linearReadBody(r io.Reader) ([]byte, error) {
 	return raw, nil
 }
 
-// linearLimitedReader fails once more than linearMaxBody bytes were consumed.
+// linearLimitedReader delivers at most linearMaxBody bytes. Once the cap is
+// reached, any further byte yields the limit error without the byte itself, so
+// a buffered reader can never hand out data past the cap.
 type linearLimitedReader struct {
 	r io.Reader
 	n int
 }
 
 func (l *linearLimitedReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	remaining := linearMaxBody - l.n
+	if remaining <= 0 {
+		var probe [1]byte
+		n, err := l.r.Read(probe[:])
+		if n > 0 {
+			return 0, linearError(linearErrBadResponse)
+		}
+		return 0, err
+	}
+	if len(p) > remaining {
+		p = p[:remaining]
+	}
 	n, err := l.r.Read(p)
 	l.n += n
-	if l.n > linearMaxBody {
-		return n, linearError(linearErrBadResponse)
-	}
 	return n, err
 }

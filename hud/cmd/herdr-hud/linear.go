@@ -177,8 +177,20 @@ func cmdLinear(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return code
 }
 
+// linearResolveForStatus resolves under the credential lock, waiting briefly.
+// status only reads, so a lock timeout falls back to an unlocked resolve.
+func linearResolveForStatus(ctx context.Context) (linearCred, string) {
+	wait, cancel := context.WithTimeout(ctx, linearStatusLockWait)
+	unlock, err := linearCredentialLock(wait)
+	cancel()
+	if err == nil {
+		defer unlock()
+	}
+	return linearResolve(ctx, time.Now())
+}
+
 func linearStatus(ctx context.Context) linearStatusPayload {
-	cred, code := linearResolve(ctx, time.Now())
+	cred, code := linearResolveForStatus(ctx)
 	out := linearStatusPayload{}
 	if cred.Source != "" {
 		out.Source = strPtr(cred.Source)
@@ -230,23 +242,38 @@ func linearConnect(ctx context.Context, key string) (any, int) {
 	if err != nil {
 		return linearErrorPayload{linearCode(err)}, 1
 	}
-	if linearAPIKeyStore(ctx, key) != nil {
-		return linearErrorPayload{linearErrStoreFailed}, 1
-	}
 	meta := linearMeta{Generation: linearNewGeneration(), UserName: id.UserName, OrgName: id.OrgName, OrgURL: id.OrgURL}
-	if linearMetaSave(meta) != nil {
-		_ = linearAPIKeyDelete(ctx)
+	unlock, err := linearCredentialLock(ctx)
+	if err != nil {
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	_ = linearRemoveIfPresent(linearCachePath())
+	err = linearReplaceAPIKey(ctx, key, meta)
+	if err == nil {
+		_ = linearRemoveIfPresent(linearCachePath())
+	}
+	unlock()
+	if err != nil {
+		return linearErrorPayload{linearErrStoreFailed}, 1
+	}
 	return linearStatus(ctx), 0
 }
 
 func linearDisconnect(ctx context.Context) (any, int) {
-	if linearAPIKeyDelete(ctx) != nil || linearRemoveIfPresent(linearMetaFilePath()) != nil {
+	unlock, err := linearCredentialLock(ctx)
+	if err != nil {
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	_ = linearRemoveIfPresent(linearCachePath())
+	err = linearAPIKeyDelete(ctx)
+	if err == nil {
+		err = linearRemoveIfPresent(linearMetaFilePath())
+	}
+	if err == nil {
+		_ = linearRemoveIfPresent(linearCachePath())
+	}
+	unlock()
+	if err != nil {
+		return linearErrorPayload{linearErrStoreFailed}, 1
+	}
 	return linearStatus(ctx), 0
 }
 
@@ -290,7 +317,14 @@ var linearFetchIssues = func(ctx context.Context, cred linearCred) (linearIssues
 	return linearMCPIssues(ctx, cred)
 }
 
+// linearIssues holds the credential lock from resolution through the cache
+// write, so a concurrent connect cannot pair this key with a new generation.
+// The same lock coalesces concurrent fetches.
 func linearIssues(ctx context.Context, maxAge time.Duration, refresh bool, now time.Time) linearIssuesPayload {
+	unlock, lockErr := linearCredentialLock(ctx)
+	if lockErr == nil {
+		defer unlock()
+	}
 	cred, code := linearResolve(ctx, now)
 	if code != "" {
 		out := linearIssuesPayload{Issues: []linearIssue{}, Error: strPtr(code)}
@@ -309,13 +343,6 @@ func linearIssues(ctx context.Context, maxAge time.Duration, refresh bool, now t
 	if entry, ok := linearReadCache(cred.Generation); ok && fresh(entry) {
 		return entry.Payload
 	}
-	unlock, lockErr := hudLockFile(ctx, linearCachePath())
-	if lockErr == nil {
-		defer unlock()
-		if entry, ok := linearReadCache(cred.Generation); ok && fresh(entry) {
-			return entry.Payload
-		}
-	}
 	payload, err := linearFetchIssues(ctx, cred)
 	if err != nil {
 		code := linearCode(err)
@@ -332,6 +359,9 @@ func linearIssues(ctx context.Context, maxAge time.Duration, refresh bool, now t
 	payload.FetchedAt = strPtr(fetched.UTC().Format(time.RFC3339))
 	payload.Stale = false
 	payload.Error = nil
-	_ = linearWriteCache(linearCacheEntry{Generation: cred.Generation, FetchedAt: fetched, Payload: payload})
+	if lockErr == nil {
+		// Without the lock the key/generation pairing is unproven; never cache it.
+		_ = linearWriteCache(linearCacheEntry{Generation: cred.Generation, FetchedAt: fetched, Payload: payload})
+	}
 	return payload
 }
