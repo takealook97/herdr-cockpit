@@ -2,7 +2,7 @@ import { div } from 'gpui-kit';
 import { h_flex, v_flex, Switch, Input } from 'gpui-base';
 import { props, shared, setShared, theme, closeOverlay, openOverlay } from 'herdr';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, dueBadge, projectShort, priorityGlyph, isLinearURL, errorText, statusLine } from './linear.js';
+import { groupIssues, dueBadge, projectShort, priorityLevel, isLinearURL, errorText, statusLine } from './linear.js';
 
 const PANEL_WIDTH = { linear: 440, settings: 320 };
 const LABELS = { codex: 'Codex', claude: 'Claude', gemini: 'Gemini', linear: 'Linear', system: 'CPU · RAM' };
@@ -42,20 +42,62 @@ function heading(text) {
   return div().min_w(0).truncate().font_semibold().child(text);
 }
 
+function headerButton(t, id, glyph, label, onClick) {
+  return h_flex().id(id).size(24).flex_none().items_center().justify_center().rounded(4)
+    .text_size(14).text_color(t.dim).cursor_pointer().tooltip(label).accessibility_label(label)
+    .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click(onClick).child(glyph);
+}
+
+const PRIORITY_LABELS = { urgent: 'Urgent', high: 'High', medium: 'Medium', low: 'Low', none: 'No priority' };
+const PRIORITY_BARS = { high: 3, medium: 2, low: 1, none: 0 };
+
+function priorityBox(t, issue) {
+  const level = priorityLevel(issue.priority);
+  const box = h_flex().id('priority-' + issue.identifier).size(14).flex_none()
+    .justify_center().tooltip(PRIORITY_LABELS[level]);
+  if (level === 'urgent') {
+    return box.items_center().rounded(3).bg(t.blocked).text_color('#fffaf0')
+      .text_size(10).font_bold().child('!');
+  }
+  return box.items_end().gap(1.5).children([5, 8, 11].map((height, index) => {
+    const bar = div().w(3).h(height);
+    return index < PRIORITY_BARS[level] ? bar.bg(t.foreground) : bar.bg(t.dim).opacity(0.3);
+  }));
+}
+
+function statusMark(t, type) {
+  const mark = div().size(10).flex_none().rounded(5);
+  if (type === 'blocked') return mark.bg(t.blocked);
+  if (type === 'review') {
+    return mark.flex().items_center().border(1.5).border_color(t.working)
+      .child(div().w(3.5).h(7).rounded_l(3.5).bg(t.working));
+  }
+  const color = type === 'started' ? t.working : type === 'triage' ? t.accent : t.dim;
+  return mark.border(1).border_color(color).when(type === 'backlog', el => el.opacity(0.5));
+}
+
+function duePill(t, due) {
+  const color = t[{ crit: 'blocked', warn: 'working', dim: 'dim' }[due.tone]];
+  return h_flex().h(18).px(6).rounded(4).items_center().flex_none().text_size(11)
+    .text_color(color).bg(due.tone === 'dim' ? t.raised : color + '26').child(due.text);
+}
+
 function issueRow(t, issue, now) {
   const due = dueBadge(issue.due_date, now);
   const project = projectShort(issue.project);
-  const row = h_flex().id('issue-' + issue.identifier).min_h(38).flex_none().items_center()
-    .px(6).py(3).gap(6).rounded(4)
-    .child(div().w(14).flex_none().text_color(issue.priority === 1 ? t.blocked : t.dim).child(priorityGlyph(issue.priority)))
-    .child(v_flex().flex_1().min_w(0)
-      .child(h_flex().min_w(0).items_center().gap(6)
-        .child(div().flex_none().text_color(t.dim).child(issue.identifier))
-        .child(div().min_w(0).truncate().child(issue.title)))
-      .child(div().min_w(0).truncate().text_color(t.dim).text_size(11).child(project)))
-    .when(!!due, node => node.child(div().flex_none().text_size(11)
-      .text_color(t[{ dim: 'dim', warn: 'working', crit: 'blocked' }[due.tone]]).child(due.text)));
-  if (isLinearURL(issue.url)) row.cursor_pointer().hover(s => s.bg(t.hover)).on_click((_event, cx) => {
+  const title = div().min_w(0).truncate().child(issue.title);
+  const row = h_flex().id('issue-' + issue.identifier).flex_none().items_center()
+    .px(6).gap(8).rounded(4).hover(s => s.bg(t.hover))
+    .child(priorityBox(t, issue))
+    .child(div().w(58).flex_none().text_size(11).text_color(t.dim).child(issue.identifier));
+  if (project) {
+    row.min_h(40).child(v_flex().flex_1().min_w(0).child(title)
+      .child(div().min_w(0).truncate().text_color(t.dim).text_size(11).child(project)));
+  } else {
+    row.h(30).child(title.flex_1());
+  }
+  if (due) row.child(duePill(t, due));
+  if (isLinearURL(issue.url)) row.cursor_pointer().on_click((_event, cx) => {
     cx.open_url(issue.url);
     dismiss();
   });
@@ -72,14 +114,20 @@ export function linearPanel(view) {
   const orgURL = snapshot?.org_url ?? (matchingOrg ? org?.url : null);
   const error = issueError ?? (statusError === 'busy' ? statusError : null) ??
     (snapshot ? snapshot.error : status?.error ?? statusError);
+  const groups = groupIssues(snapshot?.issues);
+  const count = groups.reduce((total, group) => total + group.issues.length, 0);
 
   const root = panelRoot(view, t, 'linear').max_h(520)
     .child(h_flex().min_w(0).items_center().gap(6)
-      .child(heading(orgName ? `My issues · ${orgName}` : 'My issues').flex_1())
-      .child(action(t, 'linear-refresh', 'Refresh', (_event, cx) => view.readLinear('issues', cx, true)))
-      .when(isLinearURL(orgURL), el => el.child(action(t, 'linear-open', 'Open in Linear', (_event, cx) => {
+      .child(heading('My issues').flex_none())
+      .when(!!orgName, el => el.child(div().min_w(0).truncate().text_color(t.dim).child(orgName)))
+      .child(div().flex_none().text_color(t.dim).child(String(count)))
+      .child(div().flex_1())
+      .child(headerButton(t, 'linear-refresh', '↻', 'Refresh', (_event, cx) => view.readLinear('issues', cx, true)))
+      .when(isLinearURL(orgURL), el => el.child(headerButton(t, 'linear-open', '↗', 'Open in Linear', (_event, cx) => {
         cx.open_url(orgURL.replace(/\/$/, '') + '/my-issues/assigned');
-      }))));
+      }))))
+    .child(div().w_full().h(1).flex_none().bg(t.border));
 
   if (error === 'not_connected') return root.child(action(t, 'linear-settings', errorText(error), () => {
     dismiss();
@@ -87,16 +135,18 @@ export function linearPanel(view) {
   }));
   if (error) root.child(div().text_color(t.blocked).child(errorText(error)));
   if (!snapshot || error === 'expired') return root;
-  const groups = groupIssues(snapshot.issues);
   if (!groups.length) {
     if (!error) root.child(div().text_color(t.dim).child('No open issues'));
     return root;
   }
 
-  return root.child(v_flex().id('linear-issue-list').min_h(0).max_h(462).gap(6).overflow_y_scroll()
+  return root.child(v_flex().id('linear-issue-list').min_h(0).max_h(462).gap(10).overflow_y_scroll()
     .opacity(snapshot.stale || error ? 0.6 : 1)
     .children(groups.map(group => v_flex().gap(2).flex_none()
-      .child(div().px(6).font_semibold().text_color(t.dim).child(`${group.title} (${group.issues.length})`))
+      .child(h_flex().h(22).px(6).items_center().gap(6)
+        .child(statusMark(t, group.type))
+        .child(heading(group.title).text_color(t.foreground))
+        .child(div().flex_none().text_color(t.dim).child(String(group.issues.length))))
       .children(group.issues.map(issue => issueRow(t, issue, now))))));
 }
 

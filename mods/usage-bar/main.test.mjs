@@ -357,15 +357,70 @@ test('Linear panel shows grouped issue details and opens only Linear links', asy
     reply({ ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2', url: 'https://example.invalid/' }] }) });
   await h.flush();
   const panel = h.view.render(h.cx), labels = text(panel);
-  assert.ok(['My issues · Example', 'Blocked (2)', '!', 'TEST-1', issue.title, 'Test Project'].every(label => labels.includes(label)));
+  const [header, divider] = panel.nodes;
+  assert.deepEqual(text(header), ['My issues', 'Example', '2', '↻', '↗']);
+  assert.equal(byID(header, 'linear-refresh').style.tooltip, 'Refresh');
+  assert.equal(byID(header, 'linear-open').style.tooltip, 'Open in Linear');
+  assert.equal(divider.style.h, 1);
+  assert.equal(divider.style.bg, 'border');
+  assert.ok(['Blocked', '!', 'TEST-1', issue.title, 'Test Project'].every(label => labels.includes(label)));
   assert.equal(panel.style.max_h, 520);
-  assert.deepEqual(byID(panel, 'linear-issue-list').style.overflow_y_scroll, []);
+  const list = byID(panel, 'linear-issue-list');
+  assert.deepEqual(list.style.overflow_y_scroll, []);
+  assert.equal(list.style.gap, 10);
+  assert.deepEqual(text(list.nodes[0].nodes[0]), ['Blocked', '2']);
   assert.ok(labels.some(label => /d over$/.test(label)));
   assert.equal(byID(panel, 'issue-TEST-2').style.on_click, undefined);
   click(panel, 'linear-open', h.cx);
   click(panel, 'issue-TEST-1', h.cx);
   assert.deepEqual(h.urls, [org.url + '/my-issues/assigned', issue.url]);
   assert.deepEqual(h.closed, ['linear-overlay']);
+});
+
+test('Linear issue rows render project lines, priority indicators and due pill tones', async () => {
+  const now = new Date();
+  const date = days => new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + days))
+    .toISOString().slice(0, 10);
+  const rows = [
+    issue,
+    { ...issue, identifier: 'TEST-2', project: null, priority: 2, due_date: date(2) },
+    { ...issue, identifier: 'TEST-3', project: ' ', priority: 3, due_date: date(7) },
+    { ...issue, identifier: 'TEST-4', project: '', priority: 4, due_date: null },
+    { ...issue, identifier: 'TEST-5', project: null, priority: 0, due_date: null },
+  ];
+  const h = harness({ panel: 'linear', initialResponse: args => args[2] === 'status' ? reply(statusReply) :
+    reply({ ...issuesReply, issues: rows }) });
+  await h.flush();
+  const panel = h.view.render(h.cx);
+  const withProject = byID(panel, 'issue-TEST-1');
+  const singleLine = byID(panel, 'issue-TEST-2');
+  assert.equal(withProject.style.min_h, 40);
+  assert.deepEqual(withProject.nodes[2].nodes.map(text), [[issue.title], ['Test Project']]);
+  assert.equal(singleLine.style.h, 30);
+  assert.deepEqual(singleLine.nodes[2].nodes, [issue.title]);
+  assert.equal(singleLine.nodes[1].style.w, 58);
+
+  for (const [index, label, filled] of [[1, 'High', 3], [2, 'Medium', 2], [3, 'Low', 1], [4, 'No priority', 0]]) {
+    const box = byID(panel, 'priority-' + rows[index].identifier);
+    assert.equal(box.style.tooltip, label);
+    assert.deepEqual(box.nodes.map(bar => bar.style.h), [5, 8, 11]);
+    assert.deepEqual(box.nodes.map(bar => bar.style.bg),
+      [...Array(filled).fill('foreground'), ...Array(3 - filled).fill('dim')]);
+  }
+  const urgent = byID(panel, 'priority-TEST-1');
+  assert.equal(urgent.style.tooltip, 'Urgent');
+  assert.equal(urgent.style.bg, 'blocked');
+  assert.deepEqual(text(urgent), ['!']);
+
+  for (const [id, color, bg] of [
+    ['TEST-1', 'blocked', 'blocked26'], ['TEST-2', 'working', 'working26'], ['TEST-3', 'dim', 'raised'],
+  ]) {
+    const pill = byID(panel, 'issue-' + id).nodes[3];
+    assert.equal(pill.style.h, 18);
+    assert.equal(pill.style.text_color, color);
+    assert.equal(pill.style.bg, bg);
+  }
+  assert.equal(byID(panel, 'issue-TEST-4').nodes.length, 3);
 });
 
 test('Linear panel handles connection, expiry, stale, empty and helper errors', async () => {
@@ -518,7 +573,7 @@ test('connect clears another popup before its new status arrives and discards in
     const tree = popup.view.render(popup.cx);
     assert.equal(byID(tree, 'issue-TEST-1'), undefined);
     assert.equal(byID(tree, 'linear-open'), undefined);
-    assert.ok(!text(tree).includes('My issues · Example'));
+    assert.deepEqual(text(tree.nodes[0]), ['My issues', '0', '↻']);
   };
   assertNoOldSnapshot();
   finishOldRead(reply(apiKeyIssues));

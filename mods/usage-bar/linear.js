@@ -1,15 +1,23 @@
 const DAY = 86400000;
-const GROUPS = [
-  ['blocked', 'Blocked'],
+const STATUS_TITLES = new Map([
   ['started', 'In Progress'],
   ['unstarted', 'Todo'],
   ['backlog', 'Backlog'],
   ['triage', 'Triage'],
-];
+]);
+const GROUP_ORDER = ['blocked', 'review', ...STATUS_TITLES.keys()];
 
-function groupKey(issue) {
-  if (issue.status_type === 'started' && /blocked/i.test(issue.status)) return 'blocked';
-  return issue.status_type === 'blocked' ? null : issue.status_type;
+function groupType(issue) {
+  const type = issue?.status_type;
+  if (type === 'started') {
+    if (/blocked/i.test(issue.status)) return 'blocked';
+    if (/review/i.test(issue.status)) return 'review';
+  }
+  return STATUS_TITLES.has(type) ? type : null;
+}
+
+function preferredTitle({ type, title }) {
+  return (type === 'backlog' || type === 'unstarted') && title === STATUS_TITLES.get(type);
 }
 
 function dueDay(due) {
@@ -22,16 +30,23 @@ const priority = value => [1, 2, 3, 4].includes(value) ? value : 5;
 const updated = issue => Date.parse(issue.updated_at) || 0;
 
 export function groupIssues(issues) {
-  const grouped = new Map(GROUPS.map(([key]) => [key, []]));
+  const grouped = new Map();
   for (const issue of Array.isArray(issues) ? issues : []) {
-    if (issue) grouped.get(groupKey(issue))?.push(issue);
+    const type = groupType(issue);
+    if (!type) continue;
+    const title = typeof issue.status === 'string' && issue.status.trim()
+      ? issue.status : STATUS_TITLES.get(issue.status_type);
+    const key = `${type}:${title}`;
+    if (!grouped.has(key)) grouped.set(key, { key, title, type, issues: [] });
+    grouped.get(key).issues.push(issue);
   }
-  return GROUPS.flatMap(([key, title]) => {
-    const rows = grouped.get(key);
+  const groups = [...grouped.values()];
+  for (const { issues: rows } of groups) {
     rows.sort((a, b) => dueDay(a.due_date) - dueDay(b.due_date) ||
       priority(a.priority) - priority(b.priority) || updated(b) - updated(a));
-    return rows.length ? [{ key, title, issues: rows }] : [];
-  });
+  }
+  return groups.sort((a, b) => GROUP_ORDER.indexOf(a.type) - GROUP_ORDER.indexOf(b.type) ||
+    Number(preferredTitle(b)) - Number(preferredTitle(a)) || a.title.localeCompare(b.title));
 }
 
 export function dueBadge(due, now = new Date()) {
@@ -48,15 +63,15 @@ export function projectShort(name) {
   return typeof name === 'string' ? name.split(' / ').at(-1).trim() : '';
 }
 
-export function priorityGlyph(value) {
-  return ['!', '↑', '→', '↓', '–'][priority(value) - 1];
+export function priorityLevel(value) {
+  return ['urgent', 'high', 'medium', 'low', 'none'][priority(value) - 1];
 }
 
 export function badgeState(issues, now = new Date()) {
-  const open = (Array.isArray(issues) ? issues : []).filter(issue => issue && GROUPS.some(([key]) => key === groupKey(issue)));
+  const open = (Array.isArray(issues) ? issues : []).filter(issue => groupType(issue));
   return {
     count: open.length,
-    alert: open.some(issue => groupKey(issue) === 'blocked' || dueBadge(issue.due_date, now)?.tone === 'crit'),
+    alert: open.some(issue => groupType(issue) === 'blocked' || dueBadge(issue.due_date, now)?.tone === 'crit'),
   };
 }
 
