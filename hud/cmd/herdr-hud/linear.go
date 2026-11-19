@@ -19,6 +19,9 @@ const (
 	linearWhoamiTimeout  = 5 * time.Second
 	linearDefaultMaxAge  = 60 * time.Second
 	linearMaxKeyLength   = 200
+	// linearCleanupTimeout bounds post-commit steps; they never reuse the
+	// possibly canceled command context.
+	linearCleanupTimeout = 5 * time.Second
 	linearUsage          = "usage: herdr-hud linear status|issues [--max-age 60s] [--refresh]|connect --key KEY|disconnect"
 )
 
@@ -199,8 +202,10 @@ func linearTakeStatusSnapshot(ctx context.Context) linearStatusSnapshot {
 	cred, code := linearResolve(ctx, time.Now())
 	snap := linearStatusSnapshot{cred: cred, code: code}
 	if code == "" && cred.Source == linearSourceAPIKey {
-		meta, _ := linearMetaLoad()
-		snap.id = linearIdentity{UserName: meta.UserName, OrgName: meta.OrgName, OrgURL: meta.OrgURL}
+		// Meta written for another generation describes another key; show nothing.
+		if meta, ok := linearMetaLoad(); ok && meta.Generation == cred.Generation {
+			snap.id = linearIdentity{UserName: meta.UserName, OrgName: meta.OrgName, OrgURL: meta.OrgURL}
+		}
 	}
 	return snap
 }
@@ -269,20 +274,24 @@ func linearConnect(ctx context.Context, key string) (any, int) {
 	if err != nil {
 		return linearErrorPayload{linearCode(err)}, 1
 	}
-	meta := linearMeta{Generation: linearNewGeneration(), UserName: id.UserName, OrgName: id.OrgName, OrgURL: id.OrgURL}
+	item := linearStoredKey{V: linearStoreVersion, APIKey: key, Generation: linearNewGeneration()}
 	unlock, err := linearCredentialLock(ctx)
 	if err != nil {
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	// linearReplaceAPIKey drops the issues cache on every path after the store.
-	if err := linearReplaceAPIKey(ctx, key, meta); err != nil {
-		unlock()
+	defer unlock()
+	// The single store write is the commit point. On failure nothing changed.
+	if err := linearStoreWrite(ctx, item); err != nil {
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	// Snapshot under the same lock hold, so a concurrent poll cannot turn a
-	// successful connect into a busy status.
-	snap := linearTakeStatusSnapshot(ctx)
-	unlock()
+	// Best effort: the old cache and meta carry another generation, so even if
+	// these steps fail they are never served or shown for this key.
+	_ = linearRemoveIfPresent(linearCachePath())
+	_ = linearMetaSave(linearMeta{Generation: item.Generation, UserName: id.UserName, OrgName: id.OrgName, OrgURL: id.OrgURL})
+	snap := linearStatusSnapshot{
+		cred: linearCred{Source: linearSourceAPIKey, Secret: item.APIKey, Generation: item.Generation},
+		id:   id,
+	}
 	return linearStatusFromSnapshot(ctx, snap), 0
 }
 
@@ -291,18 +300,17 @@ func linearDisconnect(ctx context.Context) (any, int) {
 	if err != nil {
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	err = linearAPIKeyDelete(ctx)
-	if err == nil {
-		err = linearRemoveIfPresent(linearMetaFilePath())
-	}
-	if err == nil {
-		_ = linearRemoveIfPresent(linearCachePath())
-	}
-	if err != nil {
+	if err := linearStoreDelete(ctx); err != nil {
 		unlock()
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	snap := linearTakeStatusSnapshot(ctx)
+	_ = linearRemoveIfPresent(linearCachePath())
+	_ = linearRemoveIfPresent(linearMetaFilePath())
+	// Snapshot under the same lock hold with a fresh context, so neither a
+	// concurrent poll nor a canceled command context distorts the result.
+	cleanup, cancel := context.WithTimeout(context.Background(), linearCleanupTimeout)
+	snap := linearTakeStatusSnapshot(cleanup)
+	cancel()
 	unlock()
 	return linearStatusFromSnapshot(ctx, snap), 0
 }

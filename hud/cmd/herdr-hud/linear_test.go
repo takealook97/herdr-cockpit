@@ -81,6 +81,23 @@ func (k *fakeKeychain) run(_ context.Context, args ...string) ([]byte, error) {
 	return nil, errors.New("unknown verb")
 }
 
+// linearStoredJSON is the store item a connect of key under gen would write.
+func linearStoredJSON(key, gen string) string {
+	raw, _ := json.Marshal(linearStoredKey{V: linearStoreVersion, APIKey: key, Generation: gen})
+	return string(raw)
+}
+
+// apiKey returns the key held by the fake keychain item, "" when absent or malformed.
+func (k *fakeKeychain) apiKey() string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	item, err := linearParseStoredKey([]byte(k.key))
+	if err != nil {
+		return ""
+	}
+	return item.APIKey
+}
+
 type linearEnv struct {
 	keychain *fakeKeychain
 	claude   []byte
@@ -96,10 +113,10 @@ func setupLinear(t *testing.T) *linearEnv {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", env.config)
 	t.Setenv("XDG_CACHE_HOME", env.cache)
-	goos, run, raw, rename, claudeKC := linearGOOS, linearSecurityRun, linearClaudeRaw, linearRename, hudClaudeKeychainRead
+	goos, run, raw, claudeKC := linearGOOS, linearSecurityRun, linearClaudeRaw, hudClaudeKeychainRead
 	transport, gql, mcp, fetch := linearHTTPTransport, linearGraphQLEndpoint, linearMCPEndpointOverride, linearFetchIssues
 	t.Cleanup(func() {
-		linearGOOS, linearSecurityRun, linearClaudeRaw, linearRename, hudClaudeKeychainRead = goos, run, raw, rename, claudeKC
+		linearGOOS, linearSecurityRun, linearClaudeRaw, hudClaudeKeychainRead = goos, run, raw, claudeKC
 		linearHTTPTransport, linearGraphQLEndpoint, linearMCPEndpointOverride, linearFetchIssues = transport, gql, mcp, fetch
 	})
 	linearGOOS = "darwin"
@@ -438,7 +455,7 @@ func TestLinearResolveOrderAndExpiry(t *testing.T) {
 	if status.Connected || status.ExpiresAt == nil || status.Error == nil || *status.Error != linearErrExpired {
 		t.Fatalf("expired status %s", stdout)
 	}
-	env.keychain.key = linearTestAPIKey
+	env.keychain.key = linearStoredJSON(linearTestAPIKey, "api_key:fixture")
 	cred, code2 := linearResolve(context.Background(), time.Now())
 	if code2 != "" || cred.Source != linearSourceAPIKey || !strings.HasPrefix(cred.Generation, "api_key:") {
 		t.Fatalf("api key first %s %s", cred, code2)
@@ -514,7 +531,7 @@ func TestLinearConnectIssuesDisconnect(t *testing.T) {
 	if !status.Connected || *status.Source != linearSourceAPIKey || status.User.Name != "Fixture Person" || status.Org.Name != "Fixture Org" || status.Org.URL != "https://linear.app/fixture" {
 		t.Fatalf("status %s", stdout)
 	}
-	if env.keychain.key != linearTestAPIKey || (*headers)[0].Get("Authorization") != linearTestAPIKey {
+	if env.keychain.apiKey() != linearTestAPIKey || (*headers)[0].Get("Authorization") != linearTestAPIKey {
 		t.Fatal("key must be trimmed, validated raw (no Bearer) and stored")
 	}
 	_, stdout, _ = linearRun(t, "issues")
@@ -592,7 +609,7 @@ func TestLinearConnectFailuresStoreNothing(t *testing.T) {
 
 func TestLinearGraphQLIssuesErrorsEnvelope(t *testing.T) {
 	env := setupLinear(t)
-	env.keychain.key = linearTestAPIKey
+	env.keychain.key = linearStoredJSON(linearTestAPIKey, "api_key:fixture")
 	graphQLServer(t, func(_ string, _ map[string]any, w http.ResponseWriter) {
 		fmt.Fprint(w, `{"data":null,"errors":[{"message":"query too complex"}]}`)
 	})
@@ -604,7 +621,7 @@ func TestLinearGraphQLIssuesErrorsEnvelope(t *testing.T) {
 
 func TestLinearCacheFreshnessGenerationAndStale(t *testing.T) {
 	env := setupLinear(t)
-	env.keychain.key = linearTestAPIKey
+	env.keychain.key = linearStoredJSON(linearTestAPIKey, "api_key:fixture")
 	fetches := 0
 	fail := false
 	linearFetchIssues = func(_ context.Context, cred linearCred) (linearIssuesPayload, error) {
@@ -635,9 +652,7 @@ func TestLinearCacheFreshnessGenerationAndStale(t *testing.T) {
 		t.Fatalf("stale fallback %+v", stale)
 	}
 	// A different generation (a new key) must never see the old list.
-	if err := linearMetaSave(linearMeta{Generation: "api_key:other"}); err != nil {
-		t.Fatal(err)
-	}
+	env.keychain.key = linearStoredJSON(linearTestAPIKey, "api_key:other")
 	other := linearIssues(context.Background(), time.Hour, false, time.Now())
 	if len(other.Issues) != 0 || other.Error == nil || other.Stale {
 		t.Fatalf("generation mismatch served old data: %+v", other)
@@ -647,7 +662,7 @@ func TestLinearCacheFreshnessGenerationAndStale(t *testing.T) {
 
 func TestLinearConcurrentIssuesFetchOnce(t *testing.T) {
 	env := setupLinear(t)
-	env.keychain.key = linearTestAPIKey
+	env.keychain.key = linearStoredJSON(linearTestAPIKey, "api_key:fixture")
 	var mu sync.Mutex
 	fetches := 0
 	linearFetchIssues = func(_ context.Context, cred linearCred) (linearIssuesPayload, error) {
@@ -676,7 +691,9 @@ func TestLinearConcurrentIssuesFetchOnce(t *testing.T) {
 func TestLinearFileKeyStoreOnLinux(t *testing.T) {
 	env := setupLinear(t)
 	linearGOOS = "linux"
-	if err := linearAPIKeyStore(context.Background(), linearTestAPIKey); err != nil {
+	ctx := context.Background()
+	item := linearStoredKey{V: linearStoreVersion, APIKey: linearTestAPIKey, Generation: "api_key:fixture"}
+	if err := linearStoreWrite(ctx, item); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(linearKeyFilePath())
@@ -684,13 +701,17 @@ func TestLinearFileKeyStoreOnLinux(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 || dir.Mode().Perm() != 0700 {
 		t.Fatalf("modes %v %v", info.Mode(), dir.Mode())
 	}
-	if key, err := linearAPIKeyLoad(context.Background()); err != nil || key != linearTestAPIKey {
+	raw, _ := os.ReadFile(linearKeyFilePath())
+	if string(raw) != linearStoredJSON(linearTestAPIKey, "api_key:fixture") {
+		t.Fatalf("file content is not the store item: %d bytes", len(raw))
+	}
+	if got, found, err := linearStoreLoad(ctx); err != nil || !found || got != item {
 		t.Fatal("load")
 	}
-	if linearAPIKeyDelete(context.Background()) != nil || linearAPIKeyDelete(context.Background()) != nil {
+	if linearStoreDelete(ctx) != nil || linearStoreDelete(ctx) != nil {
 		t.Fatal("delete must be idempotent")
 	}
-	if key, err := linearAPIKeyLoad(context.Background()); err != nil || key != "" {
+	if _, found, err := linearStoreLoad(ctx); err != nil || found {
 		t.Fatal("a missing key file is no key, not an error")
 	}
 	if len(env.keychain.calls) != 0 {
@@ -701,17 +722,18 @@ func TestLinearFileKeyStoreOnLinux(t *testing.T) {
 func TestLinearKeychainCommands(t *testing.T) {
 	env := setupLinear(t)
 	ctx := context.Background()
-	if err := linearAPIKeyStore(ctx, "k1"); err != nil {
+	item := linearStoredKey{V: linearStoreVersion, APIKey: "k1", Generation: "api_key:g1"}
+	if err := linearStoreWrite(ctx, item); err != nil {
 		t.Fatal("store")
 	}
-	if key, err := linearAPIKeyLoad(ctx); err != nil || key != "k1" {
+	if got, found, err := linearStoreLoad(ctx); err != nil || !found || got != item {
 		t.Fatal("load")
 	}
-	if err := linearAPIKeyDelete(ctx); err != nil || linearAPIKeyDelete(ctx) != nil {
+	if err := linearStoreDelete(ctx); err != nil || linearStoreDelete(ctx) != nil {
 		t.Fatal("delete idempotent")
 	}
 	want := [][]string{
-		{"add-generic-password", "-s", "herdr-hud-linear", "-a", "default", "-U", "-w", "k1"},
+		{"add-generic-password", "-s", "herdr-hud-linear", "-a", "default", "-U", "-w", `{"v":1,"api_key":"k1","generation":"api_key:g1"}`},
 		{"find-generic-password", "-s", "herdr-hud-linear", "-a", "default", "-w"},
 		{"delete-generic-password", "-s", "herdr-hud-linear", "-a", "default"},
 		{"delete-generic-password", "-s", "herdr-hud-linear", "-a", "default"},
