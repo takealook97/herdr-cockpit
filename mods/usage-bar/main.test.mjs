@@ -248,13 +248,18 @@ test('settings switches apply immediately and persist across bar instances', asy
   await restarted.flush();
   assert.deepEqual(restarted.view.render(restarted.cx).nodes.map(node => node.style.id), [undefined, 'gear']);
   const startup = [['status'], ['issues', '--max-age', '60s']];
-  assert.deepEqual(linearCalls(restarted), startup);
+  assert.deepEqual(linearCalls(restarted), []);
   restarted.intervals.find(job => job.ms === 120000).fn(restarted.cx);
-  assert.deepEqual(linearCalls(restarted), startup);
+  restarted.store.set('usage-bar.linear-rev', 1);
+  restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
+  assert.deepEqual(linearCalls(restarted), []);
   click(popup, 'visible-linear', settings.cx);
   assert.ok(byID(restarted.view.render(restarted.cx), 'linear'));
+  restarted.intervals.find(job => job.ms === 120000).fn(restarted.cx);
+  assert.deepEqual(linearCalls(restarted), []);
   restarted.tick(0); await restarted.flush();
-  assert.deepEqual(linearCalls(restarted).slice(2), startup);
+  restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
+  assert.deepEqual(linearCalls(restarted), startup);
 });
 
 test('right-hand cards fit at 320 pixels, with providers clipped inside their group', async () => {
@@ -287,12 +292,17 @@ test('bar buttons open popups at the mouse anchor and omit it for keyboard activ
 
 test('popup initialization stays local and starts no bar timers', async () => {
   for (const [panel, expected] of [['linear', [['issues', '--max-age', '60s'], ['status']]], ['settings', [['status']]]]) {
-    const h = harness({ panel, machine: 'remote' }); await h.flush();
+    const store = new Map([['usage-bar.visible', { linear: false }]]);
+    const h = harness({ panel, machine: 'remote', store }); await h.flush();
     assert.equal(h.intervals.length, 0);
     assert.equal(h.timers.length, 0);
     assert.equal(h.calls.length, expected.length);
     assert.deepEqual(linearCalls(h), expected);
     assert.ok(h.calls.every(call => call.options.length === 0));
+    store.set('usage-bar.linear-rev', 1);
+    h.view.render(h.cx); h.tick(0); await h.flush();
+    assert.deepEqual(linearCalls(h).slice(expected.length),
+      panel === 'linear' ? [['status'], ['issues', '--max-age', '60s']] : [['status']]);
   }
 
   const bar = harness({ machine: 'remote' }); await bar.flush();
@@ -324,10 +334,18 @@ test('refresh drops older helper completions and makes the bar re-read after ren
   assert.ok(labels.includes('New title'));
   assert.ok(!labels.includes(issue.title));
 
-  bar.view.render(bar.cx);
+  let finishBarRead;
+  bar.respond(args => args[2] === 'issues'
+    ? new Promise(resolve => { finishBarRead = resolve; }) : bar.fallback(args));
+  assert.ok(text(byID(bar.view.render(bar.cx), 'linear')).includes('1'));
   assert.equal(linearCalls(bar).length, 2);
-  bar.tick(0); await bar.flush();
+  bar.tick(0);
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(linearCalls(bar).slice(2), [['status'], ['issues', '--max-age', '60s']]);
+  assert.ok(text(byID(bar.view.render(bar.cx), 'linear')).includes('1'));
+  finishBarRead(reply({ ...issuesReply, issues: [] }));
+  await bar.flush();
+  assert.ok(text(byID(bar.view.render(bar.cx), 'linear')).includes('0'));
 });
 
 test('Linear panel shows grouped issue details and opens only Linear links', async () => {
@@ -377,6 +395,57 @@ test('Linear panel handles connection, expiry, stale, empty and helper errors', 
   }
 });
 
+test('helper launch failure keeps the last Linear list and link and shows the error above it', async () => {
+  const h = harness({ panel: 'linear' }); await h.flush();
+  h.respond(args => args[2] === 'issues' ? { code: 127, stdout: '', stderr: 'private diagnostic' } : h.fallback(args));
+  click(h.view.render(h.cx), 'linear-refresh', h.cx);
+  await h.flush();
+  const tree = h.view.render(h.cx), labels = text(tree);
+  const errorIndex = labels.indexOf('herdr-hud unavailable');
+  assert.ok(errorIndex >= 0 && errorIndex < labels.indexOf('TEST-1'));
+  assert.equal(byID(tree, 'linear-issue-list').style.opacity, 0.6);
+  assert.ok(!labels.includes('private diagnostic'));
+  click(tree, 'linear-open', h.cx);
+  assert.deepEqual(h.urls, [org.url + '/my-issues/assigned']);
+
+  h.respond(args => args[2] === 'issues'
+    ? reply({ ...issuesReply, org_url: null, issues: [], error: 'network' }) : h.fallback(args));
+  click(tree, 'linear-refresh', h.cx);
+  await h.flush();
+  const fetchError = h.view.render(h.cx);
+  assert.ok(text(fetchError).includes("Couldn't load Linear issues"));
+  assert.equal(byID(fetchError, 'linear-issue-list'), undefined);
+
+  h.respond(h.fallback);
+  click(fetchError, 'linear-refresh', h.cx);
+  await h.flush();
+  const recovered = h.view.render(h.cx);
+  assert.ok(!text(recovered).includes('herdr-hud unavailable'));
+  assert.equal(byID(recovered, 'linear-issue-list').style.opacity, 1);
+});
+
+test('unparsable Linear poll output keeps the bar count and alert and dims the count', async () => {
+  const h = harness(); await h.flush();
+  h.respond(args => args[2] === 'issues' ? { code: 1, stdout: 'garbage' } : h.fallback(args));
+  h.intervals.find(job => job.ms === 120000).fn(h.cx);
+  await h.flush();
+  const button = byID(h.view.render(h.cx), 'linear');
+  const count = button.nodes.find(node => text(node).includes('1'));
+  assert.equal(count?.style.opacity, 0.6);
+  assert.ok(button.nodes.some(node => node.style.bg === 'blocked'));
+});
+
+test('a failed status read keeps the last connection in settings and shows the helper error', async () => {
+  const h = harness({ panel: 'settings' }); await h.flush();
+  h.respond(() => { throw new Error('private diagnostic'); });
+  h.store.set('usage-bar.linear-rev', 1);
+  h.view.render(h.cx); h.tick(0); await h.flush();
+  const labels = text(h.view.render(h.cx));
+  assert.ok(labels.some(label => label.startsWith('Claude Code connection')));
+  assert.ok(labels.includes('herdr-hud unavailable'));
+  assert.ok(!labels.includes('private diagnostic'));
+});
+
 test('masked settings input clears immediately and failed connect uses the JSON error', async () => {
   const h = harness({ panel: 'settings' }); await h.flush();
   assert.equal(h.view.input.masked, true);
@@ -417,7 +486,7 @@ test('Disconnect is offered for an API key and re-reads status for the fallback'
   assert.equal(byID(h.view.render(h.cx), 'linear-disconnect'), undefined);
 });
 
-test('connect updates the API-key status and clears old issue snapshots on revision change', async () => {
+test('connect updates the API-key status and clears old issues when the new source is confirmed', async () => {
   let finishOldRead;
   const store = new Map();
   const popup = harness({ panel: 'linear', store }), settings = harness({ panel: 'settings', store });
@@ -433,13 +502,48 @@ test('connect updates the API-key status and clears old issue snapshots on revis
   await settings.flush();
   assert.deepEqual(linearCalls(settings), [['status'], ['connect', '--key', 'synthetic-test-key'], ['status']]);
   assert.ok(text(settings.view.render(settings.cx)).includes('API key · Test Viewer'));
-  assert.ok(!text(popup.view.render(popup.cx)).includes(issue.title));
+  assert.ok(text(popup.view.render(popup.cx)).includes(issue.title));
 
   finishOldRead(reply(issuesReply)); await popup.flush();
   popup.respond(args => args[2] === 'status' ? reply(apiKeyStatus) :
-    reply({ source: 'api_key', issues: [], error: 'network' }));
+    { code: 127, stdout: '' });
   popup.tick(0); await popup.flush();
   const popupLabels = text(popup.view.render(popup.cx));
-  assert.ok(popupLabels.includes("Couldn't load Linear issues"));
+  assert.ok(!popupLabels.includes('TEST-1'));
   assert.ok(!popupLabels.includes(issue.title));
+});
+
+test('disconnected status removes old issues even if the in-flight issues read finishes later', async () => {
+  const h = harness({ panel: 'linear' }); await h.flush();
+  let finishIssues;
+  h.respond(args => args[2] === 'status'
+    ? reply({ connected: false, source: null, org: null, error: 'not_connected' })
+    : new Promise(resolve => { finishIssues = resolve; }));
+  h.store.set('usage-bar.linear-rev', 1);
+  h.view.render(h.cx); h.tick(0);
+  await new Promise(resolve => setImmediate(resolve));
+  const assertDisconnected = () => {
+    const tree = h.view.render(h.cx);
+    assert.ok(text(tree).includes('Connect Linear in settings'));
+    assert.equal(byID(tree, 'linear-issue-list'), undefined);
+    assert.equal(byID(tree, 'linear-open'), undefined);
+  };
+  assertDisconnected();
+  finishIssues(reply(issuesReply));
+  await h.flush();
+  assertDisconnected();
+});
+
+test('a different viewer on the same source clears the issues retained from an earlier revision', async () => {
+  const firstStatus = { ...statusReply, source: 'api_key', user: { name: 'First Viewer' } };
+  const h = harness({ panel: 'linear', initialResponse: args => args[2] === 'status'
+    ? reply(firstStatus) : reply({ ...issuesReply, source: 'api_key' }) });
+  await h.flush();
+  h.respond(args => args[2] === 'status'
+    ? reply({ ...firstStatus, user: { name: 'Second Viewer' } }) : { code: 127, stdout: '' });
+  h.store.set('usage-bar.linear-rev', 1);
+  const pending = h.view.render(h.cx);
+  assert.ok(byID(pending, 'issue-TEST-1'));
+  h.tick(0); await h.flush();
+  assert.equal(byID(h.view.render(h.cx), 'issue-TEST-1'), undefined);
 });

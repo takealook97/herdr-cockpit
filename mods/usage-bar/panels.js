@@ -64,13 +64,13 @@ function issueRow(t, issue, now) {
 
 export function linearPanel(view) {
   const t = theme(), now = new Date();
-  const { issues: snapshot, status } = view.linearSnapshot();
+  const { issues: snapshot, status, issueError, statusError } = view.linearSnapshot();
   const org = status?.org;
   const matchingOrg = !snapshot || (snapshot.source === status?.source &&
     (!snapshot.org_url || snapshot.org_url === org?.url));
   const orgName = matchingOrg ? org?.name : null;
   const orgURL = snapshot?.org_url ?? (matchingOrg ? org?.url : null);
-  const error = snapshot ? snapshot.error : status?.error;
+  const error = issueError ?? (snapshot ? snapshot.error : status?.error ?? statusError);
 
   const root = panelRoot(view, t, 'linear').max_h(520)
     .child(h_flex().min_w(0).items_center().gap(6)
@@ -92,7 +92,6 @@ export function linearPanel(view) {
     return root;
   }
 
-  // Only the helper can determine whether stale rows belong to this credential.
   return root.child(v_flex().id('linear-issue-list').min_h(0).max_h(462).gap(6).overflow_y_scroll()
     .opacity(snapshot.stale || error ? 0.6 : 1)
     .children(groups.map(group => v_flex().gap(2).flex_none()
@@ -102,9 +101,9 @@ export function linearPanel(view) {
 
 export function settingsPanel(view) {
   const t = theme(), visible = readVisible(shared(VISIBLE_KEY));
-  const { status } = view.linearSnapshot();
+  const { status, statusError } = view.linearSnapshot();
   const busy = view.linearBusy;
-  const error = view.linearActionError ?? (status?.error === 'not_connected' ? null : status?.error);
+  const error = view.linearActionError ?? statusError ?? (status?.error === 'not_connected' ? null : status?.error);
   return panelRoot(view, t, 'settings')
     .child(heading('Top bar'))
     .children(VISIBLE_KEYS.map(key => h_flex().h(26).items_center().justify_between()

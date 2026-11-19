@@ -14,6 +14,12 @@ const linearRevision = () => {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 };
 
+function issuesMismatchStatus(issues, status) {
+  return status?.connected === false ||
+    !!(issues?.source && status?.source && issues.source !== status.source) ||
+    !!(issues?.org_url && status?.org?.url && issues.org_url !== status.org.url);
+}
+
 function linearCommand(args) {
   return ['sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', 'linear', ...args]];
 }
@@ -28,7 +34,7 @@ async function execLinear(args) {
   } catch {
     // Launch and JSON failures use fixed copy. Never surface helper diagnostics.
   }
-  return { error: 'helper' };
+  return null;
 }
 
 export default class UsageBar extends View {
@@ -61,10 +67,12 @@ export default class UsageBar extends View {
     this.refresh('usage', cx);
     cx.timer.every(1000, cx => this.refresh('sys', cx));
     cx.timer.every(60000, cx => this.refresh('usage', cx));
-    this.readLinear('status', cx);
-    this.readLinear('issues', cx);
+    if (this.linearVisible) {
+      this.readLinear('status', cx);
+      this.readLinear('issues', cx);
+    }
     cx.timer.every(120000, cx => {
-      if (readVisible(shared(VISIBLE_KEY)).linear) this.readLinear('issues', cx);
+      if (this.linearVisible && readVisible(shared(VISIBLE_KEY)).linear) this.readLinear('issues', cx);
     });
   }
 
@@ -75,25 +83,50 @@ export default class UsageBar extends View {
   }
 
   linearSnapshot() {
-    const current = this.linearRev === linearRevision();
-    return { issues: current ? this.linearIssues : null, status: current ? this.linearStatus : null };
+    return { issues: this.linearIssues, status: this.linearStatus,
+      issueError: this.linearIssueError, statusError: this.linearStatusError };
+  }
+
+  applyLinearStatus(status, rev) {
+    const prior = this.linearStatus;
+    const viewerChanged = (prior?.user?.name && status.user?.name && prior.user.name !== status.user.name) ||
+      (prior?.org?.url && status.org?.url && prior.org.url !== status.org.url);
+    // A new issues reply can arrive before status for the same revision.
+    if (issuesMismatchStatus(this.linearIssues, status) ||
+        (this.linearIssuesRev !== rev && viewerChanged)) {
+      this.linearIssues = null;
+      this.linearIssueError = null;
+    }
+    this.linearStatus = status;
+    this.linearStatusError = null;
   }
 
   bumpLinear() {
     this.linearRev = linearRevision() + 1;
-    setShared('usage-bar.linear-rev', this.linearRev);
+    setShared(LINEAR_REV, this.linearRev);
   }
 
   readLinear(kind, cx, refresh = false) {
     const seq = ++this.linearSeq[kind];
     const rev = linearRevision();
+    const statusAtStart = this.linearStatus;
     const args = [kind];
     if (kind === 'issues') args.push(...(refresh ? ['--refresh'] : ['--max-age', '60s']));
     cx.spawn(async cx => {
       const data = await execLinear(args);
       if (seq !== this.linearSeq[kind] || rev !== linearRevision()) return;
-      if (kind === 'issues') this.linearIssues = data;
-      else this.linearStatus = data;
+      if (kind === 'issues') {
+        this.linearIssueError = data ? null : 'helper';
+        // A newer status can rule out an issues reply already in flight.
+        if (data && (statusAtStart === this.linearStatus || !issuesMismatchStatus(data, this.linearStatus))) {
+          this.linearIssues = data;
+          this.linearIssuesRev = rev;
+        }
+      } else if (data) {
+        this.applyLinearStatus(data, rev);
+      } else {
+        this.linearStatusError = 'helper';
+      }
       if (refresh) {
         this.bumpLinear();
         if (!this.closed && !this.linearStatus) this.readLinear('status', cx);
@@ -119,8 +152,8 @@ export default class UsageBar extends View {
       this.bumpLinear();
       if (this.closed) return;
       this.linearBusy = false;
-      this.linearActionError = data.connected === undefined ? data.error : null;
-      if (!this.linearActionError) this.linearStatus = data;
+      this.linearActionError = data?.connected === undefined ? data?.error ?? 'helper' : null;
+      if (!this.linearActionError) this.applyLinearStatus(data, this.linearRev);
       this.readLinear('status', cx);
       cx.notify();
     });
@@ -136,12 +169,10 @@ export default class UsageBar extends View {
       const enabled = !this.panel && visible && !this.linearVisible;
       this.linearRev = rev;
       this.linearVisible = visible;
-      if (changed) {
-        this.linearStatus = null;
-        this.linearIssues = null;
+      if ((this.panel || visible) && (changed || enabled)) {
+        this.readLinear('status', cx);
+        if (this.panel !== 'settings') this.readLinear('issues', cx);
       }
-      if (changed || enabled) this.readLinear('status', cx);
-      if ((changed && this.panel !== 'settings') || enabled) this.readLinear('issues', cx);
       cx.notify();
     });
   }
@@ -301,7 +332,7 @@ export default class UsageBar extends View {
       }
       groups.push(group(`account-${account.provider}`).child(content));
     }
-    const { status, issues } = this.linearSnapshot();
+    const { status, issues, issueError } = this.linearSnapshot();
     const disconnected = ['not_connected', 'expired'].includes(issues?.error);
     const connected = disconnected ? false : (issues?.source ? true : status?.connected);
     const badge = badgeState(issues?.issues, now);
@@ -309,7 +340,7 @@ export default class UsageBar extends View {
       count: Array.isArray(issues?.issues) && connected ? badge.count : null,
       alert: !!connected && badge.alert,
       connected,
-      stale: !!issues?.stale,
+      stale: !!(issues?.stale || issueError),
     }), 'linear');
     const gear = this.popupButton(iconButton(t, 'gear', '⚙︎', 'Top bar settings'), 'settings');
     return h_flex().id('root').size_full().min_w(0).px(padding).gap(gap).items_center()
