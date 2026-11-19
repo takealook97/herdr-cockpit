@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -24,6 +25,9 @@ const (
 	linearKeychainAccount = "default"
 	linearMCPHost         = "mcp.linear.app"
 	linearMCPPreferredURL = "https://mcp.linear.app/mcp"
+	// linearKeychainNotFound is the security(1) exit status for a missing item.
+	linearKeychainNotFound = 44
+	linearStatusLockWait   = 5 * time.Second
 )
 
 // linearCred carries a resolved credential in memory only. It has no JSON tags
@@ -45,8 +49,26 @@ var (
 	linearSecurityRun = func(ctx context.Context, args ...string) ([]byte, error) {
 		return exec.CommandContext(ctx, "security", args...).Output()
 	}
-	linearClaudeRaw = func(ctx context.Context) ([]byte, error) { return hudClaudeCredentialsRaw(ctx, "") }
+	linearClaudeRaw = linearClaudeCredentialsRaw
+	linearRename    = os.Rename
 )
+
+// linearClaudeCredentialsRaw reads the Claude Code credential for the Linear
+// path: the default keychain item, else ${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json.
+// It never refreshes, rewrites or deletes the credential.
+func linearClaudeCredentialsRaw(ctx context.Context) ([]byte, error) {
+	if linearGOOS == "darwin" {
+		if raw, _ := hudClaudeKeychainRead(ctx, hudClaudeKeychainService); len(raw) > 0 {
+			return raw, nil
+		}
+	}
+	dir := os.Getenv("CLAUDE_CONFIG_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".claude")
+	}
+	return os.ReadFile(filepath.Join(dir, ".credentials.json"))
+}
 
 func linearConfigDir() string {
 	root := os.Getenv("XDG_CONFIG_HOME")
@@ -64,26 +86,40 @@ func linearKeychainArgs(verb string, extra ...string) []string {
 	return append([]string{verb, "-s", linearKeychainService, "-a", linearKeychainAccount}, extra...)
 }
 
-// linearAPIKeyLoad returns "" when no herdr-hud key is stored or it cannot be read.
-func linearAPIKeyLoad(ctx context.Context) string {
+// linearKeychainMissing reports whether security(1) failed because the item
+// does not exist; any other failure must not be mistaken for "no key".
+func linearKeychainMissing(err error) bool {
+	var exit interface{ ExitCode() int }
+	return errors.As(err, &exit) && exit.ExitCode() == linearKeychainNotFound
+}
+
+// linearAPIKeyLoad returns "" with a nil error when no herdr-hud key is stored,
+// and an error when the store exists but cannot be read.
+func linearAPIKeyLoad(ctx context.Context) (string, error) {
 	if linearGOOS == "darwin" {
 		out, err := linearSecurityRun(ctx, linearKeychainArgs("find-generic-password", "-w")...)
-		if err != nil {
-			return ""
+		if linearKeychainMissing(err) {
+			return "", nil
 		}
-		return strings.TrimSpace(string(out))
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
 	}
 	raw, err := os.ReadFile(linearKeyFilePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
 	if err != nil {
-		return ""
+		return "", err
 	}
 	var body struct {
 		APIKey string `json:"api_key"`
 	}
 	if json.Unmarshal(raw, &body) != nil {
-		return ""
+		return "", nil
 	}
-	return strings.TrimSpace(body.APIKey)
+	return strings.TrimSpace(body.APIKey), nil
 }
 
 func linearAPIKeyStore(ctx context.Context, key string) error {
@@ -106,7 +142,7 @@ func linearAPIKeyStore(ctx context.Context, key string) error {
 // linearAPIKeyDelete is idempotent: a missing key counts as success.
 func linearAPIKeyDelete(ctx context.Context) error {
 	if linearGOOS == "darwin" {
-		if _, err := linearSecurityRun(ctx, linearKeychainArgs("delete-generic-password")...); err != nil && linearAPIKeyLoad(ctx) != "" {
+		if _, err := linearSecurityRun(ctx, linearKeychainArgs("delete-generic-password")...); err != nil && !linearKeychainMissing(err) {
 			return err
 		}
 		return nil
@@ -147,6 +183,66 @@ func linearMetaSave(meta linearMeta) error {
 		return err
 	}
 	return hudWritePrivateFile(linearMetaFilePath(), raw)
+}
+
+// linearMetaStage writes meta to a private temp file next to its final path;
+// linearRename moves it into place once the key is stored.
+func linearMetaStage(meta linearMeta) (string, error) {
+	raw, err := json.Marshal(meta)
+	if err != nil {
+		return "", err
+	}
+	dir := linearConfigDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, ".linear-meta.json-*")
+	if err != nil {
+		return "", err
+	}
+	if _, err = f.Write(raw); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	if err = f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// linearReplaceAPIKey stores key and meta so that a failure never leaves the
+// previous working key deleted. The caller holds the credential lock.
+func linearReplaceAPIKey(ctx context.Context, key string, meta linearMeta) error {
+	prev, err := linearAPIKeyLoad(ctx)
+	if err != nil {
+		// Without the previous key a later rollback is impossible; change nothing.
+		return err
+	}
+	tmp, err := linearMetaStage(meta)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp)
+	if err := linearAPIKeyStore(ctx, key); err != nil {
+		return err
+	}
+	if err := linearRename(tmp, linearMetaFilePath()); err != nil {
+		if prev != "" {
+			_ = linearAPIKeyStore(ctx, prev)
+		} else {
+			_ = linearAPIKeyDelete(ctx)
+		}
+		return err
+	}
+	return nil
+}
+
+// linearCredentialLock serializes credential mutations with every reader that
+// pairs a key with its generation. Lock order: credential lock, then cache lock.
+func linearCredentialLock(ctx context.Context) (func(), error) {
+	return hudLockFile(ctx, filepath.Join(linearConfigDir(), "linear-credential"))
 }
 
 func linearNewGeneration() string {
@@ -202,7 +298,7 @@ func linearMCPEntry(raw []byte, now time.Time) (cred linearCred, found, expired 
 	cred = linearCred{
 		Source:     linearSourceClaudeMCP,
 		Secret:     entry.AccessToken,
-		Generation: linearSourceClaudeMCP + ":" + key + ":" + entry.ClientID,
+		Generation: linearSourceClaudeMCP + ":" + key + ":" + entry.ClientID + ":" + strconv.FormatInt(entry.ExpiresAt, 10),
 		ServerURL:  entry.ServerURL,
 	}
 	if entry.ExpiresAt > 0 {
@@ -213,9 +309,16 @@ func linearMCPEntry(raw []byte, now time.Time) (cred linearCred, found, expired 
 }
 
 // linearResolve picks the herdr-hud API key first, then the Claude Code MCP
-// token. code is "" for a usable credential, else not_connected or expired.
+// token. code is "" for a usable credential, else not_connected, expired, or
+// store_failed when the herdr-hud key store cannot be read. Callers that use the
+// generation hold the credential lock.
 func linearResolve(ctx context.Context, now time.Time) (linearCred, string) {
-	if key := linearAPIKeyLoad(ctx); key != "" {
+	key, err := linearAPIKeyLoad(ctx)
+	if err != nil {
+		// Falling through to the MCP token would silently switch accounts.
+		return linearCred{}, linearErrStoreFailed
+	}
+	if key != "" {
 		meta, ok := linearMetaLoad()
 		if !ok {
 			meta = linearMeta{Generation: linearNewGeneration()}

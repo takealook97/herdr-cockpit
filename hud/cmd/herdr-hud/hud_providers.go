@@ -225,17 +225,24 @@ func hudParseCodex(raw []byte) (HUDAccount, error) {
 	return a, nil
 }
 
+const hudClaudeKeychainService = "Claude Code-credentials"
+
+// hudClaudeKeychainRead is a test seam for the read-only keychain lookup.
+var hudClaudeKeychainRead = func(ctx context.Context, service string) ([]byte, error) {
+	return exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-w").Output()
+}
+
 // hudClaudeCredentialsRaw only reads the Claude Code credential (keychain, then
 // file); it never refreshes, rewrites or deletes it.
 func hudClaudeCredentialsRaw(ctx context.Context, home string) ([]byte, error) {
 	var raw []byte
 	if runtime.GOOS == "darwin" {
-		service := "Claude Code-credentials"
+		service := hudClaudeKeychainService
 		if home != "" {
 			sum := sha256.Sum256([]byte(home))
 			service += "-" + hex.EncodeToString(sum[:])[:8]
 		}
-		raw, _ = exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-w").Output()
+		raw, _ = hudClaudeKeychainRead(ctx, service)
 	}
 	if len(raw) > 0 {
 		return raw, nil

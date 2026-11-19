@@ -217,10 +217,12 @@ func linearSSEFind(r io.Reader, want int) (mcpMessage, error) {
 	var data []string
 	for {
 		line, err := reader.ReadString('\n')
+		// The size limit wins over anything read alongside it, so no event that
+		// ends past the cap is ever dispatched.
+		if errors.As(err, new(linearError)) {
+			return mcpMessage{}, err
+		}
 		if err != nil && line == "" {
-			if errors.As(err, new(linearError)) {
-				return mcpMessage{}, err
-			}
 			if len(data) > 0 {
 				if msg, ok := linearPickMessage([]byte(strings.Join(data, "\n")), want); ok {
 					return msg, nil
@@ -379,8 +381,9 @@ func linearMCPIssues(ctx context.Context, cred linearCred) (linearIssuesPayload,
 		return out, linearError(linearErrBadResponse)
 	}
 	if _, ok := tools["whoami"]; ok {
+		// Only status treats whoami as best effort; a failed issues fetch is never cached.
 		id, err := s.whoami(ctx)
-		if code := linearCode(err); code == linearErrExpired || code == linearErrForbidden {
+		if err != nil {
 			return out, err
 		}
 		if id.OrgURL != "" {

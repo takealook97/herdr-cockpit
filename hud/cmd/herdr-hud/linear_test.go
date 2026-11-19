@@ -37,8 +37,17 @@ type fakeKeychain struct {
 	mu        sync.Mutex
 	key       string
 	failStore bool
+	failAll   bool // every command fails with a non-44 status (locked keychain)
 	calls     [][]string
 }
+
+// fakeExitError mimics *exec.ExitError's ExitCode for security(1) failures.
+type fakeExitError int
+
+func (e fakeExitError) Error() string { return fmt.Sprintf("exit status %d", int(e)) }
+func (e fakeExitError) ExitCode() int { return int(e) }
+
+const errKeychainMissing = fakeExitError(linearKeychainNotFound)
 
 func (k *fakeKeychain) run(_ context.Context, args ...string) ([]byte, error) {
 	k.mu.Lock()
@@ -47,10 +56,13 @@ func (k *fakeKeychain) run(_ context.Context, args ...string) ([]byte, error) {
 	if len(args) < 5 || args[1] != "-s" || args[2] != linearKeychainService || args[3] != "-a" || args[4] != linearKeychainAccount {
 		return nil, errors.New("unexpected keychain target")
 	}
+	if k.failAll {
+		return nil, fakeExitError(36)
+	}
 	switch args[0] {
 	case "find-generic-password":
 		if k.key == "" {
-			return nil, errors.New("exit 44")
+			return nil, errKeychainMissing
 		}
 		return []byte(k.key + "\n"), nil
 	case "add-generic-password":
@@ -61,7 +73,7 @@ func (k *fakeKeychain) run(_ context.Context, args ...string) ([]byte, error) {
 		return nil, nil
 	case "delete-generic-password":
 		if k.key == "" {
-			return nil, errors.New("exit 44")
+			return nil, errKeychainMissing
 		}
 		k.key = ""
 		return nil, nil
@@ -84,15 +96,16 @@ func setupLinear(t *testing.T) *linearEnv {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", env.config)
 	t.Setenv("XDG_CACHE_HOME", env.cache)
-	goos, run, raw := linearGOOS, linearSecurityRun, linearClaudeRaw
+	goos, run, raw, rename, claudeKC := linearGOOS, linearSecurityRun, linearClaudeRaw, linearRename, hudClaudeKeychainRead
 	transport, gql, mcp, fetch := linearHTTPTransport, linearGraphQLEndpoint, linearMCPEndpointOverride, linearFetchIssues
 	t.Cleanup(func() {
-		linearGOOS, linearSecurityRun, linearClaudeRaw = goos, run, raw
+		linearGOOS, linearSecurityRun, linearClaudeRaw, linearRename, hudClaudeKeychainRead = goos, run, raw, rename, claudeKC
 		linearHTTPTransport, linearGraphQLEndpoint, linearMCPEndpointOverride, linearFetchIssues = transport, gql, mcp, fetch
 	})
 	linearGOOS = "darwin"
 	linearSecurityRun = env.keychain.run
 	linearClaudeRaw = func(context.Context) ([]byte, error) { return env.claude, nil }
+	hudClaudeKeychainRead = func(context.Context, string) ([]byte, error) { return nil, errKeychainMissing }
 	linearGraphQLEndpoint = "https://graphql.invalid/unset"
 	linearHTTPTransport = hudTestTransport(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("unexpected network call")
@@ -117,6 +130,7 @@ type fakeMCP struct {
 	sse      bool
 	status   int
 	failPage int
+	whoami   string // "" serves the fixture; "rpc" a JSON-RPC error; "tool" an isError result
 	requests []fakeMCPRequest
 }
 
@@ -146,7 +160,7 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.Unmarshal(raw, &msg)
 	f.mu.Lock()
 	f.requests = append(f.requests, fakeMCPRequest{msg.Method, r.Header.Clone(), msg.Params, msg.ID == nil})
-	status, sse, failPage := f.status, f.sse, f.failPage
+	status, sse, failPage, whoami := f.status, f.sse, f.failPage, f.whoami
 	f.mu.Unlock()
 	if status != 0 {
 		w.WriteHeader(status)
@@ -172,6 +186,12 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(msg.Params, &call)
 		text := ""
 		switch {
+		case call.Name == "whoami" && whoami == "rpc":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32603,"message":"internal"}}`, *msg.ID)
+			return
+		case call.Name == "whoami" && whoami == "tool":
+			result = `{"isError":true,"content":[{"type":"text","text":"whoami failed"}]}`
 		case call.Name == "whoami":
 			text = linearFixture(f.t, "mcp_whoami.json")
 		case call.Name == "list_issues" && call.Arguments["cursor"] == nil:
@@ -380,7 +400,7 @@ func TestLinearMCPEntrySelection(t *testing.T) {
 		"notoken": entry(linearMCPPreferredURL, now.UnixMilli()+9e7, ""),
 	})
 	cred, found, expired := linearMCPEntry(raw, now)
-	if !found || expired || cred.Secret != "exact" || cred.Generation != "claude_mcp:exact:c" {
+	if !found || expired || cred.Secret != "exact" || cred.Generation != fmt.Sprintf("claude_mcp:exact:c:%d", now.UnixMilli()+1000) {
 		t.Fatalf("selection %v %v %v gen %s", cred.Secret == "exact", found, expired, cred.Generation)
 	}
 	raw = linearClaudeCreds(map[string]map[string]any{
@@ -664,11 +684,14 @@ func TestLinearFileKeyStoreOnLinux(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0600 || dir.Mode().Perm() != 0700 {
 		t.Fatalf("modes %v %v", info.Mode(), dir.Mode())
 	}
-	if linearAPIKeyLoad(context.Background()) != linearTestAPIKey {
+	if key, err := linearAPIKeyLoad(context.Background()); err != nil || key != linearTestAPIKey {
 		t.Fatal("load")
 	}
-	if linearAPIKeyDelete(context.Background()) != nil || linearAPIKeyDelete(context.Background()) != nil || linearAPIKeyLoad(context.Background()) != "" {
+	if linearAPIKeyDelete(context.Background()) != nil || linearAPIKeyDelete(context.Background()) != nil {
 		t.Fatal("delete must be idempotent")
+	}
+	if key, err := linearAPIKeyLoad(context.Background()); err != nil || key != "" {
+		t.Fatal("a missing key file is no key, not an error")
 	}
 	if len(env.keychain.calls) != 0 {
 		t.Fatal("linux must not use the keychain")
@@ -678,8 +701,11 @@ func TestLinearFileKeyStoreOnLinux(t *testing.T) {
 func TestLinearKeychainCommands(t *testing.T) {
 	env := setupLinear(t)
 	ctx := context.Background()
-	if err := linearAPIKeyStore(ctx, "k1"); err != nil || linearAPIKeyLoad(ctx) != "k1" {
-		t.Fatal("store/load")
+	if err := linearAPIKeyStore(ctx, "k1"); err != nil {
+		t.Fatal("store")
+	}
+	if key, err := linearAPIKeyLoad(ctx); err != nil || key != "k1" {
+		t.Fatal("load")
 	}
 	if err := linearAPIKeyDelete(ctx); err != nil || linearAPIKeyDelete(ctx) != nil {
 		t.Fatal("delete idempotent")
@@ -689,7 +715,6 @@ func TestLinearKeychainCommands(t *testing.T) {
 		{"find-generic-password", "-s", "herdr-hud-linear", "-a", "default", "-w"},
 		{"delete-generic-password", "-s", "herdr-hud-linear", "-a", "default"},
 		{"delete-generic-password", "-s", "herdr-hud-linear", "-a", "default"},
-		{"find-generic-password", "-s", "herdr-hud-linear", "-a", "default", "-w"},
 	}
 	if !reflect.DeepEqual(env.keychain.calls, want) {
 		t.Fatalf("calls %v", env.keychain.calls)
