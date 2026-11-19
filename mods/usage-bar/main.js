@@ -451,9 +451,14 @@ export default class UsageBar extends View {
     const accounts = pickAccounts(state.usage, visible);
     const mode = layoutMode(this.width, accounts, visible);
     const { padding, gap } = barSpacing(this.width);
-    const rightWidth = GEAR_WIDTH + (visible.linear ? LINEAR_WIDTH : 0) + (visible.system ? systemWidth(mode.bars) : 0);
+    const { status, issues, issueError, seenAccount: account } = linearTargetChanged ? {} : this.linearSnapshot();
+    const disconnected = ['not_connected', 'expired'].includes(issues?.error);
+    const connected = disconnected ? false : (issues?.source ? true : status?.connected);
+    const expired = issues?.error === 'expired' || status?.error === 'expired';
+    const showLinear = visible.linear && (connected === true || expired);
+    const rightWidth = GEAR_WIDTH + (showLinear ? LINEAR_WIDTH : 0) + (visible.system ? systemWidth(mode.bars) : 0);
     const providerRoom = this.width - 2 * padding - rightWidth -
-      gap * (2 + Number(visible.linear) + Number(visible.system));
+      gap * (2 + Number(showLinear) + Number(visible.system));
     const group = id => h_flex().id(id).h(38).items_center().flex_none().px(8).gap(6)
       .rounded(6).bg(t.chrome).border(1).border_color(t.muted + "66").cursor_pointer()
       .tooltip('Click to refresh usage')
@@ -480,9 +485,6 @@ export default class UsageBar extends View {
       }
       groups.push(group(`account-${account.provider}`).child(content));
     }
-    const { status, issues, issueError, seenAccount: account } = linearTargetChanged ? {} : this.linearSnapshot();
-    const disconnected = ['not_connected', 'expired'].includes(issues?.error);
-    const connected = disconnected ? false : (issues?.source ? true : status?.connected);
     const badge = badgeState(issues?.issues, now);
     const seen = shared(LINEAR_SEEN);
     // A dropdown can prune IDs before the bar receives the corresponding issues list.
@@ -502,7 +504,7 @@ export default class UsageBar extends View {
       .when(groups.length > 0, el => el.child(h_flex().id('groups').min_w(0).max_w(Math.max(0, providerRoom))
         .overflow_hidden().items_center().gap(10).children(groups)))
       .child(h_flex().flex_1().min_w(0))
-      .when(visible.linear, el => el.child(linear.min_w(0).flex_shrink(1).overflow_hidden()))
+      .when(showLinear, el => el.child(linear.min_w(0).flex_shrink(1).overflow_hidden()))
       .when(visible.system, el => el.child(system.min_w(0).flex_shrink(1).overflow_hidden()))
       .child(gear);
   }

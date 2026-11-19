@@ -39,7 +39,7 @@ Omit machine names to target all connected machines. This explicitly writes to t
 
 ## Linear and top-bar settings
 
-Click **Linear** to the left of CPU/RAM to see your open assigned issues. The dropdown groups them by status and shows their priority, project, and due date. Click a row to expand its status, priority, due date, assignee, full project name, labels, and description inline. Click it again to collapse the details. The dropdown never opens the Linear app or site. **Refresh** fetches the list again and clears cached details. The button shows the issue count and a dot if any issue is blocked or overdue.
+Click **Linear** to the left of CPU/RAM to see your open assigned issues. The dropdown groups them by status and shows their priority, project, and due date. Click a row to expand its status, priority, due date, assignee, full project name, labels, and description inline. Click it again to collapse the details. The dropdown never opens the Linear app or site. **Refresh** fetches the list again and clears cached details. The button shows the issue count and a dot if any issue is blocked or overdue. The Linear button appears only on machines with a confirmed or expired connection and is hidden elsewhere, where the settings popup still offers connection controls.
 
 Click the gear to the right of CPU/RAM to show or hide Codex, Claude, Gemini, Linear, or CPU/RAM. Changes apply immediately and persist across restarts. The gear stays visible.
 

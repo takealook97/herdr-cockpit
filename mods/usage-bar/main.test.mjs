@@ -266,12 +266,13 @@ test('settings switches apply immediately and persist across bar instances', asy
   restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
   assert.deepEqual(linearCalls(restarted), []);
   click(popup, 'visible-linear', settings.cx);
-  assert.ok(byID(restarted.view.render(restarted.cx), 'linear'));
+  assert.equal(linearButton(restarted), undefined);
   restarted.intervals.find(job => job.ms === 1800000).fn(restarted.cx);
   assert.deepEqual(linearCalls(restarted), []);
   restarted.tick(0); await restarted.flush();
   restarted.view.render(restarted.cx); restarted.tick(0); await restarted.flush();
   assert.deepEqual(linearCalls(restarted), startup);
+  assert.ok(linearButton(restarted));
 });
 
 test('settings shows connection status beside the Linear switch and enables it only once connected', async () => {
@@ -402,6 +403,64 @@ test('the bar routes status and issues to the active remote machine or local exe
   }
 });
 
+test('the bar hides Linear on a disconnected machine and shows it again on returning to a connected machine', async () => {
+  const bar = harness({ machine: 'A', initialResponse: (args, { on }) => {
+    if (args[1] !== 'linear') return reply(fixture[args[1]]);
+    if (on === 'A') return reply(args[2] === 'status' ? statusReply : issuesReply);
+    return args[2] === 'status' ? reply(disconnectedStatus) : unavailable;
+  } });
+  await bar.flush();
+  assert.ok(text(linearButton(bar)).includes('1'));
+
+  bar.state.spaces[0].machine = 'B';
+  assert.equal(linearButton(bar), undefined);
+  bar.tick(0);
+  await bar.flush();
+  assert.equal(linearButton(bar), undefined);
+
+  bar.state.spaces[0].machine = 'A';
+  assert.equal(linearButton(bar), undefined);
+  bar.tick(0);
+  await bar.flush();
+  assert.ok(text(linearButton(bar)).includes('1'));
+});
+
+for (const kind of ['status', 'issues']) {
+  test(`the bar shows Linear when the ${kind} reply reports an expired connection`, async () => {
+    const bar = harness({ initialResponse: args => {
+      if (args[1] !== 'linear') return reply(fixture[args[1]]);
+      if (args[2] === kind) return reply({ ...disconnectedStatus, error: 'expired' });
+      return unavailable;
+    } });
+    await bar.flush();
+    assert.ok(linearButton(bar));
+  });
+}
+
+test('the bar hides Linear while loading and shows it after a connected status reply', async () => {
+  let finishStatus;
+  const bar = harness({ initialResponse: args => {
+    if (args[1] !== 'linear') return reply(fixture[args[1]]);
+    if (args[2] === 'issues') return unavailable;
+    return new Promise(resolve => { finishStatus = resolve; });
+  } });
+  assert.equal(linearButton(bar), undefined);
+  finishStatus(reply(statusReply));
+  await bar.flush();
+  assert.ok(linearButton(bar));
+});
+
+test('the bar hides Linear when the helper fails before confirming a connection', async () => {
+  for (const statusFailure of [unavailable, { code: 0, stdout: 'garbage' }]) {
+    const bar = harness({ initialResponse: args => {
+      if (args[1] !== 'linear') return reply(fixture[args[1]]);
+      return args[2] === 'status' ? statusFailure : unavailable;
+    } });
+    await bar.flush();
+    assert.equal(linearButton(bar), undefined);
+  }
+});
+
 test('the first switched render hides the old Linear badge and late replies leave the new snapshot intact', async () => {
   const store = new Map([['usage-bar.linear-seen', { account: seenAccount, ids: [] }]]);
   const bar = harness({ machine: 'A', store }); await bar.flush();
@@ -420,11 +479,7 @@ test('the first switched render hides the old Linear badge and late replies leav
   });
   linearPoll(bar);
   bar.state.spaces[0].machine = 'B';
-  const switched = linearButton(bar);
-  assert.deepEqual(text(switched), ['◆', 'Linear', '—']);
-  assert.equal(switched.style.tooltip, 'Assigned Linear issues');
-  assert.equal(switched.nodes[2].style.opacity, 1);
-  assert.equal(switched.nodes[2].style.text_color, 'dim');
+  assert.equal(linearButton(bar), undefined);
   assert.deepEqual(linearExecs(bar).map(call => call.opts.on), ['A', 'A', 'A', 'A']);
 
   bar.tick(0);
@@ -473,7 +528,7 @@ test('returning to A before the Linear transition runs preserves A and starts no
   const bar = harness({ machine: 'A' }); await bar.flush();
   const original = bar.view.linearSnapshot();
   bar.state.spaces[0].machine = 'B';
-  assert.ok(text(linearButton(bar)).includes('—'));
+  assert.equal(linearButton(bar), undefined);
   bar.state.spaces[0].machine = 'A';
   assert.ok(text(linearButton(bar)).includes('1'));
   bar.tick(0); await bar.flush();
@@ -532,7 +587,7 @@ test('connecting in settings pinned to A preserves the active B account’s unre
   await settings.flush();
   assert.equal(store.get('usage-bar.linear-account-machine'), 'A');
   assert.deepEqual(settings.writes.slice(0, 2), ['usage-bar.linear-account-machine', 'usage-bar.linear-account-rev']);
-  assert.deepEqual(text(linearButton(bar)), ['◆', 'Linear', '—']);
+  assert.equal(linearButton(bar), undefined);
   bar.tick(0); await bar.flush();
   assert.equal(linearButton(bar).style.tooltip, '1 new issue');
   assert.equal(store.get(seenKey), baseline);
@@ -1165,7 +1220,10 @@ test('a successful settings connect reveals Linear and keeps other visibility ch
   await settings.flush();
   assert.deepEqual(store.get(visibleKey), { codex: true, claude: false, gemini: true, linear: true, system: true });
   assert.equal(byID(render(), 'visible-linear').style.checked, true);
-  assert.ok(byID(bar.view.render(bar.cx), 'linear'));
+  assert.equal(linearButton(bar), undefined);
+  bar.tick(0);
+  await bar.flush();
+  assert.ok(linearButton(bar));
 });
 
 test('Disconnect is offered for an API key and re-reads status for the fallback', async () => {
@@ -1260,7 +1318,7 @@ test('the account revision clears the bar count when its initial status is unkno
   assert.ok(badge().includes('1'));
   bar.respond(args => args[2] === 'status' ? reply(nextAPIKeyStatus) : unavailable);
   bar.store.set('usage-bar.linear-account-rev', 1);
-  assert.ok(badge().includes('—'));
+  assert.equal(linearButton(bar), undefined);
   bar.tick(0);
   await bar.flush();
   assert.ok(badge().includes('—'));
@@ -1284,10 +1342,10 @@ test('the hidden bar invalidates its account snapshot without reading until re-e
 
   bar.respond(() => unavailable);
   bar.store.set('usage-bar.visible', { linear: true });
-  assert.ok(badge().includes('—'));
+  assert.equal(linearButton(bar), undefined);
   bar.tick(0);
   await bar.flush();
-  assert.ok(badge().includes('—'));
+  assert.equal(linearButton(bar), undefined);
   assert.deepEqual(linearCalls(bar).slice(2), [['status'], ['issues', '--max-age', '60s']]);
 });
 
