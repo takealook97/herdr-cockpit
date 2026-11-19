@@ -177,20 +177,50 @@ func cmdLinear(ctx context.Context, args []string, stdout, stderr io.Writer) int
 	return code
 }
 
-// linearResolveForStatus resolves under the credential lock, waiting briefly.
-// status only reads, so a lock timeout falls back to an unlocked resolve.
-func linearResolveForStatus(ctx context.Context) (linearCred, string) {
-	wait, cancel := context.WithTimeout(ctx, linearStatusLockWait)
-	unlock, err := linearCredentialLock(wait)
-	cancel()
-	if err == nil {
-		defer unlock()
+// linearBusyStatus is reported when the credential lock is unavailable; no
+// credential was read and no meta was written.
+func linearBusyStatus() linearStatusPayload {
+	return linearStatusPayload{Error: strPtr(linearErrBusy)}
+}
+
+func linearBusyIssues() linearIssuesPayload {
+	return linearIssuesPayload{Issues: []linearIssue{}, Error: strPtr(linearErrBusy)}
+}
+
+// linearStatusSnapshot is the part of status that reads the credential store
+// and meta. The caller holds the credential lock.
+type linearStatusSnapshot struct {
+	cred linearCred
+	code string
+	id   linearIdentity
+}
+
+func linearTakeStatusSnapshot(ctx context.Context) linearStatusSnapshot {
+	cred, code := linearResolve(ctx, time.Now())
+	snap := linearStatusSnapshot{cred: cred, code: code}
+	if code == "" && cred.Source == linearSourceAPIKey {
+		meta, _ := linearMetaLoad()
+		snap.id = linearIdentity{UserName: meta.UserName, OrgName: meta.OrgName, OrgURL: meta.OrgURL}
 	}
-	return linearResolve(ctx, time.Now())
+	return snap
 }
 
 func linearStatus(ctx context.Context) linearStatusPayload {
-	cred, code := linearResolveForStatus(ctx)
+	wait, cancel := context.WithTimeout(ctx, linearStatusLockWait)
+	unlock, err := linearCredentialLock(wait)
+	cancel()
+	if err != nil {
+		return linearBusyStatus()
+	}
+	snap := linearTakeStatusSnapshot(ctx)
+	unlock()
+	return linearStatusFromSnapshot(ctx, snap)
+}
+
+// linearStatusFromSnapshot builds the payload outside the lock; only the MCP
+// whoami call touches the network.
+func linearStatusFromSnapshot(ctx context.Context, snap linearStatusSnapshot) linearStatusPayload {
+	cred := snap.cred
 	out := linearStatusPayload{}
 	if cred.Source != "" {
 		out.Source = strPtr(cred.Source)
@@ -198,16 +228,13 @@ func linearStatus(ctx context.Context) linearStatusPayload {
 	if !cred.ExpiresAt.IsZero() {
 		out.ExpiresAt = strPtr(cred.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	if code != "" {
-		out.Error = strPtr(code)
+	if snap.code != "" {
+		out.Error = strPtr(snap.code)
 		return out
 	}
 	out.Connected = true
-	var id linearIdentity
-	if cred.Source == linearSourceAPIKey {
-		meta, _ := linearMetaLoad()
-		id = linearIdentity{UserName: meta.UserName, OrgName: meta.OrgName, OrgURL: meta.OrgURL}
-	} else {
+	id := snap.id
+	if cred.Source != linearSourceAPIKey {
 		child, cancel := context.WithTimeout(ctx, linearWhoamiTimeout)
 		id, _ = linearMCPWhoami(child, cred)
 		cancel()
@@ -247,15 +274,16 @@ func linearConnect(ctx context.Context, key string) (any, int) {
 	if err != nil {
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	err = linearReplaceAPIKey(ctx, key, meta)
-	if err == nil {
-		_ = linearRemoveIfPresent(linearCachePath())
-	}
-	unlock()
-	if err != nil {
+	// linearReplaceAPIKey drops the issues cache on every path after the store.
+	if err := linearReplaceAPIKey(ctx, key, meta); err != nil {
+		unlock()
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	return linearStatus(ctx), 0
+	// Snapshot under the same lock hold, so a concurrent poll cannot turn a
+	// successful connect into a busy status.
+	snap := linearTakeStatusSnapshot(ctx)
+	unlock()
+	return linearStatusFromSnapshot(ctx, snap), 0
 }
 
 func linearDisconnect(ctx context.Context) (any, int) {
@@ -270,11 +298,13 @@ func linearDisconnect(ctx context.Context) (any, int) {
 	if err == nil {
 		_ = linearRemoveIfPresent(linearCachePath())
 	}
-	unlock()
 	if err != nil {
+		unlock()
 		return linearErrorPayload{linearErrStoreFailed}, 1
 	}
-	return linearStatus(ctx), 0
+	snap := linearTakeStatusSnapshot(ctx)
+	unlock()
+	return linearStatusFromSnapshot(ctx, snap), 0
 }
 
 // Cache: only the issues payload and the nonsecret credential generation.
@@ -319,12 +349,14 @@ var linearFetchIssues = func(ctx context.Context, cred linearCred) (linearIssues
 
 // linearIssues holds the credential lock from resolution through the cache
 // write, so a concurrent connect cannot pair this key with a new generation.
-// The same lock coalesces concurrent fetches.
+// The same lock coalesces concurrent fetches. Without the lock it reports busy:
+// the store may hold a key whose replacement has not committed.
 func linearIssues(ctx context.Context, maxAge time.Duration, refresh bool, now time.Time) linearIssuesPayload {
-	unlock, lockErr := linearCredentialLock(ctx)
-	if lockErr == nil {
-		defer unlock()
+	unlock, err := linearCredentialLock(ctx)
+	if err != nil {
+		return linearBusyIssues()
 	}
+	defer unlock()
 	cred, code := linearResolve(ctx, now)
 	if code != "" {
 		out := linearIssuesPayload{Issues: []linearIssue{}, Error: strPtr(code)}
@@ -359,9 +391,6 @@ func linearIssues(ctx context.Context, maxAge time.Duration, refresh bool, now t
 	payload.FetchedAt = strPtr(fetched.UTC().Format(time.RFC3339))
 	payload.Stale = false
 	payload.Error = nil
-	if lockErr == nil {
-		// Without the lock the key/generation pairing is unproven; never cache it.
-		_ = linearWriteCache(linearCacheEntry{Generation: cred.Generation, FetchedAt: fetched, Payload: payload})
-	}
+	_ = linearWriteCache(linearCacheEntry{Generation: cred.Generation, FetchedAt: fetched, Payload: payload})
 	return payload
 }
