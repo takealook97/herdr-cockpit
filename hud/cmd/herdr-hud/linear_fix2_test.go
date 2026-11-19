@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,74 +38,25 @@ func linearKeychainCalls(env *linearEnv) int {
 
 func linearLockPath() string { return filepath.Join(linearConfigDir(), "linear-credential.lock") }
 
-// F9: when both the meta rename and the rollback of the previous key fail,
-// key B must never be served with A's generation or A's cached issues.
-func TestLinearRollbackFailureNeverPairsBWithACache(t *testing.T) {
-	env := setupLinear(t)
-	linearViewerServer(t)
-	linearFetchBySecret(t)
-	linearConnectOK(t, linearTestAPIKey)
-	linearExpectOnly(t, linearIssues(context.Background(), time.Minute, false, time.Now()), "A-1")
-	metaA := linearMetaRaw(t)
-	linearRename = func(string, string) error {
-		env.keychain.failStore = true
-		return errors.New("fixture metadata rename failed")
-	}
-	code, out, stderr := linearRun(t, "connect", "--key", linearTestAPIKeyB)
-	if code != 1 || strings.TrimSpace(out) != `{"error":"store_failed"}` || stderr != "" {
-		t.Fatalf("unexpected failure result: %d %q %q", code, out, stderr)
-	}
-	env.keychain.failStore = false
-	linearRename = os.Rename
-	if _, err := os.Stat(linearCachePath()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the issues cache must be deleted after a failed replacement: %v", err)
-	}
-	for _, refresh := range []bool{false, true} {
-		got := linearIssues(context.Background(), time.Minute, refresh, time.Now())
-		for _, issue := range got.Issues {
-			if issue.Identifier == "A-1" {
-				t.Fatalf("A's issues served after failed reconnect (refresh=%v): %+v", refresh, got)
-			}
+// linearPauseStoreWrite blocks the next keychain store write until resume is
+// closed. The connect that issues it holds the credential lock meanwhile.
+func linearPauseStoreWrite(env *linearEnv) (entered, resume chan struct{}) {
+	entered, resume = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	linearSecurityRun = func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] == "add-generic-password" {
+			once.Do(func() {
+				close(entered)
+				<-resume
+			})
 		}
+		return env.keychain.run(ctx, args...)
 	}
-	status := linearStatus(context.Background())
-	switch {
-	case env.keychain.key == linearTestAPIKey:
-		if !status.Connected || linearMetaRaw(t) != metaA {
-			t.Fatalf("rollback kept A but status/meta disagree: %+v", status)
-		}
-	case env.keychain.key == "":
-		if status.Connected || status.Error == nil || *status.Error != linearErrNotConnected {
-			t.Fatalf("expected not_connected after failed rollback: %+v", status)
-		}
-	default:
-		t.Fatal("key B must not survive a failed rollback")
-	}
-}
-
-// F9: when rollback succeeds, A keeps its generation but the cache is dropped.
-func TestLinearRollbackSuccessDropsCache(t *testing.T) {
-	env := setupLinear(t)
-	linearViewerServer(t)
-	linearFetchBySecret(t)
-	linearConnectOK(t, linearTestAPIKey)
-	linearExpectOnly(t, linearIssues(context.Background(), time.Minute, false, time.Now()), "A-1")
-	metaA := linearMetaRaw(t)
-	linearRename = func(string, string) error { return errors.New("fixture metadata rename failed") }
-	if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKeyB); code != 1 {
-		t.Fatal("connect B should fail")
-	}
-	if _, err := os.Stat(linearCachePath()); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the issues cache must be deleted after a failed replacement: %v", err)
-	}
-	if env.keychain.key != linearTestAPIKey || linearMetaRaw(t) != metaA {
-		t.Fatal("rollback must restore key A with A's generation")
-	}
-	linearExpectOnly(t, linearIssues(context.Background(), time.Minute, false, time.Now()), "A-1")
+	return entered, resume
 }
 
 // F10: an issues read that cannot open the credential lock while a connect is
-// mid-replacement reports busy and never sees the provisional key.
+// mid-write reports busy and touches neither the store, the cache nor meta.
 func TestLinearIssuesBusyWhenCredentialLockUnavailable(t *testing.T) {
 	env := setupLinear(t)
 	linearViewerServer(t)
@@ -116,22 +68,17 @@ func TestLinearIssuesBusyWhenCredentialLockUnavailable(t *testing.T) {
 		t.Fatal(err)
 	}
 	metaA := linearMetaRaw(t)
-	renameEntered, resumeRename := make(chan struct{}), make(chan struct{})
-	linearRename = func(string, string) error {
-		close(renameEntered)
-		<-resumeRename
-		return errors.New("fixture metadata rename failed")
-	}
+	entered, resume := linearPauseStoreWrite(env)
 	ctx := context.Background()
 	connectResult := make(chan int, 1)
 	go func() {
 		_, code := linearConnect(ctx, linearTestAPIKeyB)
 		connectResult <- code
 	}()
-	<-renameEntered
+	<-entered
 	// The writer still owns the flock; a permission error stops new descriptors.
 	if err := os.Chmod(linearLockPath(), 0400); err != nil {
-		close(resumeRename)
+		close(resume)
 		<-connectResult
 		t.Fatal(err)
 	}
@@ -142,7 +89,7 @@ func TestLinearIssuesBusyWhenCredentialLockUnavailable(t *testing.T) {
 	callsAfter := linearKeychainCalls(env)
 	cacheAfter, cacheErr := os.ReadFile(linearCachePath())
 	metaAfter := linearMetaRaw(t)
-	close(resumeRename)
+	close(resume)
 	code := <-connectResult
 	_ = os.Chmod(linearLockPath(), 0600)
 	if issues.Error == nil || *issues.Error != linearErrBusy || len(issues.Issues) != 0 || issues.Source != nil {
@@ -157,22 +104,18 @@ func TestLinearIssuesBusyWhenCredentialLockUnavailable(t *testing.T) {
 	if cacheErr != nil || string(cacheAfter) != string(cache) || metaAfter != metaA {
 		t.Fatal("busy readers must not write the cache or meta")
 	}
-	if code != 1 || env.keychain.key != linearTestAPIKey {
-		t.Fatal("connect B must fail and restore key A")
+	if code != 0 || env.keychain.apiKey() != linearTestAPIKeyB {
+		t.Fatal("connect B must commit once the write completes")
 	}
+	linearExpectOnly(t, linearIssues(ctx, time.Minute, false, time.Now()), "B-1")
 }
 
 // F10: status that times out waiting for a first connect reports busy instead
-// of the uncommitted key, and writes no meta.
+// of reading the store, and writes no meta.
 func TestLinearStatusTimeoutReportsBusy(t *testing.T) {
 	env := setupLinear(t)
 	linearViewerServer(t)
-	renameEntered, resumeRename := make(chan struct{}), make(chan struct{})
-	linearRename = func(string, string) error {
-		close(renameEntered)
-		<-resumeRename
-		return errors.New("fixture metadata rename failed")
-	}
+	entered, resume := linearPauseStoreWrite(env)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	connectResult := make(chan int, 1)
@@ -180,10 +123,10 @@ func TestLinearStatusTimeoutReportsBusy(t *testing.T) {
 		_, code := linearConnect(ctx, linearTestAPIKeyB)
 		connectResult <- code
 	}()
-	<-renameEntered
+	<-entered
 	out := linearStatus(ctx)
 	_, metaErr := os.Stat(linearMetaFilePath())
-	close(resumeRename)
+	close(resume)
 	code := <-connectResult
 	if out.Connected || out.Source != nil || out.User != nil || out.Error == nil || *out.Error != linearErrBusy {
 		t.Fatalf("expected busy status while connect holds the lock: %+v", out)
@@ -191,11 +134,11 @@ func TestLinearStatusTimeoutReportsBusy(t *testing.T) {
 	if !errors.Is(metaErr, os.ErrNotExist) {
 		t.Fatalf("status must not write meta without the lock: %v", metaErr)
 	}
-	if code != 1 || env.keychain.key != "" {
-		t.Fatal("connect must fail and remove the provisional key")
+	if code != 0 || env.keychain.apiKey() != linearTestAPIKeyB {
+		t.Fatal("connect must commit once its write completes")
 	}
-	if after := linearStatus(ctx); after.Connected || after.Error == nil || *after.Error != linearErrNotConnected {
-		t.Fatalf("expected later status to report not connected: %+v", after)
+	if after := linearStatus(ctx); !after.Connected || after.User == nil || after.User.Name != "Fixture Person" {
+		t.Fatalf("expected later status to report the new key: %+v", after)
 	}
 }
 

@@ -78,7 +78,7 @@ func TestLinearConnectDuringIssuesKeepsGenerationsApart(t *testing.T) {
 	time.Sleep(200 * time.Millisecond) // give connect B the chance to race
 	close(resume)
 	wg.Wait()
-	if connectCode != 0 || env.keychain.key != linearTestAPIKeyB {
+	if connectCode != 0 || env.keychain.apiKey() != linearTestAPIKeyB {
 		t.Fatalf("connect B %d", connectCode)
 	}
 	if got := linearIdentifiers(first.Issues); len(got) != 1 || got[0] != "A-1" {
@@ -101,93 +101,67 @@ func linearMetaRaw(t *testing.T) string {
 
 func linearAssertStillA(t *testing.T, env *linearEnv, metaBefore string) {
 	t.Helper()
-	if env.keychain.key != linearTestAPIKey {
+	if env.keychain.apiKey() != linearTestAPIKey {
 		t.Fatal("the previously working key must survive a failed reconnect")
 	}
 	if linearMetaRaw(t) != metaBefore {
 		t.Fatal("the previous metadata must survive a failed reconnect")
 	}
 	_, stdout, _ := linearRun(t, "status")
-	if !strings.Contains(stdout, `"connected":true`) || !strings.Contains(stdout, `"source":"api_key"`) {
+	if !strings.Contains(stdout, `"connected":true`) || !strings.Contains(stdout, `"source":"api_key"`) || !strings.Contains(stdout, `"Fixture Person"`) {
 		t.Fatalf("status after failed reconnect %s", stdout)
-	}
-	entries, _ := os.ReadDir(linearConfigDir())
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".linear-meta.json-") {
-			t.Fatalf("staged metadata left behind: %s", e.Name())
-		}
 	}
 }
 
-// F2: a failed reconnect never deletes the previously working key.
+// F2: a failed store write leaves the previously working key, its generation
+// and its metadata untouched.
 func TestLinearFailedReconnectKeepsPriorKey(t *testing.T) {
-	t.Run("read-only metadata directory", func(t *testing.T) {
-		env := setupLinear(t)
-		linearViewerServer(t)
-		if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKey); code != 0 {
-			t.Fatal("connect A")
-		}
-		before := linearMetaRaw(t)
-		if err := os.Chmod(linearConfigDir(), 0500); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(linearConfigDir(), 0700) })
-		code, stdout, _ := linearRun(t, "connect", "--key", linearTestAPIKeyB)
-		if code != 1 || strings.TrimSpace(stdout) != `{"error":"store_failed"}` {
-			t.Fatalf("connect B %d %s", code, stdout)
-		}
-		_ = os.Chmod(linearConfigDir(), 0700)
-		linearAssertStillA(t, env, before)
-	})
-	t.Run("metadata rename fails after the key was stored", func(t *testing.T) {
-		env := setupLinear(t)
-		linearViewerServer(t)
-		if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKey); code != 0 {
-			t.Fatal("connect A")
-		}
-		before := linearMetaRaw(t)
-		linearRename = func(string, string) error { return errors.New("rename failed") }
-		code, stdout, _ := linearRun(t, "connect", "--key", linearTestAPIKeyB)
-		if code != 1 || strings.TrimSpace(stdout) != `{"error":"store_failed"}` {
-			t.Fatalf("connect B %d %s", code, stdout)
-		}
-		linearAssertStillA(t, env, before)
-	})
-	t.Run("keychain store fails", func(t *testing.T) {
-		env := setupLinear(t)
-		linearViewerServer(t)
-		if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKey); code != 0 {
-			t.Fatal("connect A")
-		}
-		before := linearMetaRaw(t)
-		env.keychain.failStore = true
-		if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKeyB); code != 1 {
-			t.Fatal("connect B should fail")
-		}
-		env.keychain.failStore = false
-		linearAssertStillA(t, env, before)
-	})
-	t.Run("rename fails with no previous key", func(t *testing.T) {
-		env := setupLinear(t)
-		linearViewerServer(t)
-		linearRename = func(string, string) error { return errors.New("rename failed") }
-		if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKeyB); code != 1 {
-			t.Fatal("connect should fail")
-		}
-		if env.keychain.key != "" {
-			t.Fatal("the new key must be removed when its metadata cannot be saved")
-		}
-		if _, err := os.Stat(linearMetaFilePath()); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("no metadata may be written")
-		}
-	})
+	env := setupLinear(t)
+	linearViewerServer(t)
+	if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKey); code != 0 {
+		t.Fatal("connect A")
+	}
+	before := linearMetaRaw(t)
+	itemBefore := env.keychain.key
+	env.keychain.failStore = true
+	code, stdout, stderr := linearRun(t, "connect", "--key", linearTestAPIKeyB)
+	if code != 1 || strings.TrimSpace(stdout) != `{"error":"store_failed"}` || stderr != "" {
+		t.Fatalf("connect B %d %q %q", code, stdout, stderr)
+	}
+	env.keychain.failStore = false
+	if env.keychain.key != itemBefore {
+		t.Fatal("the store item (key and generation) must be unchanged")
+	}
+	linearAssertStillA(t, env, before)
+}
+
+// F2 under decision 28: metadata is display-only, so an unwritable metadata
+// directory does not fail the connect; the new key shows no stale identity.
+func TestLinearConnectSucceedsWhenMetaUnwritable(t *testing.T) {
+	env := setupLinear(t)
+	linearViewerServer(t)
+	if code, _, _ := linearRun(t, "connect", "--key", linearTestAPIKey); code != 0 {
+		t.Fatal("connect A")
+	}
+	if err := os.Chmod(linearConfigDir(), 0500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(linearConfigDir(), 0700) })
+	code, stdout, _ := linearRun(t, "connect", "--key", linearTestAPIKeyB)
+	if code != 0 || !strings.Contains(stdout, `"connected":true`) || env.keychain.apiKey() != linearTestAPIKeyB {
+		t.Fatalf("connect B %d %s", code, stdout)
+	}
+	_, stdout, _ = linearRun(t, "status")
+	if !strings.Contains(stdout, `"connected":true`) || !strings.Contains(stdout, `"user":null`) || !strings.Contains(stdout, `"org":null`) {
+		t.Fatalf("A's metadata must not describe key B: %s", stdout)
+	}
 }
 
 // F3: a keychain failure other than "not found" is neither a missing key nor a
 // successful disconnect, and it never falls through to the MCP token.
 func TestLinearKeychainFailureIsNotMissing(t *testing.T) {
 	env := setupLinear(t)
-	env.keychain.key = linearTestAPIKey
+	env.keychain.key = linearStoredJSON(linearTestAPIKey, "api_key:fixture")
 	if err := linearMetaSave(linearMeta{Generation: "api_key:fixture", UserName: "Fixture Person"}); err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +174,7 @@ func TestLinearKeychainFailureIsNotMissing(t *testing.T) {
 	if _, err := os.Stat(linearMetaFilePath()); err != nil {
 		t.Fatal("metadata must be kept when the key could not be deleted")
 	}
-	if key, err := linearAPIKeyLoad(context.Background()); err == nil || key != "" {
+	if item, found, err := linearStoreLoad(context.Background()); err == nil || found || item.APIKey != "" {
 		t.Fatal("a locked keychain must report an error, not an empty key")
 	}
 	_, stdout, _ = linearRun(t, "status")

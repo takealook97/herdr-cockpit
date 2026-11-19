@@ -50,7 +50,6 @@ var (
 		return exec.CommandContext(ctx, "security", args...).Output()
 	}
 	linearClaudeRaw = linearClaudeCredentialsRaw
-	linearRename    = os.Rename
 )
 
 // linearClaudeCredentialsRaw reads the Claude Code credential for the Linear
@@ -93,44 +92,65 @@ func linearKeychainMissing(err error) bool {
 	return errors.As(err, &exit) && exit.ExitCode() == linearKeychainNotFound
 }
 
-// linearAPIKeyLoad returns "" with a nil error when no herdr-hud key is stored,
-// and an error when the store exists but cannot be read.
-func linearAPIKeyLoad(ctx context.Context) (string, error) {
-	if linearGOOS == "darwin" {
-		out, err := linearSecurityRun(ctx, linearKeychainArgs("find-generic-password", "-w")...)
-		if linearKeychainMissing(err) {
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(out)), nil
-	}
-	raw, err := os.ReadFile(linearKeyFilePath())
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	var body struct {
-		APIKey string `json:"api_key"`
-	}
-	if json.Unmarshal(raw, &body) != nil {
-		return "", nil
-	}
-	return strings.TrimSpace(body.APIKey), nil
+// linearStoredKey is the single store item: the API key and the generation it
+// was connected with. Keeping both in one value means a key can never be paired
+// with another key's generation. It redacts itself when formatted.
+type linearStoredKey struct {
+	V          int    `json:"v"`
+	APIKey     string `json:"api_key"`
+	Generation string `json:"generation"`
 }
 
-func linearAPIKeyStore(ctx context.Context, key string) error {
+const linearStoreVersion = 1
+
+func (k linearStoredKey) String() string   { return "linearStoredKey{" + k.Generation + " <redacted>}" }
+func (k linearStoredKey) GoString() string { return k.String() }
+
+var errLinearStoreMalformed = errors.New("linear store item malformed")
+
+func linearParseStoredKey(raw []byte) (linearStoredKey, error) {
+	var item linearStoredKey
+	if json.Unmarshal(bytes.TrimSpace(raw), &item) != nil || item.V != linearStoreVersion ||
+		!linearValidKey(item.APIKey) || !strings.HasPrefix(item.Generation, linearSourceAPIKey+":") {
+		return linearStoredKey{}, errLinearStoreMalformed
+	}
+	return item, nil
+}
+
+// linearStoreLoad reports found=false with a nil error when no herdr-hud item
+// is stored, and an error when the store cannot be read or holds a malformed item.
+func linearStoreLoad(ctx context.Context) (linearStoredKey, bool, error) {
+	var raw []byte
+	var err error
 	if linearGOOS == "darwin" {
-		_, err := linearSecurityRun(ctx, linearKeychainArgs("add-generic-password", "-U", "-w", key)...)
+		raw, err = linearSecurityRun(ctx, linearKeychainArgs("find-generic-password", "-w")...)
+		if linearKeychainMissing(err) {
+			return linearStoredKey{}, false, nil
+		}
+	} else {
+		raw, err = os.ReadFile(linearKeyFilePath())
+		if errors.Is(err, os.ErrNotExist) {
+			return linearStoredKey{}, false, nil
+		}
+	}
+	if err != nil {
+		return linearStoredKey{}, false, err
+	}
+	item, err := linearParseStoredKey(raw)
+	if err != nil {
+		return linearStoredKey{}, false, err
+	}
+	return item, true, nil
+}
+
+// linearStoreWrite replaces the store item in one write.
+func linearStoreWrite(ctx context.Context, item linearStoredKey) error {
+	raw, err := json.Marshal(item)
+	if err != nil {
 		return err
 	}
-	raw, err := json.Marshal(struct {
-		APIKey string `json:"api_key"`
-	}{key})
-	if err != nil {
+	if linearGOOS == "darwin" {
+		_, err = linearSecurityRun(ctx, linearKeychainArgs("add-generic-password", "-U", "-w", string(raw))...)
 		return err
 	}
 	if err := hudWritePrivateFile(linearKeyFilePath(), raw); err != nil {
@@ -139,8 +159,8 @@ func linearAPIKeyStore(ctx context.Context, key string) error {
 	return os.Chmod(linearConfigDir(), 0700)
 }
 
-// linearAPIKeyDelete is idempotent: a missing key counts as success.
-func linearAPIKeyDelete(ctx context.Context) error {
+// linearStoreDelete is idempotent: a missing item counts as success.
+func linearStoreDelete(ctx context.Context) error {
 	if linearGOOS == "darwin" {
 		if _, err := linearSecurityRun(ctx, linearKeychainArgs("delete-generic-password")...); err != nil && !linearKeychainMissing(err) {
 			return err
@@ -157,7 +177,8 @@ func linearRemoveIfPresent(path string) error {
 	return nil
 }
 
-// linearMeta is nonsecret identity recorded at connect time.
+// linearMeta is display-only identity recorded at connect time. It is shown
+// only when its generation equals the store item's generation.
 type linearMeta struct {
 	Generation string `json:"generation"`
 	UserName   string `json:"user_name"`
@@ -183,77 +204,6 @@ func linearMetaSave(meta linearMeta) error {
 		return err
 	}
 	return hudWritePrivateFile(linearMetaFilePath(), raw)
-}
-
-// linearMetaStage writes meta to a private temp file next to its final path;
-// linearRename moves it into place once the key is stored.
-func linearMetaStage(meta linearMeta) (string, error) {
-	raw, err := json.Marshal(meta)
-	if err != nil {
-		return "", err
-	}
-	dir := linearConfigDir()
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", err
-	}
-	f, err := os.CreateTemp(dir, ".linear-meta.json-*")
-	if err != nil {
-		return "", err
-	}
-	if _, err = f.Write(raw); err != nil {
-		f.Close()
-		os.Remove(f.Name())
-		return "", err
-	}
-	if err = f.Close(); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
-}
-
-// linearReplaceAPIKey stores key and meta so that a failure never leaves the
-// previous working key deleted. The caller holds the credential lock.
-func linearReplaceAPIKey(ctx context.Context, key string, meta linearMeta) error {
-	prev, err := linearAPIKeyLoad(ctx)
-	if err != nil {
-		// Without the previous key a later rollback is impossible; change nothing.
-		return err
-	}
-	tmp, err := linearMetaStage(meta)
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp)
-	if err := linearAPIKeyStore(ctx, key); err != nil {
-		return err
-	}
-	// The store now holds the new key, so the cached issues may belong to a
-	// different key than the one that ends up stored. Drop them on every path.
-	err = linearRename(tmp, linearMetaFilePath())
-	_ = linearRemoveIfPresent(linearCachePath())
-	if err != nil {
-		linearRollbackAPIKey(ctx, prev)
-	}
-	return err
-}
-
-// linearRollbackAPIKey restores prev after a failed replacement. When that
-// fails too, it removes the stored key and meta so no key is ever paired with
-// another key's generation; the end state is not_connected.
-func linearRollbackAPIKey(ctx context.Context, prev string) {
-	var err error
-	if prev != "" {
-		err = linearAPIKeyStore(ctx, prev)
-	} else {
-		err = linearAPIKeyDelete(ctx)
-	}
-	if err == nil {
-		return
-	}
-	_ = linearAPIKeyDelete(ctx)
-	// Even if the key survives, a missing meta forces a fresh generation.
-	_ = linearRemoveIfPresent(linearMetaFilePath())
 }
 
 // linearCredentialLock serializes credential mutations with every reader that
@@ -328,24 +278,16 @@ func linearMCPEntry(raw []byte, now time.Time) (cred linearCred, found, expired 
 
 // linearResolve picks the herdr-hud API key first, then the Claude Code MCP
 // token. code is "" for a usable credential, else not_connected, expired, or
-// store_failed when the herdr-hud key store cannot be read. Callers must hold the
-// credential lock: resolution may write meta and pairs a key with its generation.
+// store_failed when the herdr-hud store cannot be read. The API key's generation
+// comes only from its store item. Callers hold the credential lock.
 func linearResolve(ctx context.Context, now time.Time) (linearCred, string) {
-	key, err := linearAPIKeyLoad(ctx)
+	item, found, err := linearStoreLoad(ctx)
 	if err != nil {
 		// Falling through to the MCP token would silently switch accounts.
 		return linearCred{}, linearErrStoreFailed
 	}
-	if key != "" {
-		meta, ok := linearMetaLoad()
-		if !ok {
-			meta = linearMeta{Generation: linearNewGeneration()}
-			if linearMetaSave(meta) != nil {
-				// Unsaved generations never match a cache entry, which disables caching safely.
-				meta.Generation += "-unsaved"
-			}
-		}
-		return linearCred{Source: linearSourceAPIKey, Secret: key, Generation: meta.Generation}, ""
+	if found {
+		return linearCred{Source: linearSourceAPIKey, Secret: item.APIKey, Generation: item.Generation}, ""
 	}
 	raw, _ := linearClaudeRaw(ctx)
 	cred, found, expired := linearMCPEntry(raw, now)
