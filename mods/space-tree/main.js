@@ -103,11 +103,11 @@ export default class SpaceTree extends Plumbing {
         info.at = at;
       }
       if (this.pollGate.isCurrent(token)) this.hub.snapshots.set(machine, { machine, data });
-      this.pollFailures.delete(machine);
+      if (this.pollGate.isCurrent(token)) this.pollFailures.delete(machine);
       return true;
     } catch (error) {
       if (!pending) release();
-      this.pollFailures.set(machine, pollFailureReason(error));
+      if (this.pollGate.isCurrent(token)) this.pollFailures.set(machine, pollFailureReason(error));
       return false;
     }
   }

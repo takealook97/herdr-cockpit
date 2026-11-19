@@ -177,3 +177,22 @@ test('a superseded poll that throws cannot mark the current hud stale', async ()
   assert.equal(h.shared.get('hub.stale'), false);
   assert.deepEqual(h.errors, []);
 });
+
+test('a superseded success must preserve the current refresh failure reason', async () => {
+  let finishRemote, finishPeer;
+  const h = setup({ execute: on => on === 'remote'
+    ? new Promise(resolve => { finishRemote = resolve; }) : Promise.resolve(hud('local')) });
+  await settle();
+  h.now = poll.POLL_STALE_MS + 1;
+  h.machineNames = ['remote', 'peer'];
+  h.execute = on => on === 'peer'
+    ? new Promise(resolve => { finishPeer = resolve; }) : Promise.resolve(hud('local'));
+  h.refresh();
+  assert.equal(h.tree.pollFailures.get('remote'), 'previous poll still running');
+  finishRemote(hud('superseded'));
+  await settle();
+  finishPeer(hud('peer'));
+  await finishTick(h);
+  assert.equal(h.shared.get('hub.stale'), true);
+  assert.equal(h.shared.get('hub.lastError'), 'remote: previous poll still running');
+});
