@@ -106,7 +106,9 @@ test('command loop handles hub shortcuts and exits on null; close prevents furth
 test('failed layout write reports error and can be retried', async () => {
   const h = setup(); await h.flush(); h.failWrite = true; h.view.open(h.cx); await h.flush();
   assert.ok(h.calls.some(c => c.notify?.body === 'failed')); assert.deepEqual(runs(h), []);
-  h.failWrite = false; h.view.sync(h.cx); h.tick(500); await h.flush();
+  // A failed open gives hub.open back, so the flag matches the unchanged screen.
+  assert.equal(h.shared.get('hub.open'), false);
+  h.failWrite = false; h.view.open(h.cx); await h.flush();
   assert.equal(runs(h)[0][0], 'layout.select');
 });
 
@@ -284,4 +286,115 @@ test('model labels survive helper and pane program name differences', async () =
     h.intervals.find(t => t.ms === 3000).fn(h.cx); await h.flush();
     assert.equal(paneSub(h.panes[0], orchIndexes(h.tree.orch)), 'm1', reported);
   }
+});
+
+const lastSelect = h => runs(h).filter(([cmd]) => cmd === 'layout.select').at(-1)?.[1].child;
+const tabsState = h => runs(h).filter(([cmd]) => /layout\.(show|hide)/.test(cmd)).at(-1)?.[0];
+// What the Report button does: flags only.
+const clickReport = h => {
+  const opening = h.shared.get('report.open') !== true;
+  if (opening) h.shared.set('hub.open', false);
+  h.shared.set('report.open', opening);
+};
+
+test('desiredChild maps the hub and report flags to a work-stack child', () => {
+  assert.equal(model.desiredChild(false, false), 'work-normal');
+  assert.equal(model.desiredChild(false, true), 'report-view');
+  assert.equal(model.desiredChild(true, false), 'hub-view');
+  assert.equal(model.desiredChild(true, true), 'hub-view');
+});
+
+test('C1: Report clicked during a hub rebuild write ends on report-view with matching flags', async () => {
+  const h = setup(); await h.flush(); h.view.open(h.cx, 't1'); await h.flush();
+  h.panes.push({ pane: 'p2', tab: 'tb', terminal: 't2' }); h.hud.terminals.push({ address: 't2' });
+  h.tree.refreshOrch(h.cx); await h.flush();
+  let release; h.waitWrite = new Promise(r => { release = r; });
+  h.view.sync(h.cx); h.tick(500); await Promise.resolve();
+  assert.equal(h.view.writing, true);
+  clickReport(h); h.view.sync(h.cx);
+  release(); await h.flush();
+  assert.equal(lastSelect(h), 'report-view');
+  assert.equal(tabsState(h), 'layout.show');
+  assert.equal(h.shared.get('report.open'), true); assert.equal(h.shared.get('hub.open'), false);
+  assert.equal(h.view.appliedChild, 'report-view');
+});
+
+test('C1: Report clicked while hub is closing ends on report-view, not work-normal', async () => {
+  const h = setup(); await h.flush(); h.view.open(h.cx, 't1'); await h.flush();
+  let release; h.waitWrite = new Promise(r => { release = r; });
+  h.view.hide(h.cx); await Promise.resolve();
+  clickReport(h); h.view.sync(h.cx);
+  release(); await h.flush();
+  assert.equal(lastSelect(h), 'report-view');
+  assert.equal(tabsState(h), 'layout.show');
+  assert.equal(h.shared.get('report.open'), true);
+});
+
+test('Report toggles without any layout write: the sync path selects the child and tab bar', async () => {
+  const h = setup(); await h.flush(); const writes = h.writes.length;
+  clickReport(h); h.view.sync(h.cx);
+  assert.deepEqual(runs(h), [['layout.select', { stack: 'work-stack', child: 'report-view' }], ['layout.show', { id: 'tabs' }]]);
+  h.view.sync(h.cx); assert.equal(runs(h).length, 2);
+  clickReport(h); h.view.sync(h.cx);
+  assert.equal(lastSelect(h), 'work-normal'); assert.equal(h.writes.length, writes);
+});
+
+test('C2: a failed hub open from report-view restores hub.open=false and the earlier report.open', async () => {
+  const h = setup(); await h.flush();
+  clickReport(h); h.view.sync(h.cx);
+  h.failWrite = true; h.view.open(h.cx, 't1'); await h.flush();
+  assert.equal(h.shared.get('hub.open'), false);
+  assert.equal(h.shared.get('report.open'), true);
+  h.view.sync(h.cx); await h.flush();
+  assert.equal(h.view.appliedChild, 'report-view');
+  assert.equal(lastSelect(h), 'report-view');
+  clickReport(h); h.view.sync(h.cx);
+  assert.equal(lastSelect(h), 'work-normal');
+});
+
+test('hub opened from report-view clears report.open and selects hub-view with tabs hidden', async () => {
+  const h = setup(); await h.flush();
+  clickReport(h); h.view.sync(h.cx);
+  h.view.open(h.cx, 't1'); await h.flush();
+  assert.equal(h.shared.get('report.open'), false);
+  assert.equal(lastSelect(h), 'hub-view'); assert.equal(tabsState(h), 'layout.hide');
+});
+
+test('N2: a failed rebuild of an already open hub keeps hub.open and retries on the next sync', async () => {
+  const h = setup(); await h.flush(); h.view.open(h.cx, 't1'); await h.flush();
+  h.panes.push({ pane: 'p2', tab: 'tb', terminal: 't2' }); h.hud.terminals.push({ address: 't2' });
+  h.tree.refreshOrch(h.cx); await h.flush();
+  h.failWrite = true; const before = h.writes.length;
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(h.writes.length, before + 1);
+  assert.equal(h.shared.get('hub.open'), true);
+  assert.equal(lastSelect(h), 'hub-view');
+  h.failWrite = false;
+  h.view.sync(h.cx); h.tick(500); await h.flush();
+  assert.equal(h.writes.length, before + 2);
+  assert.equal(h.shared.get('hub.open'), true);
+});
+
+test('N1: Report clicked during a rebuild write is applied right after the write with no extra write', async () => {
+  const h = setup(); await h.flush(); h.view.open(h.cx, 't1'); await h.flush();
+  h.panes.push({ pane: 'p2', tab: 'tb', terminal: 't2' }); h.hud.terminals.push({ address: 't2' });
+  h.tree.refreshOrch(h.cx); await h.flush();
+  let release; h.waitWrite = new Promise(r => { release = r; });
+  h.view.sync(h.cx); h.tick(500); await Promise.resolve();
+  const writes = h.writes.length; assert.equal(h.view.writing, true);
+  clickReport(h); h.view.sync(h.cx);
+  release(); await h.flush();
+  assert.equal(h.writes.length, writes);
+  assert.equal(lastSelect(h), 'report-view'); assert.equal(tabsState(h), 'layout.show');
+});
+
+test('N1: Report clicked during the hub close write is applied right after it with no extra write', async () => {
+  const h = setup(); await h.flush(); h.view.open(h.cx, 't1'); await h.flush();
+  let release; h.waitWrite = new Promise(r => { release = r; });
+  h.view.hide(h.cx); await Promise.resolve();
+  const writes = h.writes.length;
+  clickReport(h); h.view.sync(h.cx);
+  release(); await h.flush();
+  assert.equal(h.writes.length, writes);
+  assert.equal(lastSelect(h), 'report-view'); assert.equal(tabsState(h), 'layout.show');
 });

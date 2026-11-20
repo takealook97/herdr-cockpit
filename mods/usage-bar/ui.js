@@ -1,6 +1,6 @@
 import { div } from 'gpui-kit';
 import { h_flex, v_flex, Button } from 'gpui-base';
-import { pctColorRole, labelWidth, LINEAR_WIDTH, GEAR_WIDTH } from './format.js';
+import { pctColorRole, labelWidth, LINEAR_WIDTH, REPORT_WIDTH, GEAR_WIDTH } from './format.js';
 
 export function roleColor(t, pct) {
   return t[{ ok: 'foreground', warn: 'working', crit: 'blocked' }[pctColorRole(pct)]];
@@ -24,7 +24,7 @@ export function groupLabel(t, account, compact) {
     .when(!compact && !!account.label, el => el.child(div().h(15).text_size(10.5)
       .text_color(t.dim).truncate().child(account.label)));
 }
-export function systemRow(t, label, pct, detail, hideBar) {
+export function systemRow(t, label, pct, detail, hideBar, hideDetail = false) {
   const known = Number.isFinite(pct);
   // Fixed columns keep the card from resizing as the digits change every second.
   return h_flex().flex_none().items_center().gap(4).text_size(10.8)
@@ -32,7 +32,7 @@ export function systemRow(t, label, pct, detail, hideBar) {
     .child(h_flex().w(32).flex_none().justify_end().font_semibold().text_color(known ? roleColor(t, pct) : t.dim)
       .child(known ? `${Math.round(pct)}%` : '—'))
     .when(!hideBar, el => el.child(known ? progress(t, pct, 32) : div().w(32).flex_none()))
-    .child(h_flex().w(56).flex_none().justify_end().text_color(t.dim).child(detail));
+    .when(!hideDetail, el => el.child(h_flex().w(56).flex_none().justify_end().text_color(t.dim).child(detail)));
 }
 
 function buttonCard(t, id, tooltip) {
@@ -55,6 +55,13 @@ export function linearButton(t, { count, alert, connected, stale, unread }) {
     .child(div().font_semibold().child('Linear'))
     .child(div().opacity(stale ? 0.6 : 1).text_color(connected && count !== null ? t.foreground : t.dim).child(String(label)))
     .when(alert, el => el.child(div().size(5).rounded(3).bg(t.blocked)));
+}
+
+// Open state is monochrome: a foreground border and the hover fill.
+export function reportButton(t, open) {
+  return buttonCard(t, 'report', open ? 'Back to the code view' : 'Run report').w(REPORT_WIDTH).text_size(12)
+    .when(open, el => el.bg(t.hover).border_color(t.foreground))
+    .child(div().font_semibold().child('Report'));
 }
 
 export function openLinearKeySettings(cx) {

@@ -1,5 +1,5 @@
 import { spaces, panes, terminals, focused, shared, setShared, layout, run, exec, notify } from 'herdr';
-import { headsFrom, mergeHuds, gridFor, findNode, replaceNode, withStackActive, neighbor, zoomToggle } from './hub-model.js';
+import { headsFrom, mergeHuds, desiredChild, gridFor, findNode, replaceNode, withStackActive, neighbor, zoomToggle } from './hub-model.js';
 
 const plainLayout = () => JSON.parse(JSON.stringify(layout() ?? null));
 // Host arguments have a 16-level limit; send the layout as a CLI JSON string.
@@ -18,6 +18,7 @@ export default class Hub {
     this.cx = cx;
     this.snapshots = new Map(); this.heads = []; this.signature = '';
     this.zoomed = null; this.request = 0;
+    this.appliedChild = 'work-normal'; this.reportBeforeOpen = false;
     cx.timer.every(250, cx => this.sync(cx));
   }
   gridSignature() {
@@ -47,6 +48,13 @@ export default class Hub {
     this.hide(cx);
   }
   active() { return !!shared('hub.open'); }
+  wantChild() { return desiredChild(this.active(), shared('report.open') === true); }
+  // Single owner of work-stack selection: select the child and put the tab bar in the matching state.
+  showChild(child) {
+    run('layout.select', { stack: 'work-stack', child });
+    run(child === 'hub-view' ? 'layout.hide' : 'layout.show', { id: 'tabs' });
+    this.appliedChild = child;
+  }
   sync(cx) {
     if (this.closed) return;
     const hud = mergeHuds([...this.snapshots.values()]);
@@ -64,8 +72,16 @@ export default class Hub {
       this.focusTimer?.cancel(); this.pendingFocus = null;
     }
     // An in-flight write must re-read membership before selecting or focusing.
+    // The Report button only changes the wanted child, which the write picks up when it ends (no extra write).
     if (this.writing && this.gridSignature() !== this.writingSignature) this.request++;
-    if (!this.active()) return;
+    if (!this.active()) {
+      // hub.open can be cleared from outside (the Report button); drop pending work so it cannot reselect work-normal.
+      this.rebuildTimer?.cancel(); this.pendingSignature = null;
+      this.focusTimer?.cancel(); this.pendingFocus = null; this.zoomed = null;
+      // No layout write is pending, so report.open changes are applied here.
+      if (!this.writing && this.wantChild() !== this.appliedChild) this.showChild(this.wantChild());
+      return;
+    }
     const signature = this.gridSignature();
     if (signature === this.signature) {
       this.rebuildTimer?.cancel(); this.pendingSignature = null; return;
@@ -88,17 +104,19 @@ export default class Hub {
         do {
           applied = this.request;
           if (this.closed) break;
-          const open = this.active(), tree = plainLayout();
+          const tree = plainLayout();
           if (!findNode(tree, 'work-stack') || !findNode(tree, 'hub-grid')) throw new Error('Hub requires the cockpit work-stack layout.');
           const signature = this.gridSignature(), focusedAddress = this.focusedAddress;
           this.writingSignature = signature;
-          const next = withStackActive(replaceNode(tree, 'hub-grid', gridFor(this.heads, this.zoomed, focusedAddress)), 'work-stack', open ? 'hub-view' : 'work-normal');
+          const next = withStackActive(replaceNode(tree, 'hub-grid', gridFor(this.heads, this.zoomed, focusedAddress)), 'work-stack', this.wantChild());
           await setLayout(next);
+          this.opening = false;
           if (this.closed) break;
           if (applied !== this.request) continue;
           this.signature = signature; this.appliedFocus = focusedAddress;
-          run('layout.select', { stack: 'work-stack', child: open ? 'hub-view' : 'work-normal' });
-          run(open ? 'layout.hide' : 'layout.show', { id: 'tabs' });
+          // Flags may have changed while the write was in flight; select what they say now.
+          const child = this.wantChild(), open = child === 'hub-view';
+          this.showChild(child);
           if (open && this.focusAfter) run('pane.focus', { terminal: this.focusAfter });
           this.focusAfter = null;
           if (!open && this.sourceAfter) {
@@ -108,13 +126,19 @@ export default class Hub {
             run('pane.focus', { terminal: source.address });
           }
         } while (applied !== this.request);
-      } catch (error) { this.signature = ''; reportError(error); }
+      } catch (error) {
+        this.signature = ''; reportError(error);
+        // Only the first write of a closed-to-open transition rolls back; a failed rebuild of an open hub just retries.
+        if (this.opening && this.active()) { setShared('hub.open', false); setShared('report.open', this.reportBeforeOpen); this.zoomed = null; }
+        this.opening = false;
+      }
       finally { this.writing = false; cx.notify(); }
     });
   }
   open(cx, address) {
     if (this.closed) return;
-    setShared('hub.open', true); this.sync(cx);
+    if (!this.active()) { this.reportBeforeOpen = shared('report.open') === true; this.opening = true; }
+    setShared('hub.open', true); setShared('report.open', false); this.sync(cx);
     const target = this.heads.find(h => h.address === address)?.address
       ?? this.heads.find(h => h.address === focused()?.terminal)?.address ?? this.heads[0]?.address;
     if (target && this.zoomed && target !== this.zoomed) this.zoomed = null;
@@ -124,7 +148,7 @@ export default class Hub {
   hide(cx) {
     if (!this.active()) return;
     this.focusTimer?.cancel(); this.pendingFocus = null;
-    setShared('hub.open', false); this.zoomed = null;
+    setShared('hub.open', false); this.zoomed = null; this.opening = false;
     this.rebuildTimer?.cancel(); this.pendingSignature = null;
     this.apply(cx);
   }

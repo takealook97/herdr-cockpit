@@ -77,10 +77,12 @@ test('cockpit stacks hub and normal work; tab bar belongs only to normal work', 
   const layout = JSON.parse(readFileSync(new URL('../../layouts/cockpit.json', import.meta.url)));
   const stack = findNode(layout, 'work-stack');
   assert.equal(stack.active, 'work-normal');
-  assert.deepEqual(stack.children.map(n => n.id), ['work-normal', 'hub-view']);
+  assert.deepEqual(stack.children.map(n => n.id), ['work-normal', 'hub-view', 'report-view']);
   assert.ok(findNode(stack.children[0], 'tabs'));
   assert.equal(findNode(stack.children[1], 'tabs'), undefined);
   assert.ok(findNode(stack.children[1], 'hub-grid'));
+  assert.equal(findNode(stack.children[2], 'tabs'), undefined);
+  assert.equal(stack.children[2].content.mod, 'report-view');
 });
 
 test('focused address colors only the whole matching card', () => {

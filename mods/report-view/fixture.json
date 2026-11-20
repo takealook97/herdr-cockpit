@@ -1,0 +1,213 @@
+{
+  "run": {
+    "id": "20261120-101046-fe8959",
+    "mode": "full",
+    "status": "active",
+    "head_terminal": "t2h",
+    "created": "2026-11-20T10:10:46+09:00",
+    "ended": null,
+    "request": "Report 버튼과 report-view 추가"
+  },
+  "kpi": {
+    "items": 5,
+    "done": 2,
+    "failed": 1,
+    "other": 1,
+    "wall_seconds": 1500,
+    "work_seconds": 2260,
+    "retries": 1,
+    "fallbacks": 1
+  },
+  "acceptance": [
+    {
+      "n": 1,
+      "text": "JSON 스키마가 고정된다",
+      "state": "met"
+    },
+    {
+      "n": 2,
+      "text": "run 선택 순서를 따른다",
+      "state": "unmet"
+    },
+    {
+      "n": 3,
+      "text": "HTML 보고서를 연다",
+      "state": "unrecorded"
+    }
+  ],
+  "timeline": [
+    {
+      "name": "cockpit-report",
+      "kind": "pane",
+      "key": "claude-medium-m",
+      "role": "producer",
+      "status": "running",
+      "start_s": 60,
+      "end_s": null
+    },
+    {
+      "name": "orch-report",
+      "kind": "pane",
+      "key": "codex-high-m",
+      "role": "producer",
+      "status": "done",
+      "start_s": 30,
+      "end_s": 900
+    },
+    {
+      "name": "review-1",
+      "kind": "pane",
+      "key": "claude-high-m",
+      "role": "verifier",
+      "status": "failed",
+      "start_s": 920,
+      "end_s": 1010
+    },
+    {
+      "name": "go-test",
+      "kind": "test",
+      "key": "codex-low-h",
+      "role": "check",
+      "status": "done",
+      "start_s": 1020,
+      "end_s": 1020
+    },
+    {
+      "name": "lookup",
+      "kind": "ask",
+      "key": "codex-medium-m",
+      "role": "research",
+      "status": "other",
+      "start_s": null,
+      "end_s": null
+    }
+  ],
+  "by_key": [
+    {
+      "key": "codex-high-m",
+      "n": 1,
+      "seconds": 870
+    },
+    {
+      "key": "claude-medium-m",
+      "n": 1,
+      "seconds": 1440
+    }
+  ],
+  "markdown": "## 작업\n\n| 이름 | 종류 | 키 | 상태 | 소요 |\n|---|---|---|---|---|\n| orch-report | pane | codex-high-m | 완료 | 14m 30s |\n| review-1 | pane | claude-high-m | 실패 | 1m 30s |\n| cockpit-report | pane | claude-medium-m | 진행 중 | 24m 00s |\n\n## 수용 기준\n\n| 번호 | 기준 | 상태 |\n|---|---|---|\n| 1 | JSON 스키마가 고정된다 | 충족 |\n| 2 | run 선택 순서를 따른다 | 미충족 |\n| 3 | HTML 보고서를 연다 | 기록 없음 |\n",
+  "final": {
+    "present": true,
+    "title": "orch run 보고서 기능 (cockpit Report 토글 + 브라우저 HTML)",
+    "conclusion": "orch report 와 cockpit Report 버튼을 두 저장소에 넣고 이 Mac 에 다시 설치했습니다.\n\nHerdr 안에서 직접 눈으로 확인하는 일만 남았습니다. 두 저장소 모두 아직 커밋하지 않았습니다.",
+    "blocks": [
+      {
+        "kind": "list",
+        "title": "한 일",
+        "text": "",
+        "items": [
+          {
+            "text": "orch report: 기본은 report.md, --json, --html [--open] 을 고를 수 있습니다.",
+            "checked": false,
+            "level": ""
+          },
+          {
+            "text": "HTML 은 디핏 디자인시스템(f98b6ac) 기반이고 로고는 없습니다. 차트 두 개는 Go 가 SVG 로 그립니다.",
+            "checked": false,
+            "level": ""
+          },
+          {
+            "text": "cockpit 상단 바 순서를 계정 → 여백 → Linear → Report → system → 기어 로 바꿨습니다.",
+            "checked": false,
+            "level": ""
+          }
+        ],
+        "header": [],
+        "rows": []
+      },
+      {
+        "kind": "table",
+        "title": "검증",
+        "text": "리뷰는 작성자와 다른 계열이 맡았습니다.",
+        "items": [],
+        "header": [
+          "단계",
+          "모델",
+          "결과"
+        ],
+        "rows": [
+          [
+            "기계 검사",
+            "orch test",
+            "orch make test && go vet 통과, cockpit 376 통과"
+          ],
+          [
+            "비판 리뷰",
+            "codex-high-l",
+            "3회, 확인된 결함 고침"
+          ],
+          [
+            "중립 리뷰",
+            "gemini-medium-m",
+            "HTML 라이트·다크·인쇄 통과"
+          ]
+        ]
+      },
+      {
+        "kind": "risks",
+        "title": "남은 위험",
+        "text": "",
+        "items": [
+          {
+            "text": "Hub 를 확대하는 중에 Report 를 누르면 반영이 레이아웃 쓰기 한 번만큼 늦어집니다.",
+            "checked": false,
+            "level": "medium"
+          },
+          {
+            "text": "상단 바가 320px 까지 좁아지면 오른쪽 버튼이 약 34px 모자랍니다.",
+            "checked": false,
+            "level": "low"
+          },
+          {
+            "text": "등급 표시가 없는 위험 항목.",
+            "checked": false,
+            "level": ""
+          }
+        ],
+        "header": [],
+        "rows": []
+      },
+      {
+        "kind": "checklist",
+        "title": "확인할 것",
+        "text": "",
+        "items": [
+          {
+            "text": "Report 클릭으로 보고서 화면과 코드 화면이 오가는지",
+            "checked": false,
+            "level": ""
+          },
+          {
+            "text": "설정에서 Linear 를 끄면 Report 가 그 자리로 오는지",
+            "checked": true,
+            "level": ""
+          },
+          {
+            "text": "브라우저에서 보기",
+            "checked": false,
+            "level": ""
+          }
+        ],
+        "header": [],
+        "rows": []
+      },
+      {
+        "kind": "text",
+        "title": "메모",
+        "text": "자유 형식 문단입니다. *강조* 와 [링크](https://example.com) 가 들어 있습니다.",
+        "items": [],
+        "header": [],
+        "rows": []
+      }
+    ]
+  }
+}

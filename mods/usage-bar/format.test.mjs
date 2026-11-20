@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { pctColorRole, formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, cellWidth, labelWidth, hudCommand, hasCouponCell } from './format.js';
+import { pctColorRole, formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, cellWidth, labelWidth, hudCommand, hasCouponCell, barOrder, systemWidth, REPORT_WIDTH } from './format.js';
 test('HUD commands route arguments to the selected machine', () => {
   const args = ['usage', '--selected', 'a b'];
   assert.deepEqual(hudCommand('', args), ['sh', ['-c', 'exec "$HOME/.local/bin/herdr-hud" "$@"', 'hud', ...args], { on: undefined }]);
@@ -79,7 +79,7 @@ test('missing providers yield placeholders', () => {
 
 test('layout hides bars before account lines at compact widths', () => {
   const accounts = ['codex', 'claude', 'gemini'].map(provider => ({ provider }));
-  const fullWidth = 24 + 40 + 38 + 110 + 178 +
+  const fullWidth = 24 + 50 + 38 + 110 + REPORT_WIDTH + 178 +
     accounts.length * (labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8) + 20 + 2 * (cellWidth('coupon') + 8);
   assert.deepEqual(layoutMode(fullWidth, accounts), { bars: true, accountLine: true });
   assert.deepEqual(layoutMode(fullWidth - 1, accounts), { bars: false, accountLine: true });
@@ -91,7 +91,7 @@ test('Claude reserves the same coupon cell width as Codex, including placeholder
   assert.equal(hasCouponCell('codex'), true);
   assert.equal(hasCouponCell('claude'), true);
   assert.equal(hasCouponCell('gemini'), false);
-  const baseWidth = 24 + 40 + 38 + 110 + 178 + labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8;
+  const baseWidth = 24 + 50 + 38 + 110 + REPORT_WIDTH + 178 + labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8;
   const couponWidth = cellWidth('coupon') + 8;
   for (const provider of ['codex', 'claude']) {
     assert.deepEqual(layoutMode(baseWidth + couponWidth, [{ provider }]), { bars: true, accountLine: true });
@@ -105,15 +105,40 @@ test('layout excludes hidden provider, Linear and system cards from its threshol
   const visible = { codex: false, claude: true, gemini: false, linear: false, system: true };
   const usage = { accounts: [claude, gemini, codex] };
   assert.deepEqual(pickAccounts(usage, visible).map(account => account.provider), ['claude']);
-  const mixed = 24 + 30 + 38 + 178 + 96 + 96 + 52 + 8 + 16 + 2 + 8;
+  const mixed = 24 + 40 + 38 + REPORT_WIDTH + 178 + 96 + 96 + 52 + 8 + 16 + 2 + 8;
   const accounts = pickAccounts(usage);
   assert.deepEqual(layoutMode(mixed, accounts, visible), { bars: true, accountLine: true });
   assert.deepEqual(layoutMode(mixed - 1, accounts, visible), { bars: false, accountLine: true });
   assert.deepEqual(layoutMode(mixed - 68, accounts, visible), { bars: false, accountLine: true });
   assert.deepEqual(layoutMode(mixed - 69, accounts, visible), { bars: false, accountLine: false });
-  assert.deepEqual(layoutMode(320, accounts, { ...visible, system: false }), { bars: false, accountLine: true });
-  assert.deepEqual(layoutMode(320, accounts), { bars: false, accountLine: false });
+  // The always-visible Report button takes 92 px plus a gap, so 320 px no longer fits the account line.
+  assert.deepEqual(layoutMode(320, accounts, { ...visible, system: false }), { bars: false, accountLine: false });
+  assert.deepEqual(layoutMode(320, accounts), { bars: false, accountLine: false, compactSystem: true });
   const allHidden = { codex: false, claude: false, gemini: false, linear: false, system: false };
   assert.deepEqual(pickAccounts(usage, allHidden), []);
   assert.deepEqual(layoutMode(320, accounts, allHidden), { bars: true, accountLine: true });
+});
+
+test('bar order puts Report right after Linear and closes the gap when Linear is hidden', () => {
+  assert.deepEqual(barOrder(), ['groups', 'spacer', 'linear', 'report', 'system', 'gear']);
+  assert.deepEqual(barOrder({ linear: false }), ['groups', 'spacer', 'report', 'system', 'gear']);
+  assert.deepEqual(barOrder({ groups: false, linear: false, system: false }), ['spacer', 'report', 'gear']);
+});
+
+test('layoutMode counts only a Linear card that is actually shown and shrinks the system card last', () => {
+  const accounts = [{ provider: 'codex' }];
+  const base = { codex: true, claude: true, gemini: true, system: true };
+  // 582 px: with Linear counted the account line goes; without it the bars alone are enough to fit.
+  const withLinear = layoutMode(582, accounts, { ...base, linear: true });
+  const withoutLinear = layoutMode(582, accounts, { ...base, linear: false });
+  assert.ok(withLinear.accountLine === false || withLinear.bars === false);
+  assert.equal(withoutLinear.accountLine, true);
+  // 320 px: right-hand cards (Linear, Report, system, gear) do not fit with a full system card.
+  const narrow = layoutMode(320, accounts, { ...base, linear: true });
+  assert.deepEqual(narrow, { bars: false, accountLine: false, compactSystem: true });
+  assert.equal(systemWidth(false, true), systemWidth(false) - 60);
+  // A hidden system card is never compacted.
+  assert.equal(layoutMode(320, accounts, { ...base, linear: true, system: false }).compactSystem, undefined);
+  // Generous widths leave every flag alone.
+  assert.deepEqual(layoutMode(1400, accounts, { ...base, linear: true }), { bars: true, accountLine: true });
 });

@@ -42,6 +42,9 @@ export function mergeHuds(snapshots) {
   };
 }
 
+// work-stack child for the hub/report flags; hub wins because opening it clears report.open.
+export const desiredChild = (hubOpen, reportOpen) => hubOpen ? 'hub-view' : reportOpen ? 'report-view' : 'work-normal';
+
 export const gridShape = n => ({ rows: n <= 2 ? 1 : 2, cols: Math.ceil(n / (n <= 2 ? 1 : 2)) });
 export const zoomToggle = (zoom, address) => address && zoom !== address ? address : null;
 export function neighbor(heads, address, direction) {

@@ -36,32 +36,43 @@ export const cellWidth = label => label === 'coupon' ? 52 : 96;
 export const labelWidth = accountLine => accountLine ? 96 : 48;
 export const hasCouponCell = provider => provider === 'codex' || provider === 'claude';
 export const LINEAR_WIDTH = 110;
+export const REPORT_WIDTH = 92;
 export const GEAR_WIDTH = 38;
-export const systemWidth = bars => bars ? 178 : 142;
+// The detail column (RAM used/total) is the first thing to go when the right-hand cards still do not fit.
+const SYSTEM_DETAIL_WIDTH = 60;
+export const systemWidth = (bars, compact = false) => (bars ? 178 : 142) - (compact ? SYSTEM_DETAIL_WIDTH : 0);
 const PROVIDER_GAP = 10;
+
+// Left to right: provider cards, spacer, Linear (when shown), Report, system card, gear.
+export function barOrder({ groups = true, linear = true, system = true } = {}) {
+  return [groups && 'groups', 'spacer', linear && 'linear', 'report', system && 'system', 'gear'].filter(Boolean);
+}
 
 export function barSpacing(width) {
   // Keep the right-hand cards visible at 320px even with all providers shown.
   return width < 354 ? { padding: 6, gap: 4 } : { padding: 12, gap: 10 };
 }
 
+// `visible.linear` must say whether the Linear card is actually on screen (not just enabled).
+// Shrink order: progress bars, account line, then the system card's detail column.
 export function layoutMode(width, accounts, visible) {
   const mode = { bars: true, accountLine: true };
   const providers = accounts.filter(account => visible?.[account.provider] !== false);
   const showLinear = visible?.linear !== false;
   const showSystem = visible?.system !== false;
   const { padding, gap } = barSpacing(width);
-  // Count gaps after the spacer and between the right-hand cards.
-  const outer = padding * 2 + gap * (1 + Number(showLinear) + Number(showSystem) + Number(providers.length > 0));
-  const fixed = outer + GEAR_WIDTH + (showLinear ? LINEAR_WIDTH : 0);
+  // Count gaps after the spacer and between the right-hand cards. Report is always shown.
+  const outer = padding * 2 + gap * (2 + Number(showLinear) + Number(showSystem) + Number(providers.length > 0));
+  const fixed = outer + GEAR_WIDTH + REPORT_WIDTH + (showLinear ? LINEAR_WIDTH : 0);
   const providerGaps = Math.max(0, providers.length - 1) * PROVIDER_GAP;
   const needed = () => {
     const weekly = cellWidth('weekly') - (mode.bars ? 0 : 32);
     return providers.reduce((sum, account) => sum + labelWidth(mode.accountLine) + weekly +
       (hasCouponCell(account.provider) ? cellWidth('coupon') + 8 : 0) + 16 + 2 + 8,
-    fixed + providerGaps + (showSystem ? systemWidth(mode.bars) : 0));
+    fixed + providerGaps + (showSystem ? systemWidth(mode.bars, mode.compactSystem) : 0));
   };
   if (width < needed()) mode.bars = false;
   if (width < needed()) mode.accountLine = false;
+  if (showSystem && width < needed()) mode.compactSystem = true;
   return mode;
 }

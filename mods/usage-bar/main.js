@@ -1,8 +1,8 @@
 import { View } from 'gpui-kit';
 import { h_flex, v_flex, InputState } from 'gpui-base';
-import { exec, spaces, agents, theme, props, shared, setShared } from 'herdr';
-import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell, barSpacing, LINEAR_WIDTH, GEAR_WIDTH, systemWidth } from './format.js';
-import { cell, groupLabel, systemRow, iconButton, linearButton } from './ui.js';
+import { exec, spaces, agents, theme, props, shared, setShared, run } from 'herdr';
+import { formatReset, formatCouponExpiry, formatBytes, pickAccounts, layoutMode, hudCommand, hasCouponCell, barSpacing, barOrder, LINEAR_WIDTH, REPORT_WIDTH, GEAR_WIDTH, systemWidth } from './format.js';
+import { cell, groupLabel, systemRow, iconButton, linearButton, reportButton } from './ui.js';
 import { readVisible, toggleVisible } from './prefs.js';
 import { badgeState, seenAccount, seenIds, unreadIds, nextSeen } from './linear.js';
 import { LinearDetails } from './linear-detail.js';
@@ -16,6 +16,8 @@ const LINEAR_SEEN = 'usage-bar.linear-seen';
 const LINEAR_POLL_MS = 30 * 60 * 1000;
 const LINEAR_STATUS_RETRY_MS = 60 * 1000;
 const VISIBLE_KEY = 'usage-bar.visible';
+const REPORT_OPEN = 'report.open';
+const HUB_OPEN = 'hub.open';
 const linearRevision = (key = LINEAR_REV) => {
   const value = shared(key);
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
@@ -345,6 +347,14 @@ export default class UsageBar extends View {
       });
   }
 
+  // Only flags change here; the Hub controller owns work-stack selection and the tab bar (D16).
+  toggleReport(cx) {
+    const opening = shared(REPORT_OPEN) !== true;
+    if (opening) setShared(HUB_OPEN, false);
+    setShared(REPORT_OPEN, opening);
+    cx.notify();
+  }
+
   context() {
     const active = spaces().find(space => space.active);
     const statuses = agents().filter(agent => agent.space === active?.id && !agent.address.includes('/'))
@@ -460,16 +470,17 @@ export default class UsageBar extends View {
     const visible = readVisible(shared(VISIBLE_KEY));
     this.observeLinear(visible.linear, cx);
     const accounts = pickAccounts(state.usage, visible);
-    const mode = layoutMode(this.width, accounts, visible);
     const { padding, gap } = barSpacing(this.width);
     const { status, issues, issueError, seenAccount: account } = linearTargetChanged ? {} : this.linearSnapshot();
     const disconnected = ['not_connected', 'expired'].includes(issues?.error);
     const connected = disconnected ? false : (issues?.source ? true : status?.connected);
     const expired = issues?.error === 'expired' || status?.error === 'expired';
     const showLinear = visible.linear && (connected === true || expired);
-    const rightWidth = GEAR_WIDTH + (showLinear ? LINEAR_WIDTH : 0) + (visible.system ? systemWidth(mode.bars) : 0);
+    // Shrink decisions use what is really on screen, so a hidden Linear card costs no width.
+    const mode = layoutMode(this.width, accounts, { ...visible, linear: showLinear });
+    const rightWidth = GEAR_WIDTH + REPORT_WIDTH + (showLinear ? LINEAR_WIDTH : 0) + (visible.system ? systemWidth(mode.bars, mode.compactSystem) : 0);
     const providerRoom = this.width - 2 * padding - rightWidth -
-      gap * (2 + Number(showLinear) + Number(visible.system));
+      gap * (3 + Number(showLinear) + Number(visible.system));
     const group = id => h_flex().id(id).h(38).items_center().flex_none().px(8).gap(6)
       .rounded(6).bg(t.chrome).border(1).border_color(t.muted + "66").cursor_pointer()
       .tooltip('Click to refresh usage')
@@ -480,8 +491,8 @@ export default class UsageBar extends View {
     const detail = total > 0 ? `${formatBytes(used).replace(/G$/, '')}/${formatBytes(total)}` : '';
     const system = group('system').child(v_flex().justify_center().gap(1)
       .opacity(state.stale.sys ? 0.6 : 1)
-      .child(systemRow(t, 'CPU', cpu, '', !mode.bars))
-      .child(systemRow(t, 'RAM', memory, detail, !mode.bars)));
+      .child(systemRow(t, 'CPU', cpu, '', !mode.bars, mode.compactSystem))
+      .child(systemRow(t, 'RAM', memory, detail, !mode.bars, mode.compactSystem)));
     const groups = [];
     for (const account of accounts) {
       const stale = account.stale || !!account.error || state.stale.usage;
@@ -509,15 +520,23 @@ export default class UsageBar extends View {
       stale: !!(issues?.stale || issueError),
     }), 'linear');
     const gear = this.popupButton(iconButton(t, 'gear', '⚙︎', 'Top bar settings'), 'settings');
-    return h_flex().id('root').size_full().min_w(0).px(padding).gap(gap).items_center()
+    const report = reportButton(t, shared(REPORT_OPEN) === true).on_click((_event, cx) => this.toggleReport(cx));
+    const parts = {
+      groups: () => h_flex().id('groups').min_w(0).max_w(Math.max(0, providerRoom))
+        .overflow_hidden().items_center().gap(10).children(groups),
+      spacer: () => h_flex().flex_1().min_w(0),
+      linear: () => linear.min_w(0).flex_shrink(1).overflow_hidden(),
+      report: () => report,
+      system: () => system.min_w(0).flex_shrink(1).overflow_hidden(),
+      gear: () => gear,
+    };
+    const root = h_flex().id('root').size_full().min_w(0).px(padding).gap(gap).items_center()
       .bg(t.chrome).border_b(1).border_color(t.border)
-      .on_size_change((size, cx) => { if (this.width !== size.width) { this.width = size.width; cx.notify(); } })
-      .when(groups.length > 0, el => el.child(h_flex().id('groups').min_w(0).max_w(Math.max(0, providerRoom))
-        .overflow_hidden().items_center().gap(10).children(groups)))
-      .child(h_flex().flex_1().min_w(0))
-      .when(showLinear, el => el.child(linear.min_w(0).flex_shrink(1).overflow_hidden()))
-      .when(visible.system, el => el.child(system.min_w(0).flex_shrink(1).overflow_hidden()))
-      .child(gear);
+      .on_size_change((size, cx) => { if (this.width !== size.width) { this.width = size.width; cx.notify(); } });
+    for (const id of barOrder({ groups: groups.length > 0, linear: showLinear, system: visible.system })) {
+      root.child(parts[id]());
+    }
+    return root;
   }
 }
 

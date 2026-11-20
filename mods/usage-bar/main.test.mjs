@@ -44,7 +44,7 @@ const controls = kind => ({ new: id => element(kind).id(id) });
 const evaluate = (filename, deps, result) =>
   new Function(...Object.keys(deps), `${source(filename)}; return ${result};`)(...Object.values(deps));
 const ui = evaluate('./ui.js', { div, h_flex, v_flex, Button: controls('button'), ...format },
-  '{cell, groupLabel, systemRow, iconButton, linearButton, openLinearKeySettings}');
+  '{cell, groupLabel, systemRow, iconButton, linearButton, reportButton, openLinearKeySettings}');
 const walk = node => typeof node === 'object' ? [node, ...node.nodes.flatMap(walk)] : [node];
 const text = node => walk(node).filter(value => typeof value === 'string');
 const byID = (node, id) => walk(node).find(value => value?.style?.id === id);
@@ -77,7 +77,7 @@ function harness({ panel, machine, popupMachine, store = new Map(), initialRespo
   };
   const popupProps = panel ? { panel, overlay: panel + '-overlay', machine: popupMachine } : {};
   const calls = [], tasks = [], timers = [], intervals = [];
-  const overlays = [], closed = [], urls = [], writes = [];
+  const overlays = [], closed = [], urls = [], writes = [], runs = [];
   const fallback = args => args[1] === 'linear' ? reply(args[2] === 'status' ? statusReply : issuesReply)
     : reply(args[1] === 'sys' ? fixture.sys : fixture.usage);
   let respond = initialResponse ?? fallback;
@@ -107,14 +107,14 @@ function harness({ panel, machine, popupMachine, store = new Map(), initialRespo
     },
     spaces: () => state.spaces, panes: () => state.panes, agents: () => state.agents,
     theme: () => new Proxy({}, { get: (_obj, prop) => prop }), ...format, ...ui, ...prefs, ...linear,
-    props: () => popupProps,
+    props: () => popupProps, run: (name, args) => { runs.push([name, args]); return null; },
     openOverlay: spec => overlays.push(spec), closeOverlay: id => closed.push(id),
     shared: key => store.get(key), setShared: (key, value) => { store.set(key, value); writes.push(key); } };
   const panels = evaluate('./panels.js', deps, '{linearPanel, settingsPanel, openPanel}');
   const UsageBar = evaluate('./main.js', { ...deps, ...panels }, 'UsageBar');
   const view = new UsageBar();
   view.init({}, cx);
-  return { view, cx, state, popupProps, calls, timers, intervals, overlays, closed, urls, store, writes, fallback,
+  return { view, cx, state, popupProps, calls, timers, intervals, overlays, closed, urls, store, writes, runs, fallback,
     stopped: () => stopped,
     respond(fn) { respond = fn; },
     async flush() { while (tasks.length) await Promise.all(tasks.splice(0)); },
@@ -135,10 +135,10 @@ test('poll intervals and selected account arguments', async () => {
 });
 
 test('provider cards show compact weekly usage, coupon text and stale opacity', async () => {
-  const h = harness(); await h.flush();
+  const h = harness(); await h.flush(); h.view.width = 1400; // Report widens the full layout past the 1200 default
   const tree = h.view.render(h.cx), labels = text(tree);
   assert.deepEqual(byID(tree, 'groups').nodes.map(node => node.style.id), ['account-codex', 'account-claude', 'account-gemini']);
-  assert.deepEqual(tree.nodes.map(node => node.style.id), ['groups', undefined, 'linear', 'system', 'gear']);
+  assert.deepEqual(tree.nodes.map(node => node.style.id), ['groups', undefined, 'linear', 'report', 'system', 'gear']);
   assert.ok(['codex', 'claude', 'gemini', '2 resets', 'work'].every(label => labels.includes(label)));
   assert.ok(!labels.some(label => /5h|Week|max|prolite|default|⚠|🎟|@/.test(label)));
   const codex = byID(tree, 'account-codex');
@@ -149,7 +149,7 @@ test('provider cards show compact weekly usage, coupon text and stale opacity', 
   assert.ok(!text(byID(tree, 'account-gemini')).some(label => label.includes('resets')));
   assert.equal(byID(tree, 'account-gemini').nodes[0].nodes[0].nodes.length, 1);
   assert.ok(walk(tree).some(node => node?.style?.w === 28 && node?.style?.h === 2));
-  const fullWidth = 24 + 40 + 38 + 110 + 178 +
+  const fullWidth = 24 + 50 + 38 + 110 + format.REPORT_WIDTH + 178 +
     3 * (format.labelWidth(true) + format.cellWidth('weekly') + 16 + 2 + 8) + 20 + 2 * (format.cellWidth('coupon') + 8);
   h.view.width = fullWidth - 1;
   assert.ok(!walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
@@ -256,12 +256,12 @@ test('settings switches apply immediately and persist across bar instances', asy
   }
   assert.deepEqual(settings.store.get('usage-bar.visible'),
     { codex: false, claude: false, gemini: false, linear: false, system: false });
-  assert.deepEqual(bar.view.render(bar.cx).nodes.map(node => node.style.id), [undefined, 'gear']);
+  assert.deepEqual(bar.view.render(bar.cx).nodes.map(node => node.style.id), [undefined, 'report', 'gear']);
   assert.equal(byID(settings.view.render(settings.cx), 'visible-codex').style.checked, false);
 
   const restarted = harness({ store: settings.store });
   await restarted.flush();
-  assert.deepEqual(restarted.view.render(restarted.cx).nodes.map(node => node.style.id), [undefined, 'gear']);
+  assert.deepEqual(restarted.view.render(restarted.cx).nodes.map(node => node.style.id), [undefined, 'report', 'gear']);
   const startup = [['status'], ['issues', '--max-age', '60s']];
   assert.deepEqual(linearCalls(restarted), []);
   restarted.intervals.find(job => job.ms === 1800000).fn(restarted.cx);
@@ -354,9 +354,11 @@ test('right-hand cards fit at 320 pixels, with providers clipped inside their gr
   const groups = byID(tree, 'groups');
   assert.equal(groups.style.min_w, 0);
   assert.equal(groups.style.overflow_hidden.length, 0);
-  assert.equal(groups.style.max_w, 2);
+  // Report's 92 px and its gap leave the providers no room at 320 px; the right-hand cards stay whole.
+  assert.equal(groups.style.max_w, 0);
   assert.equal(byID(tree, 'gear').style.w, 38);
-  assert.deepEqual(tree.nodes.slice(-3).map(node => node.style.id), ['linear', 'system', 'gear']);
+  assert.equal(byID(tree, 'report').style.w, format.REPORT_WIDTH);
+  assert.deepEqual(tree.nodes.slice(-4).map(node => node.style.id), ['linear', 'report', 'system', 'gear']);
 });
 
 test('bar buttons open popups at the mouse anchor and omit it for keyboard activation', async () => {
@@ -454,7 +456,7 @@ test('hiding Linear gives provider cards the button width and gap', async () => 
     return args[2] === 'status' ? reply(disconnectedStatus) : unavailable;
   } });
   await Promise.all([connected.flush(), disconnected.flush()]);
-  for (const bar of [connected, disconnected]) bar.view.width = 900;
+  for (const bar of [connected, disconnected]) bar.view.width = 1400;
   const shown = connected.view.render(connected.cx);
   const hidden = disconnected.view.render(disconnected.cx);
   assert.ok(byID(shown, 'linear'));
@@ -1577,4 +1579,53 @@ test('account revision drops a pending detail and invalidates the popup cache', 
   assert.ok(text(render()).includes('Second account'));
   assert.deepEqual(linearCalls(h).filter(([kind]) => kind === 'issue'),
     [['issue', 'TEST-1'], ['issue', 'TEST-2'], ['issue', 'TEST-1']]);
+});
+
+const barIDs = root => root.nodes.map(node => node?.style?.id).filter(Boolean);
+
+test('Report sits right after Linear and takes its place when Linear is hidden', async () => {
+  const connected = harness();
+  const disconnected = harness({ initialResponse: args => {
+    if (args[1] !== 'linear') return reply(fixture[args[1]]);
+    return args[2] === 'status' ? reply(disconnectedStatus) : unavailable;
+  } });
+  await Promise.all([connected.flush(), disconnected.flush()]);
+  for (const bar of [connected, disconnected]) bar.view.width = 900;
+  assert.deepEqual(barIDs(connected.view.render(connected.cx)), ['groups', 'linear', 'report', 'system', 'gear']);
+  assert.deepEqual(barIDs(disconnected.view.render(disconnected.cx)), ['groups', 'report', 'system', 'gear']);
+});
+
+test('provider room reserves the Report width and one extra gap', async () => {
+  const bar = harness(); await bar.flush(); bar.view.width = 900;
+  const { padding, gap } = format.barSpacing(900);
+  const root = bar.view.render(bar.cx);
+  const mode = format.layoutMode(900, format.pickAccounts(fixture.usage), { linear: true });
+  const right = format.GEAR_WIDTH + format.REPORT_WIDTH + format.LINEAR_WIDTH + format.systemWidth(mode.bars, mode.compactSystem);
+  assert.equal(byID(root, 'groups').style.max_w, 900 - 2 * padding - right - gap * 5);
+});
+
+test('the Report button only flips shared flags and highlights while open', async () => {
+  const bar = harness(); await bar.flush();
+  const reportNode = () => byID(bar.view.render(bar.cx), 'report');
+  assert.equal(reportNode().style.bg, 'chrome');
+  reportNode().style.on_click({}, bar.cx);
+  assert.deepEqual(bar.runs, []);
+  assert.equal(bar.store.get('report.open'), true);
+  assert.equal(reportNode().style.bg, 'hover');
+  assert.equal(reportNode().style.border_color, 'foreground');
+  reportNode().style.on_click({}, bar.cx);
+  assert.deepEqual(bar.runs, []);
+  assert.equal(bar.store.get('report.open'), false);
+  assert.equal(reportNode().style.bg, 'chrome');
+});
+
+test('opening Report while hub is open clears hub.open and leaves layout calls to the Hub controller', async () => {
+  const bar = harness(); await bar.flush();
+  bar.store.set('hub.open', true);
+  byID(bar.view.render(bar.cx), 'report').style.on_click({}, bar.cx);
+  assert.equal(bar.store.get('hub.open'), false);
+  assert.equal(bar.store.get('report.open'), true);
+  byID(bar.view.render(bar.cx), 'report').style.on_click({}, bar.cx);
+  assert.equal(bar.store.get('report.open'), false);
+  assert.deepEqual(bar.runs, []);
 });

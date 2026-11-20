@@ -73,6 +73,12 @@ Herdr renders the original interactive terminals in native-style cards, with a p
 
 Hub shows eligible Heads across all spaces and tabs on the current PC. Remote Heads never appear, even when a remote space is selected. Heads exclude orch workers and legacy observers. Space-tree polls each machine's helper every three seconds for sidebar metadata and rebuilds changed grid membership after a 500 ms debounce. Failed polls retain the last known metadata. Hub requires cockpit's `work-stack` layout and uses the Herdr CLI to write the grid, avoiding the mod host's argument nesting limit.
 
+## report
+
+Click **Report** in the top bar, right after Linear (or in Linear's place when Linear is hidden), to swap the work area for the run report of the current Head. Click it again to return to the code view; the button stays highlighted while the report is open. Opening it from hub closes hub first, and opening hub from the report returns to hub.
+
+The report shows the run's summary, key figures, a timeline of workers and tasks with their status spelled out in words, and the report tables, scrollable. It reads `orch report --for-terminal <Head terminal> --json` every five seconds, only while it is on screen. If a read fails, the last data stays and a one-line error appears above it. **브라우저에서 보기** runs `orch report --run <id> --html --open`. It needs `orch` on the mod host's login-shell `PATH`.
+
 ## Themes
 
 `themes/` ships three Herdr themes: `styx` (very dark blue-black), `asphodel` (muted grey-green dark) and `elysium` (warm paper light with a soft gold accent). `scripts/install.sh` copies them into the app's `themes/` folder, refusing to overwrite a different file of the same name unless `--force` is given. Pick one from the theme menu, with `app.theme {name}`, or set a layout's root `theme`. Contrast ratios and details are in [themes/README.md](themes/README.md).
