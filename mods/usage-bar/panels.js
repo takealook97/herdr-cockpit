@@ -2,7 +2,7 @@ import { div } from 'gpui-kit';
 import { h_flex, v_flex, Switch, Input } from 'gpui-base';
 import { props, shared, setShared, theme, closeOverlay, openOverlay, spaces } from 'herdr';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, groupType, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, errorText, statusLine } from './linear.js';
+import { groupIssues, groupType, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, errorText, actionErrorText, statusLine } from './linear.js';
 import { openLinearKeySettings } from './ui.js';
 
 const PANEL_WIDTH = { linear: 440, settings: 320 };
@@ -82,16 +82,30 @@ function duePill(t, due) {
     .text_color(color).bg(due.tone === 'dim' ? t.raised : color + '26').child(due.text);
 }
 
-function issueRow(t, issue, now, view, expanded, unread) {
+function issueRow(t, issue, now, view, expanded, unread, pending) {
   const due = dueBadge(issue.due_date, now);
   const project = projectShort(issue.project);
   const title = div().min_w(0).truncate().child(issue.title);
+  const complete = h_flex().id('complete-' + issue.identifier).size(18).flex_none()
+    .items_center().justify_center().rounded(4);
+  if (pending) {
+    complete.text_size(11).text_color(t.dim).child('✓');
+  } else {
+    complete.child(statusMark(t, groupType(issue))).cursor_pointer().tooltip('Mark as Done')
+      .accessibility_label('Mark ' + issue.identifier + ' as Done').hover(s => s.bg(t.hover))
+      .on_click((_event, cx) => {
+        cx.stop_propagation();
+        view.completeLinearIssue(issue.identifier, cx);
+      });
+  }
   const row = h_flex().id('issue-' + issue.identifier).flex_none().items_center()
-    .px(6).gap(8).rounded(4).cursor_pointer()
+    .px(6).gap(8).rounded(4)
     .when(expanded, el => el.bg(t.raised))
-    .when(!expanded, el => el.hover(s => s.bg(t.hover)))
-    .on_click((_event, cx) => view.toggleLinearDetail(issue.identifier, cx))
+    .when(!expanded && !pending, el => el.hover(s => s.bg(t.hover)))
+    .when(!pending, el => el.cursor_pointer()
+      .on_click((_event, cx) => view.toggleLinearDetail(issue.identifier, cx)))
     .child(div().size(6).flex_none().rounded(3).when(unread, el => el.bg(t.accent)))
+    .child(complete)
     .child(priorityBox(t, issue))
     .child(div().w(58).flex_none().text_size(11).text_color(t.dim).child(issue.identifier));
   if (project) {
@@ -106,7 +120,7 @@ function issueRow(t, issue, now, view, expanded, unread) {
 
 function issueDetail(t, identifier, group, data, now) {
   const block = v_flex().id('issue-detail-' + identifier).w_full().min_w(0)
-    .pl(108).pr(6).pt(4).pb(8).gap(5);
+    .pl(134).pr(6).pt(4).pb(8).gap(5);
   if (!data) return block.child(div().text_color(t.dim).child('Loading…'));
   if (data.error) return block.child(div().text_color(t.blocked).child(errorText(data.error)));
 
@@ -132,7 +146,7 @@ function issueDetail(t, identifier, group, data, now) {
 
 export function linearPanel(view) {
   const t = theme(), now = new Date();
-  const { issues: snapshot, status, issueError, statusError, details, unread } = view.linearSnapshot();
+  const { issues: snapshot, status, issueError, statusError, details, unread, pending, undo, note } = view.linearSnapshot();
   const org = status?.org;
   const matchingOrg = !snapshot || (snapshot.source === status?.source &&
     (!snapshot.org_url || snapshot.org_url === org?.url));
@@ -150,6 +164,13 @@ export function linearPanel(view) {
       .child(div().flex_1())
       .child(headerButton(t, 'linear-refresh', '↻', 'Refresh', (_event, cx) => view.readLinear('issues', cx, { refresh: true }))))
     .child(div().w_full().h(1).flex_none().bg(t.border));
+
+  if (undo) root.child(h_flex().min_w(0).items_center().gap(6)
+    .child(div().min_w(0).truncate().child(`Marked ${undo.identifier} as ${undo.status || 'Done'}`))
+    .child(div().flex_1())
+    .child(action(t, 'linear-undo', 'Undo', (_event, cx) => view.undoLinearComplete(cx))));
+  if (note) root.child(div().text_color(t.blocked)
+    .child(`Couldn't update ${note.identifier}: ${actionErrorText(note.error)}`));
 
   if (error === 'not_connected') return root.child(action(t, 'linear-settings', errorText(error), () => {
     dismiss();
@@ -171,7 +192,7 @@ export function linearPanel(view) {
         .child(div().flex_none().text_color(t.dim).child(String(group.issues.length))))
       .children(group.issues.flatMap(issue => {
         const expanded = details?.expanded === issue.identifier;
-        const row = issueRow(t, issue, now, view, expanded, unread?.has(issue.identifier) ?? false);
+        const row = issueRow(t, issue, now, view, expanded, unread?.has(issue.identifier), pending?.has(issue.identifier));
         return expanded ? [row, issueDetail(t, issue.identifier, group, details.data, now)] : [row];
       })))));
 }

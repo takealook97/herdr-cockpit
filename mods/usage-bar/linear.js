@@ -134,6 +134,7 @@ export function plainDescription(md, max = 1500) {
 }
 
 const errors = new Map([
+  ['no_done_state', 'No Done status in this team'],
   ['not_connected', 'Connect Linear in settings'],
   ['expired', 'Claude Code Linear session expired — use Linear in Claude Code once, or add an API key'],
   ['forbidden', 'Linear denied access'],
@@ -146,6 +147,10 @@ const errors = new Map([
 
 export function errorText(code) {
   return errors.get(code) ?? "Couldn't load Linear issues";
+}
+
+export function actionErrorText(code) {
+  return code === 'forbidden' ? 'Linear denied the change — the API key may be read-only' : errorText(code);
 }
 
 export function statusLine(status, now = new Date()) {
