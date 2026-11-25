@@ -16,6 +16,8 @@ The active space selects the machine. Provider cards use `usage --selected`, fol
 
 Linear follows the active space's machine and uses no AI tokens. A machine switch clears the bar's Linear snapshot and reloads status and issues when the Linear switch is on. The bar polls issues every 30 minutes while the switch is on. While the connection is unknown, the bar re-checks status every minute. Both popups keep the machine selected when they open. The dropdown fetches issues if the cache is older than one minute. Refresh requests an immediate fetch. Clicking a row expands its details inline. Detail responses are cached for 60 seconds in the popup and cleared on refresh or account change. A fetch error dims any stale issues returned for the current credential. Each connect or disconnect attempt invalidates every view's saved issues and connection status. The settings popup saves card visibility, shows connection status and the remote machine name, and accepts a key through a masked input. Disconnect is available for a saved API key. Esc closes either popup.
 
+Click a row’s status mark to move it to Done, or use **Undo** to restore the previous status. The target machine runs `herdr-hud linear complete <ID>` and `herdr-hud linear restore <ID> <token>` with the token from complete. The helper writes through GraphQL for API keys or `save_issue` for Claude Code Linear MCP. It clears the issue cache on success. A read-only API key can return `forbidden`.
+
 The Linear switch requires a confirmed connection on the active machine to turn on and can always turn off. A successful API key connection reveals the Linear button if the target machine is still active.
 
 ## Built from

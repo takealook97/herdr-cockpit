@@ -280,7 +280,7 @@ func (s *mcpSession) tools(ctx context.Context) (map[string]mcpTool, error) {
 	return tools, nil
 }
 
-// callTool returns the JSON document carried in the tool result's text content.
+// callTool returns the JSON carried in a read result. save_issue callers verify the issue with a separate read.
 func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]any) (json.RawMessage, error) {
 	result, err := s.call(ctx, "tools/call", map[string]any{"name": name, "arguments": args})
 	if err != nil {
@@ -297,7 +297,8 @@ func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]
 	if json.Unmarshal(result, &body) != nil {
 		return nil, linearError(linearErrBadResponse)
 	}
-	if body.IsError && name != "get_issue" {
+	issueTool := name == "get_issue" || name == "save_issue"
+	if body.IsError && !issueTool {
 		return nil, linearError(linearErrBadResponse)
 	}
 	for _, item := range body.Content {
@@ -305,20 +306,23 @@ func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]
 		if item.Type != "text" {
 			continue
 		}
-		if name == "get_issue" && !strings.HasPrefix(text, "{") {
+		if issueTool && !strings.HasPrefix(text, "{") {
 			message := strings.TrimSpace(strings.TrimPrefix(strings.ToLower(text), "error:"))
 			switch {
 			case linearMCPAuthError.MatchString(message):
 				return nil, linearError(linearErrExpired)
 			case linearMCPForbiddenError.MatchString(message):
 				return nil, linearError(linearErrForbidden)
-			case linearIssueMissing(message), !body.IsError && text == "null":
+			case linearIssueMissing(message), name == "get_issue" && !body.IsError && text == "null":
 				return nil, linearError(linearErrNotFound)
 			}
 		}
 		if !body.IsError && strings.HasPrefix(text, "{") && json.Valid([]byte(text)) {
 			return json.RawMessage(text), nil
 		}
+	}
+	if !body.IsError && name == "save_issue" {
+		return nil, nil
 	}
 	if !body.IsError && len(body.Structured) > 0 && body.Structured[0] == '{' {
 		return body.Structured, nil
@@ -499,6 +503,10 @@ func linearMCPIssue(ctx context.Context, cred linearCred, identifier string) (li
 	if !ok || tool.InputSchema.Properties["id"] == nil {
 		return linearIssueDetail{}, linearError(linearErrBadResponse)
 	}
+	return s.readIssue(ctx, identifier)
+}
+
+func (s *mcpSession) readIssue(ctx context.Context, identifier string) (linearIssueDetail, error) {
 	raw, err := s.callTool(ctx, "get_issue", map[string]any{"id": identifier})
 	if err != nil {
 		return linearIssueDetail{}, err

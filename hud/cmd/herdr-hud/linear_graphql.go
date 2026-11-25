@@ -38,6 +38,13 @@ func (e linearGraphQLError) isAuth() bool {
 	return strings.Contains(text, "authentication")
 }
 
+func (e linearGraphQLError) isForbidden() bool {
+	message := strings.ToLower(e.Message)
+	return strings.EqualFold(e.Extensions.Code, "FORBIDDEN") ||
+		strings.Contains(message, "forbidden") || strings.Contains(message, "permission") ||
+		strings.Contains(message, "scope") || strings.Contains(message, "not allowed")
+}
+
 // linearGraphQL posts one query. HTTP 401 and authentication errors in the
 // errors envelope map to invalid_key. Issue detail also recognizes missing entities.
 func linearGraphQL(ctx context.Context, key, query string, variables map[string]any, out any) error {
@@ -80,7 +87,15 @@ func linearGraphQL(ctx context.Context, key, query string, variables map[string]
 	case resp.StatusCode >= 500:
 		return linearError(linearErrNetwork)
 	}
-	if parsed && query == linearIssueQuery {
+	stateChange := query == linearCompleteQuery || query == linearUpdateStateMutation
+	if parsed && stateChange {
+		for _, e := range envelope.Errors {
+			if e.isForbidden() {
+				return linearError(linearErrForbidden)
+			}
+		}
+	}
+	if parsed && (query == linearIssueQuery || stateChange) {
 		for _, e := range envelope.Errors {
 			code := strings.ToUpper(e.Extensions.Code)
 			if code == "ENTITY_NOT_FOUND" || code == "ISSUE_NOT_FOUND" || linearIssueMissing(e.Message) {
