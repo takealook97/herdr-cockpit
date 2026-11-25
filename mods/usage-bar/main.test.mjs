@@ -152,9 +152,12 @@ test('provider cards show compact weekly usage, coupon text and stale opacity', 
   const fullWidth = 24 + 50 + 38 + 110 + format.REPORT_WIDTH + 178 +
     3 * (format.labelWidth(true) + format.cellWidth('weekly') + 16 + 2 + 8) + 20 + 2 * (format.cellWidth('coupon') + 8);
   h.view.width = fullWidth - 1;
-  assert.ok(!walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
-  h.view.width = fullWidth - (36 + 3 * 32) - 1;
+  assert.ok(walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
+  h.view.width = fullWidth - 61;
   assert.ok(!text(h.view.render(h.cx)).includes('work'));
+  assert.ok(walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
+  h.view.width = fullWidth - 60 - 3 * 48 - 1;
+  assert.ok(!walk(h.view.render(h.cx)).some(node => node?.style?.w === 28 && node?.style?.h === 2));
   h.view.byMachine[''].usage.accounts[0].weekly = null;
   h.view.byMachine[''].usage.accounts[0].coupons = undefined;
   const missing = byID(h.view.render(h.cx), 'account-codex').nodes[0];

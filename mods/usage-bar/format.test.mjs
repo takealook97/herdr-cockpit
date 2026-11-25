@@ -77,13 +77,14 @@ test('missing providers yield placeholders', () => {
   assert.equal(picked[2].label, '');
 });
 
-test('layout hides bars before account lines at compact widths', () => {
+test('layout hides system detail, account lines, then bars at compact widths', () => {
   const accounts = ['codex', 'claude', 'gemini'].map(provider => ({ provider }));
   const fullWidth = 24 + 50 + 38 + 110 + REPORT_WIDTH + 178 +
     accounts.length * (labelWidth(true) + cellWidth('weekly') + 16 + 2 + 8) + 20 + 2 * (cellWidth('coupon') + 8);
   assert.deepEqual(layoutMode(fullWidth, accounts), { bars: true, accountLine: true });
-  assert.deepEqual(layoutMode(fullWidth - 1, accounts), { bars: false, accountLine: true });
-  assert.deepEqual(layoutMode(fullWidth - (36 + 3 * 32) - 1, accounts), { bars: false, accountLine: false });
+  assert.deepEqual(layoutMode(fullWidth - 1, accounts), { bars: true, accountLine: true, compactSystem: true });
+  assert.deepEqual(layoutMode(fullWidth - 61, accounts), { bars: true, accountLine: false, compactSystem: true });
+  assert.deepEqual(layoutMode(fullWidth - 60 - 3 * 48 - 1, accounts), { bars: false, accountLine: false, compactSystem: true });
   assert.deepEqual(layoutMode(fullWidth, pickAccounts(null)), { bars: true, accountLine: true });
 });
 
@@ -95,8 +96,8 @@ test('Claude reserves the same coupon cell width as Codex, including placeholder
   const couponWidth = cellWidth('coupon') + 8;
   for (const provider of ['codex', 'claude']) {
     assert.deepEqual(layoutMode(baseWidth + couponWidth, [{ provider }]), { bars: true, accountLine: true });
-    assert.deepEqual(layoutMode(baseWidth + couponWidth - 1, [{ provider }]), { bars: false, accountLine: true });
-    assert.deepEqual(layoutMode(baseWidth + couponWidth - 69, [{ provider }]), { bars: false, accountLine: false });
+    assert.deepEqual(layoutMode(baseWidth + couponWidth - 1, [{ provider }]), { bars: true, accountLine: true, compactSystem: true });
+    assert.deepEqual(layoutMode(baseWidth + couponWidth - 61, [{ provider }]), { bars: true, accountLine: false, compactSystem: true });
   }
   assert.deepEqual(layoutMode(baseWidth, [{ provider: 'gemini' }]), { bars: true, accountLine: true });
 });
@@ -108,9 +109,12 @@ test('layout excludes hidden provider, Linear and system cards from its threshol
   const mixed = 24 + 40 + 38 + REPORT_WIDTH + 178 + 96 + 96 + 52 + 8 + 16 + 2 + 8;
   const accounts = pickAccounts(usage);
   assert.deepEqual(layoutMode(mixed, accounts, visible), { bars: true, accountLine: true });
-  assert.deepEqual(layoutMode(mixed - 1, accounts, visible), { bars: false, accountLine: true });
-  assert.deepEqual(layoutMode(mixed - 68, accounts, visible), { bars: false, accountLine: true });
-  assert.deepEqual(layoutMode(mixed - 69, accounts, visible), { bars: false, accountLine: false });
+  assert.deepEqual(layoutMode(mixed - 1, accounts, visible), { bars: true, accountLine: true, compactSystem: true });
+  assert.deepEqual(layoutMode(mixed - 60, accounts, visible), { bars: true, accountLine: true, compactSystem: true });
+  assert.deepEqual(layoutMode(mixed - 61, accounts, visible), { bars: true, accountLine: false, compactSystem: true });
+  const withoutSystem = mixed - 178 - 10;
+  assert.deepEqual(layoutMode(withoutSystem - 1, accounts, { ...visible, system: false }), { bars: true, accountLine: false });
+  assert.deepEqual(layoutMode(withoutSystem - 49, accounts, { ...visible, system: false }), { bars: false, accountLine: false });
   // The always-visible Report button takes 92 px plus a gap, so 320 px no longer fits the account line.
   assert.deepEqual(layoutMode(320, accounts, { ...visible, system: false }), { bars: false, accountLine: false });
   assert.deepEqual(layoutMode(320, accounts), { bars: false, accountLine: false, compactSystem: true });
@@ -125,13 +129,13 @@ test('bar order puts Report right after Linear and closes the gap when Linear is
   assert.deepEqual(barOrder({ groups: false, linear: false, system: false }), ['spacer', 'report', 'gear']);
 });
 
-test('layoutMode counts only a Linear card that is actually shown and shrinks the system card last', () => {
+test('layoutMode counts only a Linear card that is actually shown and shrinks the system card first', () => {
   const accounts = [{ provider: 'codex' }];
   const base = { codex: true, claude: true, gemini: true, system: true };
-  // 582 px: with Linear counted the account line goes; without it the bars alone are enough to fit.
-  const withLinear = layoutMode(582, accounts, { ...base, linear: true });
-  const withoutLinear = layoutMode(582, accounts, { ...base, linear: false });
-  assert.ok(withLinear.accountLine === false || withLinear.bars === false);
+  // 640 px: counting Linear requires more compression than hiding it.
+  const withLinear = layoutMode(640, accounts, { ...base, linear: true });
+  const withoutLinear = layoutMode(640, accounts, { ...base, linear: false });
+  assert.equal(withLinear.compactSystem, true);
   assert.equal(withoutLinear.accountLine, true);
   // 320 px: right-hand cards (Linear, Report, system, gear) do not fit with a full system card.
   const narrow = layoutMode(320, accounts, { ...base, linear: true });

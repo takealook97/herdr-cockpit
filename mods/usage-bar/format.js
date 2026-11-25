@@ -54,7 +54,7 @@ export function barSpacing(width) {
 }
 
 // `visible.linear` must say whether the Linear card is actually on screen (not just enabled).
-// Shrink order: progress bars, account line, then the system card's detail column.
+// Shrink order: the system card's detail column, the account line, then progress bars.
 export function layoutMode(width, accounts, visible) {
   const mode = { bars: true, accountLine: true };
   const providers = accounts.filter(account => visible?.[account.provider] !== false);
@@ -71,8 +71,8 @@ export function layoutMode(width, accounts, visible) {
       (hasCouponCell(account.provider) ? cellWidth('coupon') + 8 : 0) + 16 + 2 + 8,
     fixed + providerGaps + (showSystem ? systemWidth(mode.bars, mode.compactSystem) : 0));
   };
-  if (width < needed()) mode.bars = false;
-  if (width < needed()) mode.accountLine = false;
   if (showSystem && width < needed()) mode.compactSystem = true;
+  if (width < needed()) mode.accountLine = false;
+  if (width < needed()) mode.bars = false;
   return mode;
 }
