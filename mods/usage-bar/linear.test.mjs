@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VISIBLE_KEYS, readVisible, toggleVisible } from './prefs.js';
-import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, seenAccount, seenIds, unreadIds, nextSeen, SEEN_ACCOUNTS_LIMIT, errorText, statusLine } from './linear.js';
+import { groupIssues, dueBadge, projectShort, priorityLevel, priorityName, plainDescription, badgeState, seenAccount, seenIds, unreadIds, nextSeen, SEEN_ACCOUNTS_LIMIT, errorText, actionErrorText, statusLine } from './linear.js';
 
 test('unread tracking baselines new accounts and compares only current open issue identifiers', () => {
   const account = seenAccount({ org: { url: 'https://linear.app/fixture' }, source: 'api_key', user: { name: 'Viewer A' } });
@@ -186,9 +186,12 @@ test('connection status and public errors use fixed copy', () => {
     helper: 'herdr-hud unavailable',
     not_found: 'Issue not found',
     bad_request: 'Invalid issue id',
+    no_done_state: 'No Done status in this team',
   };
   for (const [code, message] of Object.entries(expected)) assert.equal(errorText(code), message);
   for (const code of ['network', 'bad_response', 'busy', 'private diagnostic']) assert.equal(errorText(code), "Couldn't load Linear issues");
+  assert.equal(actionErrorText('forbidden'), 'Linear denied the change — the API key may be read-only');
+  assert.equal(actionErrorText('no_done_state'), expected.no_done_state);
 });
 
 

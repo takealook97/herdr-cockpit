@@ -39,6 +39,7 @@ async function execLinear(args, machine) {
     const data = JSON.parse(stdout);
     if (typeof data?.error === 'string') return data;
     const valid = args[0] === 'issue' ? data?.issue?.identifier === args[1] :
+      args[0] === 'complete' || args[0] === 'restore' ? data?.identifier === args[1] :
       args[0] === 'issues' ? Array.isArray(data?.issues) : typeof data?.connected === 'boolean';
     if (code === 0 && valid) return data;
   } catch {
@@ -55,6 +56,10 @@ export default class UsageBar extends View {
     this.linearRev = linearRevision();
     this.linearAccountRev = linearRevision(LINEAR_ACCOUNT_REV);
     this.linearSeq = { issues: 0, status: 0 };
+    this.linearPending = new Set();
+    this.linearUndo = null;
+    this.linearActionNote = null;
+    this.linearUndoTimer = null;
     this.linearVisible = readVisible(shared(VISIBLE_KEY)).linear;
     if (this.panel === 'linear' || this.panel === 'settings') {
       this.linearTarget = popup?.machine ?? '';
@@ -99,6 +104,7 @@ export default class UsageBar extends View {
 
   close() {
     this.closed = true;
+    this.clearLinearUndo();
     this.input?.release();
     this.handle?.release();
   }
@@ -110,6 +116,7 @@ export default class UsageBar extends View {
     }
     return { issues: this.linearIssues, status: this.linearStatus,
       issueError: this.linearIssueError, statusError: this.linearStatusError,
+      pending: this.linearPending, undo: this.linearUndo, note: this.linearActionNote,
       details: this.linearDetails, seenAccount: this.linearSeenAccount,
       unread: this.linearUnreadAccount === this.linearSeenAccount ? this.linearUnread : undefined };
   }
@@ -153,6 +160,9 @@ export default class UsageBar extends View {
     this.linearUnreadAccount = null;
     this.linearIssueError = null;
     this.linearStatusError = null;
+    this.linearPending = new Set();
+    this.linearActionNote = null;
+    this.clearLinearUndo();
   }
 
   applyLinearStatus(status, rev) {
@@ -209,6 +219,68 @@ export default class UsageBar extends View {
     const accountRev = this.linearAccountRev;
     this.linearDetails.toggle(identifier, cx, args => execLinear(args, machine),
       () => !this.closed && gen === this.linearGen && accountRev === linearRevision(LINEAR_ACCOUNT_REV));
+  }
+
+  clearLinearUndo() {
+    this.linearUndoTimer?.cancel();
+    this.linearUndoTimer = null;
+    this.linearUndo = null;
+  }
+
+  completeLinearIssue(identifier, cx) {
+    this.runLinearIssueAction(['complete', identifier], cx);
+  }
+
+  undoLinearComplete(cx) {
+    const undo = this.linearUndo;
+    if (undo) this.runLinearIssueAction(['restore', undo.identifier, undo.token], cx);
+  }
+
+  runLinearIssueAction(args, cx) {
+    const [action, identifier] = args;
+    const machine = this.linearMachine();
+    const gen = this.linearGen;
+    const accountRev = this.linearAccountRev;
+    const isCurrent = () => !this.closed && gen === this.linearGen &&
+      accountRev === linearRevision(LINEAR_ACCOUNT_REV);
+    if (this.panel !== 'linear' || !isCurrent() || this.linearPending.has(identifier)) return;
+    if (action === 'restore') this.clearLinearUndo();
+    this.linearPending = new Set([...this.linearPending, identifier]);
+    this.linearActionNote = null;
+    cx.notify();
+
+    cx.spawn(async cx => {
+      const data = await execLinear(args, machine);
+      if (!isCurrent()) return;
+      const pending = new Set(this.linearPending);
+      pending.delete(identifier);
+      this.linearPending = pending;
+      if (!data || data.error) {
+        this.linearActionNote = { identifier, error: data?.error ?? 'helper' };
+        cx.notify();
+        return;
+      }
+
+      if (action === 'complete') {
+        const snapshot = this.linearIssues;
+        if (snapshot) {
+          this.linearIssues = { ...snapshot, issues: snapshot.issues.filter(issue => issue.identifier !== identifier) };
+        }
+        this.clearLinearUndo();
+        if (typeof data.previous === 'string' && data.previous) {
+          const undo = { identifier, token: data.previous, status: data.status };
+          this.linearUndo = undo;
+          this.linearUndoTimer = cx.timer.after(6000, cx => {
+            if (this.linearUndo !== undo) return;
+            this.linearUndoTimer = null;
+            this.linearUndo = null;
+            cx.notify();
+          });
+        }
+      }
+      // Refresh also clears expanded details and invalidates any earlier issues read.
+      this.readLinear('issues', cx, { refresh: true });
+    });
   }
 
   readLinear(kind, cx, { refresh = false, observed = false } = {}) {

@@ -1123,10 +1123,10 @@ test('Linear issue rows render project lines, priority indicators and due pill t
   const withProject = byID(panel, 'issue-TEST-1');
   const singleLine = byID(panel, 'issue-TEST-2');
   assert.equal(withProject.style.min_h, 40);
-  assert.deepEqual(withProject.nodes[3].nodes.map(text), [[issue.title], ['Test Project']]);
+  assert.deepEqual(withProject.nodes[4].nodes.map(text), [[issue.title], ['Test Project']]);
   assert.equal(singleLine.style.h, 30);
-  assert.deepEqual(singleLine.nodes[3].nodes, [issue.title]);
-  assert.equal(singleLine.nodes[2].style.w, 58);
+  assert.deepEqual(singleLine.nodes[4].nodes, [issue.title]);
+  assert.equal(singleLine.nodes[3].style.w, 58);
 
   for (const [index, label, filled] of [[1, 'High', 3], [2, 'Medium', 2], [3, 'Low', 1], [4, 'No priority', 0]]) {
     const box = byID(panel, 'priority-' + rows[index].identifier);
@@ -1143,12 +1143,12 @@ test('Linear issue rows render project lines, priority indicators and due pill t
   for (const [id, color, bg] of [
     ['TEST-1', 'blocked', 'blocked26'], ['TEST-2', 'working', 'working26'], ['TEST-3', 'dim', 'raised'],
   ]) {
-    const pill = byID(panel, 'issue-' + id).nodes[4];
+    const pill = byID(panel, 'issue-' + id).nodes[5];
     assert.equal(pill.style.h, 18);
     assert.equal(pill.style.text_color, color);
     assert.equal(pill.style.bg, bg);
   }
-  assert.equal(byID(panel, 'issue-TEST-4').nodes.length, 4);
+  assert.equal(byID(panel, 'issue-TEST-4').nodes.length, 5);
 });
 
 test('Linear panel handles connection, expiry, stale, empty and helper errors', async () => {
@@ -1628,4 +1628,143 @@ test('opening Report while hub is open clears hub.open and leaves layout calls t
   byID(bar.view.render(bar.cx), 'report').style.on_click({}, bar.cx);
   assert.equal(bar.store.get('report.open'), false);
   assert.deepEqual(bar.runs, []);
+});
+
+test('Linear status mark completes once, removes the row before refresh, and offers Undo', async () => {
+  const h = harness({ panel: 'linear', popupMachine: 'remote' });
+  await h.flush();
+  const id = issue.identifier;
+  const render = () => h.view.render(h.cx);
+  const before = h.view.linearSnapshot();
+  h.view.linearDetails.expanded = id;
+  let resolveComplete;
+  let resolveRefresh;
+  let refreshStarted;
+  const refreshing = new Promise(resolve => { refreshStarted = resolve; });
+  h.respond(args => {
+    if (args[2] === 'complete') return new Promise(resolve => { resolveComplete = resolve; });
+    if (args[2] === 'issues' && args[3] === '--refresh') {
+      return new Promise(resolve => { resolveRefresh = resolve; refreshStarted(); });
+    }
+    return h.fallback(args);
+  });
+
+  const mark = byID(render(), 'complete-' + id);
+  assert.equal(mark.style.tooltip, 'Mark as Done');
+  assert.equal(mark.style.accessibility_label, 'Mark ' + id + ' as Done');
+  const stopped = h.stopped();
+  mark.style.on_click({}, h.cx);
+  mark.style.on_click({}, h.cx);
+  assert.equal(h.stopped(), stopped + 2);
+  const pending = render();
+  assert.deepEqual(text(byID(pending, 'complete-' + id)), ['✓']);
+  assert.equal(byID(pending, 'complete-' + id).style.on_click, undefined);
+  assert.equal(byID(pending, 'issue-' + id).style.on_click, undefined);
+  assert.equal(before.pending.size, 0);
+  assert.deepEqual(linearCalls(h).slice(2), [['complete', id]]);
+  assert.deepEqual(linearExecs(h).at(-1).opts, { on: 'remote' });
+
+  resolveComplete(reply({ identifier: id, status: 'Finished', previous: 'In Progress' }));
+  await refreshing;
+  assert.deepEqual(before.issues.issues, [issue]);
+  assert.deepEqual(h.view.linearSnapshot().issues.issues, []);
+  assert.equal(h.view.linearSnapshot().pending.size, 0);
+  assert.equal(h.view.linearDetails.expanded, null);
+  const completed = render();
+  assert.ok(text(completed).includes('Marked TEST-1 as Finished'));
+  assert.ok(text(completed).includes('No open issues'));
+  resolveRefresh(reply({ ...issuesReply, issues: [] }));
+  await h.flush();
+
+  h.respond(args => args[2] === 'restore' ? reply({ identifier: id, status: 'In Progress' }) : h.fallback(args));
+  click(completed, 'linear-undo', h.cx);
+  click(completed, 'linear-undo', h.cx);
+  assert.equal(h.view.linearSnapshot().undo, null);
+  assert.equal(h.timers.find(job => job.ms === 6000).canceled, true);
+  await h.flush();
+  assert.deepEqual(linearCalls(h).slice(2), [
+    ['complete', id], ['issues', '--refresh'], ['restore', id, 'In Progress'], ['issues', '--refresh'],
+  ]);
+  assert.deepEqual(linearExecs(h).at(-2).opts, { on: 'remote' });
+  assert.ok(byID(render(), 'issue-' + id));
+});
+
+test('Linear issue action failures keep the row and show fixed copy', async () => {
+  const h = harness({ panel: 'linear' });
+  await h.flush();
+  const id = issue.identifier;
+  for (const [result, error, message] of [
+    [reply({ error: 'forbidden' }, 1), 'forbidden', 'Linear denied the change — the API key may be read-only'],
+    [reply({ identifier: 'OTHER-1', status: 'Done', previous: 'Started' }), 'helper', 'herdr-hud unavailable'],
+  ]) {
+    h.respond(() => result);
+    click(h.view.render(h.cx), 'complete-' + id, h.cx);
+    await h.flush();
+    assert.deepEqual(h.view.linearSnapshot().note, { identifier: id, error });
+    assert.equal(h.view.linearSnapshot().undo, null);
+    const tree = h.view.render(h.cx);
+    assert.ok(byID(tree, 'issue-' + id));
+    assert.ok(text(tree).includes(`Couldn't update ${id}: ${message}`));
+  }
+  assert.deepEqual(linearCalls(h).slice(2), [['complete', id], ['complete', id]]);
+});
+
+test('Linear issue action ignores replies after machine, account, or popup changes', async () => {
+  for (const invalidate of [
+    h => { h.state.spaces[0].machine = 'other'; h.view.switchLinearTarget(h.cx); },
+    h => h.store.set('usage-bar.linear-account-rev', 1),
+    h => h.view.close(),
+  ]) {
+    const h = harness({ panel: 'linear' });
+    await h.flush();
+    let resolve;
+    h.respond(args => args[2] === 'complete' ? new Promise(done => { resolve = done; }) : h.fallback(args));
+    click(h.view.render(h.cx), 'complete-TEST-1', h.cx);
+    invalidate(h);
+    resolve(reply({ identifier: issue.identifier, status: 'Done', previous: 'Started' }));
+    await h.flush();
+    assert.equal(h.view.linearUndo, null);
+    assert.equal(h.view.linearActionNote, null);
+    assert.equal(h.timers.some(job => job.ms === 6000), false);
+    assert.equal(linearCalls(h).some(args => args.includes('--refresh')), false);
+  }
+});
+
+test('Linear Undo expires after six seconds and a superseded timer leaves the current Undo alone', async () => {
+  const h = harness({ panel: 'linear' });
+  await h.flush();
+  const second = { ...issue, identifier: 'TEST-2' };
+  h.view.linearIssues = { ...issuesReply, issues: [issue, second] };
+  h.respond(args => args[2] === 'complete' ? reply({ identifier: args[3], status: 'Done', previous: 'Started' })
+    : reply({ ...issuesReply, issues: [] }));
+  const tree = h.view.render(h.cx);
+  click(tree, 'complete-TEST-1', h.cx);
+  click(tree, 'complete-TEST-2', h.cx);
+  await h.flush();
+  const [first, last] = h.timers.filter(job => job.ms === 6000);
+  assert.equal(first.canceled, true);
+  assert.equal(last.canceled, false);
+  first.fn(h.cx);
+  assert.equal(h.view.linearSnapshot().undo.identifier, 'TEST-2');
+  h.tick(6000);
+  assert.equal(h.view.linearSnapshot().undo, null);
+  assert.equal(byID(h.view.render(h.cx), 'linear-undo'), undefined);
+});
+
+test('Linear restore failure reports the error without another issues refresh', async () => {
+  const h = harness({ panel: 'linear' });
+  await h.flush();
+  h.respond(args => {
+    if (args[2] === 'complete') return reply({ identifier: issue.identifier, status: 'Done', previous: 'Started' });
+    if (args[2] === 'restore') return reply({ error: 'not_found' }, 1);
+    return reply({ ...issuesReply, issues: [] });
+  });
+  click(h.view.render(h.cx), 'complete-TEST-1', h.cx);
+  await h.flush();
+  click(h.view.render(h.cx), 'linear-undo', h.cx);
+  await h.flush();
+  assert.deepEqual(linearCalls(h).slice(2), [
+    ['complete', 'TEST-1'], ['issues', '--refresh'], ['restore', 'TEST-1', 'Started'],
+  ]);
+  assert.ok(text(h.view.render(h.cx)).includes("Couldn't update TEST-1: Issue not found"));
 });
