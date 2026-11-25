@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -227,9 +228,27 @@ func hudParseCodex(raw []byte) (HUDAccount, error) {
 
 const hudClaudeKeychainService = "Claude Code-credentials"
 
+var hudClaudeCurrentUser = user.Current
+var hudClaudeSecurityRun = func(ctx context.Context, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, "security", args...).Output()
+}
+
 // hudClaudeKeychainRead is a test seam for the read-only keychain lookup.
 var hudClaudeKeychainRead = func(ctx context.Context, service string) ([]byte, error) {
-	return exec.CommandContext(ctx, "security", "find-generic-password", "-s", service, "-w").Output()
+	username := ""
+	if current, err := hudClaudeCurrentUser(); err == nil && current != nil {
+		username = current.Username
+	}
+	if username == "" {
+		username = os.Getenv("USER")
+	}
+	if username != "" {
+		raw, err := hudClaudeSecurityRun(ctx, "find-generic-password", "-s", service, "-a", username, "-w")
+		if err == nil && len(raw) > 0 {
+			return raw, nil
+		}
+	}
+	return hudClaudeSecurityRun(ctx, "find-generic-password", "-s", service, "-w")
 }
 
 // hudClaudeCredentialsRaw only reads the Claude Code credential (keychain, then
