@@ -24,6 +24,7 @@ var (
 )
 
 type linearIssueDetail struct {
+	statusID    string
 	Identifier  string   `json:"identifier"`
 	Title       string   `json:"title"`
 	URL         *string  `json:"url"`

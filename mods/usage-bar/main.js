@@ -15,6 +15,7 @@ const LINEAR_OPEN_REV = 'usage-bar.linear-open-rev';
 const LINEAR_SEEN = 'usage-bar.linear-seen';
 const LINEAR_POLL_MS = 30 * 60 * 1000;
 const LINEAR_STATUS_RETRY_MS = 60 * 1000;
+const LINEAR_ACTION_ERRORS_WITHOUT_REFRESH = new Set(['bad_request', 'busy', 'not_connected', 'expired', 'no_done_state']);
 const VISIBLE_KEY = 'usage-bar.visible';
 const REPORT_OPEN = 'report.open';
 const HUB_OPEN = 'hub.open';
@@ -186,10 +187,11 @@ export default class UsageBar extends View {
     }
   }
 
-  bumpLinear(fromOpening = false) {
-    this.linearRev = linearRevision() + 1;
-    if (fromOpening) setShared(LINEAR_OPEN_REV, this.linearRev);
-    setShared(LINEAR_REV, this.linearRev);
+  bumpLinear({ fromOpening = false, updateLocal = true } = {}) {
+    const rev = linearRevision() + 1;
+    if (updateLocal) this.linearRev = rev;
+    if (fromOpening) setShared(LINEAR_OPEN_REV, rev);
+    setShared(LINEAR_REV, rev);
   }
 
   updateLinearSeen() {
@@ -251,13 +253,18 @@ export default class UsageBar extends View {
 
     cx.spawn(async cx => {
       const data = await execLinear(args, machine);
-      if (!isCurrent()) return;
+      const success = data && !data.error;
+      const current = isCurrent();
+      if (success) this.bumpLinear({ updateLocal: current });
+      if (!current) return;
       const pending = new Set(this.linearPending);
       pending.delete(identifier);
       this.linearPending = pending;
-      if (!data || data.error) {
-        this.linearActionNote = { identifier, error: data?.error ?? 'helper' };
-        cx.notify();
+      if (!success) {
+        const error = data?.error ?? 'helper';
+        this.linearActionNote = { identifier, error };
+        if (LINEAR_ACTION_ERRORS_WITHOUT_REFRESH.has(error)) cx.notify();
+        else this.readLinear('issues', cx, { refresh: true });
         return;
       }
 
@@ -332,7 +339,7 @@ export default class UsageBar extends View {
         if (!this.closed && !this.linearStatus) this.readLinear('status', cx);
       } else if (!this.closed && freshIssues && this.panel === 'linear' && !observed) {
         // Reads triggered by an observed revision already have a publisher.
-        this.bumpLinear(true);
+        this.bumpLinear({ fromOpening: true });
         this.linearIssuesRev = this.linearRev;
         // This popup's issues announcement doesn't invalidate its pending status.
         if (this.linearStatusReadRev === rev) this.linearStatusReadRev = this.linearRev;

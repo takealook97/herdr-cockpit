@@ -28,7 +28,8 @@ var linearMCPIssueFields = []string{"id", "title", "status", "statusType", "prio
 var (
 	linearMCPAuthError = regexp.MustCompile(`(?i)^(?:unauthorized|authentication (?:required|failed)|` +
 		`(?:invalid|expired|missing) (?:access )?token|(?:access )?token (?:not found|expired|is invalid))\b`)
-	linearMCPForbiddenError = regexp.MustCompile(`(?i)^(?:forbidden|access denied|permission denied)\b`)
+	linearMCPForbiddenError     = regexp.MustCompile(`(?i)^(?:forbidden|access denied|permission denied)\b`)
+	linearMCPSaveForbiddenError = regexp.MustCompile(`(?i)\b(?:forbidden|access denied|permission|not allowed|not authorized to|insufficient (?:scope|permission))\b`)
 )
 
 type mcpSession struct {
@@ -311,7 +312,8 @@ func (s *mcpSession) callTool(ctx context.Context, name string, args map[string]
 			switch {
 			case linearMCPAuthError.MatchString(message):
 				return nil, linearError(linearErrExpired)
-			case linearMCPForbiddenError.MatchString(message):
+			case name == "save_issue" && linearMCPSaveForbiddenError.MatchString(message),
+				name == "get_issue" && linearMCPForbiddenError.MatchString(message):
 				return nil, linearError(linearErrForbidden)
 			case linearIssueMissing(message), name == "get_issue" && !body.IsError && text == "null":
 				return nil, linearError(linearErrNotFound)
@@ -516,7 +518,7 @@ func (s *mcpSession) readIssue(ctx context.Context, identifier string) (linearIs
 		URL, DueDate, UpdatedAt, Description               *string
 		Team, Project, Assignee, Priority                  json.RawMessage
 		Labels                                             []json.RawMessage
-		Error, Message                                     json.RawMessage
+		Error, Message, StatusID                           json.RawMessage
 	}
 	if json.Unmarshal(raw, &item) != nil {
 		return linearIssueDetail{}, linearError(linearErrBadResponse)
@@ -552,6 +554,7 @@ func (s *mcpSession) readIssue(ctx context.Context, identifier string) (linearIs
 		Project: linearMCPProject(item.Project), TeamKey: linearOptional(teamKey), DueDate: item.DueDate,
 		UpdatedAt: item.UpdatedAt, Assignee: linearMCPProject(item.Assignee),
 	}
+	_ = json.Unmarshal(item.StatusID, &out.statusID)
 	for _, label := range item.Labels {
 		if name := linearMCPProject(label); name != nil {
 			out.Labels = append(out.Labels, *name)

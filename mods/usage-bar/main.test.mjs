@@ -1697,7 +1697,7 @@ test('Linear issue action failures keep the row and show fixed copy', async () =
     [reply({ error: 'forbidden' }, 1), 'forbidden', 'Linear denied the change — the API key may be read-only'],
     [reply({ identifier: 'OTHER-1', status: 'Done', previous: 'Started' }), 'helper', 'herdr-hud unavailable'],
   ]) {
-    h.respond(() => result);
+    h.respond(args => args[2] === 'complete' ? result : h.fallback(args));
     click(h.view.render(h.cx), 'complete-' + id, h.cx);
     await h.flush();
     assert.deepEqual(h.view.linearSnapshot().note, { identifier: id, error });
@@ -1706,7 +1706,9 @@ test('Linear issue action failures keep the row and show fixed copy', async () =
     assert.ok(byID(tree, 'issue-' + id));
     assert.ok(text(tree).includes(`Couldn't update ${id}: ${message}`));
   }
-  assert.deepEqual(linearCalls(h).slice(2), [['complete', id], ['complete', id]]);
+  assert.deepEqual(linearCalls(h).slice(2), [
+    ['complete', id], ['issues', '--refresh'], ['complete', id], ['issues', '--refresh'],
+  ]);
 });
 
 test('Linear issue action ignores replies after machine, account, or popup changes', async () => {
@@ -1715,18 +1717,30 @@ test('Linear issue action ignores replies after machine, account, or popup chang
     h => h.store.set('usage-bar.linear-account-rev', 1),
     h => h.view.close(),
   ]) {
-    const h = harness({ panel: 'linear' });
-    await h.flush();
-    let resolve;
-    h.respond(args => args[2] === 'complete' ? new Promise(done => { resolve = done; }) : h.fallback(args));
-    click(h.view.render(h.cx), 'complete-TEST-1', h.cx);
-    invalidate(h);
-    resolve(reply({ identifier: issue.identifier, status: 'Done', previous: 'Started' }));
-    await h.flush();
-    assert.equal(h.view.linearUndo, null);
-    assert.equal(h.view.linearActionNote, null);
-    assert.equal(h.timers.some(job => job.ms === 6000), false);
-    assert.equal(linearCalls(h).some(args => args.includes('--refresh')), false);
+    for (const success of [true, false]) {
+      const h = harness({ panel: 'linear' });
+      await h.flush();
+      let resolve;
+      h.respond(args => args[2] === 'complete' ? new Promise(done => { resolve = done; }) : h.fallback(args));
+      click(h.view.render(h.cx), 'complete-TEST-1', h.cx);
+      invalidate(h);
+      if (h.view.linearIssuesReadSeq != null) await new Promise(resolve => setImmediate(resolve));
+      const rev = h.store.get('usage-bar.linear-rev');
+      const localRev = h.view.linearRev;
+      const snapshot = h.view.linearIssues;
+      const pending = h.view.linearPending;
+      resolve(reply(success ? { identifier: issue.identifier, status: 'Done', previous: 'Started' }
+        : { error: 'forbidden' }));
+      await h.flush();
+      assert.equal(h.store.get('usage-bar.linear-rev'), rev + Number(success));
+      assert.equal(h.view.linearRev, localRev);
+      assert.equal(h.view.linearIssues, snapshot);
+      assert.equal(h.view.linearPending, pending);
+      assert.equal(h.view.linearUndo, null);
+      assert.equal(h.view.linearActionNote, null);
+      assert.equal(h.timers.some(job => job.ms === 6000), false);
+      assert.equal(linearCalls(h).some(args => args.includes('--refresh')), false);
+    }
   }
 });
 
@@ -1751,7 +1765,7 @@ test('Linear Undo expires after six seconds and a superseded timer leaves the cu
   assert.equal(byID(h.view.render(h.cx), 'linear-undo'), undefined);
 });
 
-test('Linear restore failure reports the error without another issues refresh', async () => {
+test('Linear restore failure refreshes issues and keeps the error note', async () => {
   const h = harness({ panel: 'linear' });
   await h.flush();
   h.respond(args => {
@@ -1764,7 +1778,39 @@ test('Linear restore failure reports the error without another issues refresh', 
   click(h.view.render(h.cx), 'linear-undo', h.cx);
   await h.flush();
   assert.deepEqual(linearCalls(h).slice(2), [
-    ['complete', 'TEST-1'], ['issues', '--refresh'], ['restore', 'TEST-1', 'Started'],
+    ['complete', 'TEST-1'], ['issues', '--refresh'], ['restore', 'TEST-1', 'Started'], ['issues', '--refresh'],
   ]);
   assert.ok(text(h.view.render(h.cx)).includes("Couldn't update TEST-1: Issue not found"));
+});
+
+test('Linear already-completed reply removes the row without offering Undo', async () => {
+  const h = harness({ panel: 'linear' });
+  await h.flush();
+  h.respond(args => args[2] === 'complete'
+    ? reply({ identifier: issue.identifier, status: 'Done', previous: null })
+    : reply({ ...issuesReply, issues: [] }));
+  click(h.view.render(h.cx), 'complete-TEST-1', h.cx);
+  await h.flush();
+  const tree = h.view.render(h.cx);
+  assert.equal(byID(tree, 'issue-TEST-1'), undefined);
+  assert.equal(byID(tree, 'linear-undo'), undefined);
+  assert.equal(h.view.linearSnapshot().undo, null);
+  assert.equal(h.timers.some(job => job.ms === 6000), false);
+});
+
+test('Linear pre-write errors skip refresh and the next issue click clears the note', async () => {
+  const h = harness({ panel: 'linear' });
+  await h.flush();
+  h.view.linearIssues = { ...issuesReply, issues: [issue, { ...issue, identifier: 'TEST-2' }] };
+  for (const error of ['bad_request', 'busy', 'not_connected', 'expired', 'no_done_state']) {
+    h.respond(() => reply({ error }));
+    click(h.view.render(h.cx), 'complete-TEST-1', h.cx);
+    await h.flush();
+    assert.deepEqual(h.view.linearSnapshot().note, { identifier: 'TEST-1', error });
+  }
+  click(h.view.render(h.cx), 'complete-TEST-2', h.cx);
+  assert.equal(h.view.linearSnapshot().note, null);
+  await h.flush();
+  assert.equal(h.view.linearSnapshot().note.identifier, 'TEST-2');
+  assert.equal(linearCalls(h).some(args => args.includes('--refresh')), false);
 });

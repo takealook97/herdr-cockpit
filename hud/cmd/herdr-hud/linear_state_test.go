@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,13 +75,12 @@ func TestLinearStateGraphQL(t *testing.T) {
 	for _, tc := range []struct {
 		name, first, mutation, stateID, token, wantError string
 		status, statusType, previous, previousStatus     string
-		exit, calls                                      int
+		exit, calls, mutationHTTP                        int
 		hideSource                                       bool
 	}{
 		{name: "complete", first: read(started, nodes), mutation: updated(done), stateID: linearTestDoneState,
 			status: "Done", statusType: "completed", previous: linearTestOldState, previousStatus: "In Progress", calls: 2},
-		{name: "already completed", first: read(done, "[]"), status: "Done", statusType: "completed",
-			previous: linearTestDoneState, previousStatus: "Done", calls: 1},
+		{name: "already completed", first: read(done, "[]"), status: "Done", statusType: "completed", calls: 1},
 		{name: "no completed state", first: read(started, "[]"), wantError: linearErrNoDoneState, calls: 1},
 		{name: "missing issue", first: `{"data":{"issue":null}}`, wantError: linearErrNotFound, calls: 1},
 		{name: "forbidden code", first: read(started, nodes), mutation: `{"errors":[{"extensions":{"code":"FORBIDDEN"}}]}`,
@@ -93,6 +93,8 @@ func TestLinearStateGraphQL(t *testing.T) {
 		{name: "provider echoes key", first: read(started, nodes),
 			mutation: updated(strings.Replace(done, `"Done"`, fmt.Sprintf("%q", linearTestAPIKey), 1)),
 			stateID:  linearTestDoneState, wantError: linearErrBadResponse, calls: 2, hideSource: true},
+		{name: "mutation HTTP 500", first: read(started, nodes), mutationHTTP: http.StatusInternalServerError,
+			stateID: linearTestDoneState, wantError: linearErrNetwork, calls: 2},
 		{name: "mutation failed", first: read(started, nodes), mutation: `{"data":{"issueUpdate":{"success":false}}}`,
 			stateID: linearTestDoneState, wantError: linearErrBadResponse, calls: 2},
 		{name: "restore", mutation: updated(started), stateID: strings.ToUpper(linearTestOldState),
@@ -111,8 +113,11 @@ func TestLinearStateGraphQL(t *testing.T) {
 					}
 					fmt.Fprint(w, tc.first)
 				case linearUpdateStateMutation:
-					if !reflect.DeepEqual(vars, map[string]any{"id": "FIX-12", "stateId": tc.stateID}) || tc.mutation == "" {
+					if !reflect.DeepEqual(vars, map[string]any{"id": "FIX-12", "stateId": tc.stateID}) || (tc.mutation == "" && tc.mutationHTTP == 0) {
 						t.Errorf("unexpected mutation variables %v", vars)
+					}
+					if tc.mutationHTTP != 0 {
+						w.WriteHeader(tc.mutationHTTP)
 					}
 					fmt.Fprint(w, tc.mutation)
 				default:
@@ -144,7 +149,7 @@ func TestLinearStateGraphQL(t *testing.T) {
 					t.Error("mutation path did not use active API key")
 				}
 			}
-			linearAssertStateCache(t, tc.wantError == "")
+			linearAssertStateCache(t, tc.stateID != "")
 		})
 	}
 }
@@ -164,12 +169,23 @@ func TestLinearStateMCP(t *testing.T) {
 	}{
 		{name: "complete", before: started, after: done, status: "Done", statusType: "completed", previous: "In Progress",
 			tools: []string{"get_issue", "save_issue", "get_issue"}},
-		{name: "already completed", before: done, status: "Done", statusType: "completed", previous: "Done",
+		{name: "already completed", before: done, status: "Done", statusType: "completed",
 			tools: []string{"get_issue"}},
 		{name: "restore by name", token: "In Progress", after: started, status: "In Progress", statusType: "started",
 			tools: []string{"save_issue", "get_issue"}},
-		{name: "forbidden text", before: started, saveResult: `{"isError":true,"content":[{"type":"text","text":"Error: Permission denied"}]}`,
+		{name: "restore by folded name", token: "in progress", after: started, status: "In Progress", statusType: "started",
+			tools: []string{"save_issue", "get_issue"}},
+		{name: "restore by ID", token: linearTestOldState,
+			after:  linearDetailMCPResult(fmt.Sprintf(`{"identifier":"FIX-12","title":"Issue","status":"In Progress","statusType":"started","statusId":%q}`, linearTestOldState)),
+			status: "In Progress", statusType: "started", tools: []string{"save_issue", "get_issue"}},
+		{name: "unconfirmed restore", token: "In Progress", after: done, wantError: linearErrBadResponse,
+			tools: []string{"save_issue", "get_issue"}},
+		{name: "confirmation read fails", before: started, after: `{"isError":true,"content":[]}`,
+			wantError: linearErrBadResponse, tools: []string{"get_issue", "save_issue", "get_issue"}},
+		{name: "forbidden text", before: started, saveResult: `{"isError":true,"content":[{"type":"text","text":"You do not have permission to update this issue"}]}`,
 			wantError: linearErrForbidden, tools: []string{"get_issue", "save_issue"}},
+		{name: "save auth precedes permission", before: started, saveResult: `{"isError":true,"content":[{"type":"text","text":"Error: Unauthorized: insufficient scope"}]}`,
+			wantError: linearErrExpired, tools: []string{"get_issue", "save_issue"}},
 		{name: "missing save tool", omitSave: true, wantError: linearErrBadResponse},
 		{name: "unconfirmed completion", before: started, after: started, wantError: linearErrBadResponse,
 			tools: []string{"get_issue", "save_issue", "get_issue"}},
@@ -230,8 +246,16 @@ func TestLinearStateMCP(t *testing.T) {
 					t.Fatalf("unexpected request for %s: %s", name, req.Params)
 				}
 			}
-			linearAssertStateCache(t, tc.wantError == "")
+			linearAssertStateCache(t, slices.Contains(tc.tools, "save_issue"))
 		})
+	}
+}
+
+func TestLinearStateTokenLength(t *testing.T) {
+	for _, token := range []string{strings.Repeat("한", 66) + "ab", strings.Repeat("한", 85) + "a"} {
+		if !linearValidStateToken(token) {
+			t.Errorf("rejected valid %d-byte token", len(token))
+		}
 	}
 }
 
@@ -241,9 +265,9 @@ func TestLinearStateValidationAndBusy(t *testing.T) {
 	for _, args := range [][]string{
 		{"complete"}, {"complete", "fix-12"}, {"complete", "FIX-12", "extra"},
 		{"restore", "FIX-12"}, {"restore", "FIX-0", "Backlog"}, {"restore", "FIX-12", "Backlog", "extra"},
-		{"restore", "FIX-12", ""}, {"restore", "FIX-12", strings.Repeat("한", 22)},
+		{"restore", "FIX-12", ""}, {"restore", "FIX-12", strings.Repeat("한", 85) + "ab"},
 		{"restore", "FIX-12", " Backlog"}, {"restore", "FIX-12", "Backlog\u00a0"},
-		{"restore", "FIX-12", "Back\u0085log"}, {"restore", "FIX-12", "Back\xfflog"},
+		{"restore", "FIX-12", "Back\u0085log"}, {"restore", "FIX-12", "Back\u202elog"}, {"restore", "FIX-12", "Back\xfflog"},
 	} {
 		linearStateReply(t, args, 2, "", linearErrBadRequest)
 	}

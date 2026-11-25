@@ -25,8 +25,10 @@ type linearStatePayload struct {
 }
 
 func linearValidStateToken(s string) bool {
-	return len(s) > 0 && len(s) <= 64 && utf8.ValidString(s) &&
-		strings.TrimSpace(s) == s && strings.IndexFunc(s, unicode.IsControl) == -1
+	return len(s) > 0 && len(s) <= 256 && utf8.ValidString(s) &&
+		strings.TrimSpace(s) == s && strings.IndexFunc(s, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) == -1
 }
 
 func linearSetState(ctx context.Context, identifier string, restoreToken *string) (linearStatePayload, int) {
@@ -64,7 +66,6 @@ func linearSetState(ctx context.Context, identifier string, restoreToken *string
 			return linearStatePayload{Error: strPtr(linearErrBadResponse)}, 0
 		}
 	}
-	_ = linearRemoveIfPresent(linearCachePath())
 	return out, 0
 }
 
@@ -127,30 +128,31 @@ func linearGraphQLComplete(ctx context.Context, key, identifier string) (linearS
 	if err != nil || strings.Contains(issue.State.Name, key) {
 		return linearStatePayload{}, linearError(linearErrBadResponse)
 	}
+	if *out.StatusType == "completed" {
+		return out, nil
+	}
+	states := issue.Team.States
+	if states == nil {
+		return linearStatePayload{}, linearError(linearErrBadResponse)
+	}
+	if len(states.Nodes) == 0 {
+		return linearStatePayload{}, linearError(linearErrNoDoneState)
+	}
+	selected := states.Nodes[0]
+	for _, state := range states.Nodes {
+		if state.Position == nil || !linearStateUUIDPattern.MatchString(state.ID) {
+			return linearStatePayload{}, linearError(linearErrBadResponse)
+		}
+		if *state.Position < *selected.Position {
+			selected = state
+		}
+	}
+	out, err = linearGraphQLSetState(ctx, key, identifier, selected.ID)
+	if err != nil {
+		return linearStatePayload{}, err
+	}
 	if *out.StatusType != "completed" {
-		states := issue.Team.States
-		if states == nil {
-			return linearStatePayload{}, linearError(linearErrBadResponse)
-		}
-		if len(states.Nodes) == 0 {
-			return linearStatePayload{}, linearError(linearErrNoDoneState)
-		}
-		selected := states.Nodes[0]
-		for _, state := range states.Nodes {
-			if state.Position == nil || !linearStateUUIDPattern.MatchString(state.ID) {
-				return linearStatePayload{}, linearError(linearErrBadResponse)
-			}
-			if *state.Position < *selected.Position {
-				selected = state
-			}
-		}
-		out, err = linearGraphQLSetState(ctx, key, identifier, selected.ID)
-		if err != nil {
-			return linearStatePayload{}, err
-		}
-		if *out.StatusType != "completed" {
-			return linearStatePayload{}, linearError(linearErrBadResponse)
-		}
+		return linearStatePayload{}, linearError(linearErrBadResponse)
 	}
 	out.Previous = strPtr(issue.State.ID)
 	out.PreviousStatus = strPtr(issue.State.Name)
@@ -165,6 +167,8 @@ func linearGraphQLSetState(ctx context.Context, key, identifier, stateID string)
 		}
 	}
 	vars := map[string]any{"id": identifier, "stateId": stateID}
+	// A failed reply can follow a committed write. Invalidate under the credential lock.
+	defer linearRemoveIfPresent(linearCachePath())
 	if err := linearGraphQL(ctx, key, linearUpdateStateMutation, vars, &data); err != nil {
 		return linearStatePayload{}, err
 	}
@@ -198,44 +202,48 @@ func linearMCPChangeState(ctx context.Context, cred linearCred, identifier strin
 	}
 	var previous *string
 	if restoreToken == nil {
-		current, err := s.readState(ctx, cred.Secret, identifier)
+		current, _, err := s.readState(ctx, cred.Secret, identifier)
 		if err != nil {
 			return linearStatePayload{}, err
+		}
+		if current.StatusType != nil && *current.StatusType == "completed" {
+			return current, nil
 		}
 		if !linearValidStateToken(*current.Status) {
 			return linearStatePayload{}, linearError(linearErrBadResponse)
 		}
 		previous = current.Status
-		if current.StatusType != nil && *current.StatusType == "completed" {
-			current.Previous, current.PreviousStatus = previous, previous
-			return current, nil
-		}
 	}
 
+	// Keep this deferred through the confirmation read, while the credential lock is held.
+	defer linearRemoveIfPresent(linearCachePath())
 	if _, err := s.callTool(ctx, "save_issue", map[string]any{"id": identifier, "state": state}); err != nil {
 		return linearStatePayload{}, err
 	}
-	out, err := s.readState(ctx, cred.Secret, identifier)
+	out, statusID, err := s.readState(ctx, cred.Secret, identifier)
 	if err != nil {
 		return linearStatePayload{}, err
 	}
 	if restoreToken == nil && (out.StatusType == nil || *out.StatusType != "completed") {
 		return linearStatePayload{}, linearError(linearErrBadResponse)
 	}
+	if restoreToken != nil && !strings.EqualFold(*out.Status, *restoreToken) && statusID != *restoreToken {
+		return linearStatePayload{}, linearError(linearErrBadResponse)
+	}
 	out.Previous, out.PreviousStatus = previous, previous
 	return out, nil
 }
 
-func (s *mcpSession) readState(ctx context.Context, secret, identifier string) (linearStatePayload, error) {
+func (s *mcpSession) readState(ctx context.Context, secret, identifier string) (linearStatePayload, string, error) {
 	issue, err := s.readIssue(ctx, identifier)
 	if err != nil {
-		return linearStatePayload{}, err
+		return linearStatePayload{}, "", err
 	}
 	if issue.Identifier != identifier || issue.Title == "" || issue.Status == nil ||
 		issue.StatusType == nil || issue.containsSecret(secret) {
-		return linearStatePayload{}, linearError(linearErrBadResponse)
+		return linearStatePayload{}, "", linearError(linearErrBadResponse)
 	}
 	return linearStatePayload{
 		Identifier: strPtr(issue.Identifier), Status: issue.Status, StatusType: linearOptional(*issue.StatusType),
-	}, nil
+	}, issue.statusID, nil
 }
