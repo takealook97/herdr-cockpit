@@ -141,16 +141,20 @@ func linearMCPCred(expiresAt int64) map[string]any {
 
 // fakeMCP serves the Linear MCP fixtures over TLS.
 type fakeMCP struct {
-	t           *testing.T
-	srv         *httptest.Server
-	mu          sync.Mutex
-	sse         bool
-	status      int
-	failPage    int
-	whoami      string // "" serves the fixture; "rpc" a JSON-RPC error; "tool" an isError result
-	noIssueTool bool
-	issueResult string
-	requests    []fakeMCPRequest
+	t                *testing.T
+	srv              *httptest.Server
+	mu               sync.Mutex
+	sse              bool
+	status           int
+	failPage         int
+	whoami           string // "" serves the fixture; "rpc" a JSON-RPC error; "tool" an isError result
+	noIssueTool      bool
+	issueResult      string
+	stateTools       string
+	saveResult       string
+	savedIssueResult string
+	saved            bool
+	requests         []fakeMCPRequest
 }
 
 type fakeMCPRequest struct {
@@ -180,6 +184,7 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, fakeMCPRequest{msg.Method, r.Header.Clone(), msg.Params, msg.ID == nil})
 	status, sse, failPage, whoami := f.status, f.sse, f.failPage, f.whoami
+	saved := f.saved
 	f.mu.Unlock()
 	if status != 0 {
 		w.WriteHeader(status)
@@ -197,6 +202,9 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 		result = `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture"}}`
 	case "tools/list":
 		result = linearFixture(f.t, "mcp_tools_list.json")
+		if f.stateTools != "" {
+			result = f.stateTools
+		}
 		if f.noIssueTool {
 			result = `{"tools":[]}`
 		}
@@ -210,6 +218,14 @@ func (f *fakeMCP) serve(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case call.Name == "get_issue":
 			result = f.issueResult
+			if saved {
+				result = f.savedIssueResult
+			}
+		case call.Name == "save_issue":
+			result = f.saveResult
+			f.mu.Lock()
+			f.saved = true
+			f.mu.Unlock()
 		case call.Name == "whoami" && whoami == "rpc":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"error":{"code":-32603,"message":"internal"}}`, *msg.ID)
