@@ -49,11 +49,18 @@ test("rail palette is dark-mode jewel tones, not pastel", () => {
   for (const c of SECTION_PALETTE) { assert.match(c, /^#[0-9a-f]{6}$/); assert.ok(lightness(c) >= 0.25 && lightness(c) <= 0.6, c); }
 });
 
-test("agent heads depend on orch availability", () => {
+test("only an active run head mapping labels a Head", () => {
   const p = pane("p", "tab", { terminal: "agent" });
   const terminals = [{ address: "agent" }];
-  assert.equal(paneName(p, 0, orchIndexes({ orch: true, terminals })), "head");
+  assert.equal(paneName(p, 0, orchIndexes({ orch: true, terminals })), "codex");
   assert.equal(paneName(p, 0, orchIndexes({ orch: false, terminals })), "codex");
+  assert.equal(paneName(p, 0, orchIndexes({ orch: true, terminals, runs: [{ head_terminal: "agent" }] })), "head");
+  const rows = buildTree({ spaces: [{ id: "s", name: "S", tabs: [{ id: "tab", name: "T" }] }], panes: [p], orch: { orch: true, terminals } });
+  const row = rows.find(r => r.kind === "pane");
+  assert.equal(row.head, false); assert.equal(row.name, "codex");
+  const worker = orchIndexes({ orch: true, terminals, runs: [{ head_terminal: "agent", workers: [{ terminal: "agent", name: "w1" }] }] });
+  assert.equal(paneName(p, 0, worker), "w1");
+  assert.equal(paneName(p, 0, worker, { "space-tree.alias.pane.agent": "Mine" }), "Mine");
 });
 
 test("pane model falls back to last resolved model", () => {

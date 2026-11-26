@@ -53,8 +53,8 @@ export function orchIndexes(orch = {}) {
     terminals: Object.fromEntries((orch.terminals ?? []).map(t => [t.address, t])) };
 }
 
-export const isHeadPane = (pane, orchIndex = {}) =>
-  !!(orchIndex.heads?.[pane.terminal] || (orchIndex.enabled && orchIndex.terminals?.[pane.terminal]));
+// Only an active run's head mapping identifies a Head; an installed orch alone does not.
+export const isHeadPane = (pane, orchIndex = {}) => !!orchIndex.heads?.[pane.terminal];
 const programName = pane => pane.program?.name || pane.app || pane.mod || "Terminal";
 export function paneName(pane, indexInTab = 0, orchIndex = {}, aliases = {}) {
   const alias = aliases[aliasKey("pane", pane.terminal)];

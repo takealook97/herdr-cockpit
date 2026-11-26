@@ -382,6 +382,7 @@ func TestHUDDiscoveryRegistry(t *testing.T) {
 	}
 }
 func TestHUDPanesOutput(t *testing.T) {
+	resetHUDCatalog(t)
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("ORCH_HOME", t.TempDir())
 	t.Setenv("CODEX_LOW_H", "")
@@ -401,6 +402,8 @@ fi
 	if err := os.WriteFile(filepath.Join(bin, "hc"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
+	// A fake orch serves the catalog so the real orch and home are never read.
+	writeCatalogBin(t, bin, "#!/bin/sh\n[ \"$1\" = models ] && [ \"$2\" = --json ] || exit 1\nprintf '%s\\n' '[{\"key\":\"codex-low-h\",\"model\":\"gpt-fake-w\",\"display\":\"gpt-fake-w\",\"effort\":\"high\"}]'\n")
 	t.Setenv("PATH", bin)
 	for _, r := range []*Run{{ID: "active", Status: "active", HeadPane: "t-head", Workspace: "space", Tab: "tab", Mode: "full", Workers: []*Worker{{Name: "worker", Terminal: "t-worker", Pane: "pane", Key: "codex-low-h", Family: "openai", Role: roleProduce, Status: "closed"}}}, {ID: "closed", Status: "closed"}} {
 		if err := os.MkdirAll(runDir(r.ID), 0700); err != nil {
@@ -422,7 +425,7 @@ fi
 		t.Fatalf("runs: %+v", out)
 	}
 	w := out.Runs[0].Workers[0]
-	if w.Status != "closed" || w.Label != "impl" || w.Model != "codex-low-h" || w.Effort != "" {
+	if w.Status != "closed" || w.Label != "impl" || w.Model != "gpt-fake-w" || w.Effort != "high" {
 		t.Fatalf("worker: %+v", w)
 	}
 	if len(out.Terminals) != 2 || out.Terminals[0].Model != "sonnet" || out.Terminals[0].Effort != "medium" || out.Terminals[1].Model != "gpt-fake" || out.Terminals[1].Effort != "low" {

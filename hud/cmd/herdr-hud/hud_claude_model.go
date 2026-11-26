@@ -46,7 +46,7 @@ func hudClaudeCatalogModel(ctx context.Context, model string) string {
 	if family == "opusplan" {
 		family = "opus"
 	}
-	if family != "opus" && family != "sonnet" && family != "haiku" {
+	if family != "opus" && family != "sonnet" && family != "haiku" && family != "fable" {
 		return model
 	}
 	catalog := hudCatalog(ctx)
@@ -375,7 +375,7 @@ func hudClaudeCachePath() string {
 	return filepath.Join(hudCacheDir(), "claude-models.json")
 }
 
-var hudClaudeBannerPattern = regexp.MustCompile(`(?i)\b(Opus|Sonnet|Haiku)\s+(\d+(?:\.\d+)?)(?:\s+with\s+(low|medium|high|max|xhigh)\s+effort)?`)
+var hudClaudeBannerPattern = regexp.MustCompile(`(?i)\b(Fable|Opus|Sonnet|Haiku)\s+(\d+(?:\.\d+)?)(?:\s+with\s+(low|medium|high|max|xhigh)\s+effort)?`)
 
 func hudClaudeBanner(screen string) (model, effort string) {
 	lines := strings.SplitN(screen, "\n", 16)

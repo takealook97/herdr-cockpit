@@ -240,7 +240,7 @@ func hudParseTerminals(raw []byte) ([]HUDTerminal, error) {
 	return out, nil
 }
 func hudOrchAvailable() bool {
-	if _, err := exec.LookPath("orch"); err == nil {
+	if hudOrchPath() != "" {
 		return true
 	}
 	home, err := os.UserHomeDir()

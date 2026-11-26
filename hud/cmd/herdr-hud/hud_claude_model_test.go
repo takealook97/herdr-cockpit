@@ -471,12 +471,12 @@ func TestHUDClaudeCatalogAliases(t *testing.T) {
 	bin := t.TempDir()
 	t.Setenv("PATH", bin)
 	script := `#!/bin/sh
-printf '%s\n' '[{"key":"claude-high-m","model":"claude-opus-5-5","effort":"medium"},{"key":"claude-sonnet","model":"claude-sonnet-5-5"},{"key":"claude-haiku","model":"claude-haiku-4-5-20251001"}]'
+printf '%s\n' '[{"key":"claude-high-m","model":"claude-opus-5-5","effort":"medium"},{"key":"claude-sonnet","model":"claude-sonnet-5-5"},{"key":"claude-haiku","model":"claude-haiku-4-5-20251001"},{"key":"claude-top-m","model":"claude-fable-5-2","effort":"medium"}]'
 `
 	if err := os.WriteFile(filepath.Join(bin, "orch"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	for alias, want := range map[string]string{"opus": "opus-5.5", "opusplan": "opus-5.5", "sonnet": "sonnet-5.5", "haiku": "haiku-4.5", "opus[1m]": "opus-5.5", "unknown": "unknown", "claude-opus-4-6": "opus-4.6"} {
+	for alias, want := range map[string]string{"opus": "opus-5.5", "opusplan": "opus-5.5", "sonnet": "sonnet-5.5", "haiku": "haiku-4.5", "opus[1m]": "opus-5.5", "fable": "fable-5.2", "claude-fable": "fable-5.2", "fable[1m]": "fable-5.2", "unknown": "unknown", "claude-opus-4-6": "opus-4.6"} {
 		if got := hudModelDisplay(hudClaudeCatalogModel(context.Background(), alias)); got != want {
 			t.Fatalf("%s: got %s want %s", alias, got, want)
 		}
@@ -494,7 +494,8 @@ printf '%s\n' '[{"key":"claude-high-m","model":"claude-opus-5-5","effort":"mediu
 			t.Fatal(got)
 		}
 	}
-	hudCatalogCache = map[string]hudCatalogModel{}
+	// No catalog within the retry window: aliases stay unresolved.
+	hudCatalogCache, hudCatalogFailed = nil, hudCatalogNow()
 	if got := hudClaudeCatalogModel(context.Background(), "opus"); got != "opus" {
 		t.Fatal(got)
 	}
@@ -565,6 +566,8 @@ func TestHUDClaudeBanner(t *testing.T) {
 		{"Claude Code v2\n  Opus 5.5 with high effort · Claude Ultra\n", "opus-5.5", "high"},
 		{"Claude Code\nHaiku 5.5 · Claude Ultra", "haiku-5.5", ""},
 		{"Claude Code\nSONNET 5 with XHIGH effort", "sonnet-5", "xhigh"},
+		{"Claude Code v2\n  Fable 5.2 with medium effort · Claude Ultra\n", "fable-5.2", "medium"},
+		{"Claude Code\nFable 5.2 with high effort", "fable-5.2", "high"},
 		{"Welcome to Claude Code", "", ""},
 		{"Sonnet 4 with low effort", "", ""},
 		{"Claude Code\nline\nline\nline\nSonnet 4 with low effort", "", ""},
